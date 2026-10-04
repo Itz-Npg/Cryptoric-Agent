@@ -112,6 +112,148 @@ export const MODEL_CATALOG: ModelDescriptor[] = [
     pricingFetchedAt: '2026-10-04'
   },
   {
+    id: 'apodex-1.1-mini-free',
+    label: 'Apodex 1.1 Mini (free)',
+    provider: 'OpenRouter',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: 262_144,
+    providerModelId: 'apodex/apodex-1.1-mini:free',
+    servedBy: 'openrouter',
+    endpoint: OPENROUTER_ENDPOINT,
+    pricingSource: 'openrouter.ai /api/v1/models + live completion and tool call',
+    pricingFetchedAt: '2026-10-05'
+  },
+  {
+    id: 'ling-3.0-flash-sante-free',
+    label: 'Ling 3.0 Flash Sante (free)',
+    provider: 'OpenRouter',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: 262_144,
+    providerModelId: 'inclusionai/ling-3.0-flash-sante:free',
+    servedBy: 'openrouter',
+    endpoint: OPENROUTER_ENDPOINT,
+    pricingSource: 'openrouter.ai /api/v1/models + live completion and tool call',
+    pricingFetchedAt: '2026-10-05'
+  },
+  {
+    id: 'qwen3.8-27b-free',
+    label: 'Qwen 3.8 27B (free)',
+    provider: 'OpenRouter',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: 262_144,
+    providerModelId: 'qwen/qwen3.8-27b:free',
+    servedBy: 'openrouter',
+    endpoint: OPENROUTER_ENDPOINT,
+    pricingSource: 'openrouter.ai /api/v1/models + live completion and tool call',
+    pricingFetchedAt: '2026-10-05'
+  },
+  {
+    id: 'dots-3-note-preview-free',
+    label: 'Dots3 Note Preview (free)',
+    provider: 'OpenRouter',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: 512_000,
+    providerModelId: 'dots-studio/dots-3-note-preview:free',
+    servedBy: 'openrouter',
+    endpoint: OPENROUTER_ENDPOINT,
+    pricingSource: 'openrouter.ai /api/v1/models + live completion and tool call',
+    pricingFetchedAt: '2026-10-05'
+  },
+  {
+    id: 'lfm-2.5-2.6b-free',
+    label: 'LFM 2.5 2.6B (free)',
+    provider: 'OpenRouter',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: 65_536,
+    providerModelId: 'liquid/lfm-2.5-2.6b:free',
+    servedBy: 'openrouter',
+    endpoint: OPENROUTER_ENDPOINT,
+    pricingSource: 'openrouter.ai /api/v1/models + live completion and tool call',
+    pricingFetchedAt: '2026-10-05'
+  },
+  {
+    id: 'nemotron-3.5-lightning-free',
+    label: 'Nemotron 3.5 Lightning (free)',
+    provider: 'OpenRouter',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: 1_000_000,
+    providerModelId: 'nvidia/nemotron-3.5-lightning:free',
+    servedBy: 'openrouter',
+    endpoint: OPENROUTER_ENDPOINT,
+    pricingSource: 'openrouter.ai /api/v1/models + live completion and tool call',
+    pricingFetchedAt: '2026-10-05'
+  },
+  {
+    id: 'north-mini-code-free',
+    label: 'North Mini Code (free)',
+    provider: 'OpenRouter',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: 256_000,
+    providerModelId: 'cohere/north-mini-code:free',
+    servedBy: 'openrouter',
+    endpoint: OPENROUTER_ENDPOINT,
+    pricingSource: 'openrouter.ai /api/v1/models + live completion and tool call',
+    pricingFetchedAt: '2026-10-05'
+  },
+  {
+    id: 'nemotron-3-ultra-free',
+    label: 'Nemotron 3 Ultra (free)',
+    provider: 'OpenRouter',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: 1_000_000,
+    providerModelId: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+    servedBy: 'openrouter',
+    endpoint: OPENROUTER_ENDPOINT,
+    pricingSource: 'openrouter.ai /api/v1/models + live completion and tool call',
+    pricingFetchedAt: '2026-10-05'
+  },
+  {
+    id: 'nemotron-3-super-free',
+    label: 'Nemotron 3 Super (free)',
+    provider: 'OpenRouter',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: 262_144,
+    providerModelId: 'nvidia/nemotron-3-super-120b-a12b:free',
+    servedBy: 'openrouter',
+    endpoint: OPENROUTER_ENDPOINT,
+    pricingSource: 'openrouter.ai /api/v1/models + live completion and tool call',
+    pricingFetchedAt: '2026-10-05'
+  },
+  {
+    id: 'nemotron-3-nano-omni-free',
+    label: 'Nemotron 3 Nano Omni (free)',
+    provider: 'OpenRouter',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: 256_000,
+    // A reasoning model: it returns HTTP 200 with no text when the token budget
+    // is small, so the gateway's escalation is what makes it usable at all.
+    providerModelId: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+    servedBy: 'openrouter',
+    endpoint: OPENROUTER_ENDPOINT,
+    pricingSource: 'openrouter.ai /api/v1/models + live completion and tool call',
+    pricingFetchedAt: '2026-10-05'
+  },
+  {
     id: 'laguna-s-2.1-free',
     label: 'Laguna S 2.1 (free)',
     provider: 'OpenRouter',
@@ -243,6 +385,61 @@ export const MODEL_CATALOG: ModelDescriptor[] = [
     inputPerMillion: 0.14,
     outputPerMillion: 0.28,
     contextWindow: 64_000
+  }
+]
+
+/**
+ * OpenRouter free models that were offered and deliberately left out.
+ *
+ * Recorded here rather than silently dropped, because "why is this one missing"
+ * is otherwise unanswerable and the obvious next move is to add it and ship a
+ * row that 403s on first use. Each was exercised against the live API on
+ * 2026-10-05 with the owner's key.
+ */
+export const REJECTED_OPENROUTER_MODELS: { id: string; reason: string }[] = [
+  {
+    id: 'thinkingmachines/inkling:free',
+    reason: 'HTTP 403 "only available on agentic harnesses" — refused on every call'
+  },
+  {
+    id: 'thinkingmachines/inkling-small:free',
+    reason: 'HTTP 403 "only available on agentic harnesses" — refused on every call'
+  },
+  {
+    id: 'inception/mercury-decide:free',
+    reason: 'POST /alpha/decisions returns HTTP 404 — the decisions endpoint does not exist'
+  },
+  {
+    id: 'respan/span-01-lite:free',
+    reason: 'POST /alpha/decisions returns HTTP 404 — the decisions endpoint does not exist'
+  },
+  {
+    id: 'google/gemma-4-26b-a4b-it:free',
+    reason: 'Sustained HTTP 429 upstream rate limiting across repeated attempts'
+  },
+  {
+    id: 'google/gemma-4-31b-it:free',
+    reason: 'Sustained HTTP 429 upstream rate limiting across repeated attempts'
+  },
+  {
+    id: 'poolside/laguna-xs-2.1:free',
+    reason: 'Sustained HTTP 429 upstream rate limiting across repeated attempts'
+  },
+  {
+    id: 'nvidia/nemotron-3.5-content-safety:free',
+    reason: 'Answers as a moderation classifier and never emits tool calls, so it cannot drive the agent'
+  },
+  {
+    id: 'liquid/lfm-2.5-embedding-350m:free',
+    reason: 'Embeddings model — works (1024 dims) but /api/v1/embeddings is not chat/completions'
+  },
+  {
+    id: 'nvidia/llama-nemotron-embed-vl-1b-v2:free',
+    reason: 'Embeddings model — works (2048 dims) but /api/v1/embeddings is not chat/completions'
+  },
+  {
+    id: 'nvidia/llama-nemotron-rerank-vl-1b-v2:free',
+    reason: 'Rerank model — works but /api/v1/rerank is not chat/completions'
   }
 ]
 
