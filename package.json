@@ -23,7 +23,8 @@
     "test:watch": "vitest",
     "test:acceptance": "vitest run tests/acceptance",
     "dist": "npm run build && electron-builder --publish never",
-    "dist:win": "npm run build && electron-builder --win nsis --publish never"
+    "dist:win": "npm run build && electron-builder --win nsis --publish never",
+    "test:browser": "node scripts/build-live-check.mjs tests/live/browser-check.ts .review/live/browser-check.mjs && electron .review/live/browser-check.mjs"
   },
   "dependencies": {
     "@fontsource-variable/instrument-sans": "^5.1.0",

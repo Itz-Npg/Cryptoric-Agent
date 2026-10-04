@@ -281,7 +281,8 @@ export class ToolRuntime {
       signal: controller.signal,
       note,
       taskId,
-      grantedTier
+      grantedTier,
+      recordArtifact: (artifact) => this.recordArtifact(toolId, artifact)
     }
 
     let raw: ToolResult

@@ -33,6 +33,13 @@ export interface ToolContext {
   taskId?: string | null
   /** Ceiling the caller granted; a tool may never exceed it. */
   grantedTier?: PermissionTier
+  /**
+   * Register a file the tool produced so the agent can point at a real path
+   * instead of inventing one. Provided by the runtime, which owns the store.
+   */
+  recordArtifact(
+    artifact: Omit<ToolArtifact, 'id' | 'toolId' | 'createdAt'>
+  ): ToolArtifact
 }
 
 export interface ToolInvocation<A = unknown> {

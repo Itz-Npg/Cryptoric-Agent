@@ -26,6 +26,8 @@ import { ToolRegistry } from './services/tools/registry'
 import { ToolRuntime } from './services/tools/runtime'
 import { buildEnvironmentTools } from './services/tools/builtin/environment'
 import { buildFilesystemTools } from './services/tools/builtin/filesystem'
+import { BrowserTabManager } from './services/browser/tabs'
+import { buildBrowserTools } from './services/browser/tools'
 import { AgentRuntime } from './services/agent/core'
 import { buildPipeline } from './services/agent/stages'
 import { IpcRouter } from './ipc/router'
@@ -46,6 +48,7 @@ interface Services {
   env: EnvironmentManager
   terminals: TerminalSessionManager
   processes: ProcessSupervisor
+  browser: BrowserTabManager
   tools: ToolRegistry
   policy: PermissionPolicy
   approvals: ApprovalQueue
@@ -127,8 +130,17 @@ async function boot(): Promise<Services> {
 
   let project: ProjectProfile | null = null
 
+  // The integrated browser. Tabs are WebContentsViews inside this window and
+  // their profiles live under the app cache dir — never in the repository and
+  // never as a downloaded browser.
+  const browser = new BrowserTabManager({
+    userDataDir,
+    getWindow: () => mainWindow
+  })
+
   const tools = new ToolRegistry()
   tools.registerAll(buildEnvironmentTools({ env, terminals, processes, authorize }))
+  tools.registerAll(buildBrowserTools({ tabs: browser }))
 
   const skills = new SkillRegistry()
   await skills.discover(DEFAULT_SKILL_ROOTS, state.lastProjectRoot)
@@ -244,7 +256,7 @@ async function boot(): Promise<Services> {
   bindCredentials(credentials)
 
   return {
-    env, terminals, processes, tools, policy, approvals, skills, agent, router, store, credentials,
+    env, terminals, processes, browser, tools, policy, approvals, skills, agent, router, store, credentials,
     getProject: () => project
   }
 }
@@ -734,6 +746,9 @@ function createWindow(): BrowserWindow {
   window.on('restore', () => clampToWorkArea(window))
   window.on('resize', scheduleClamp)
   window.on('move', scheduleClamp)
+  // Any attached browser tab is a child view of this window's content, so it
+  // has to be re-laid-out whenever the window changes size or position.
+  window.on('resize', () => services?.browser.layout(window))
   window.on('closed', () => {
     if (clampTimer) clearTimeout(clampTimer)
   })
@@ -964,5 +979,9 @@ app.on('before-quit', () => {
   services?.agent.stopAll()
   services?.processes.stopAll()
   services?.terminals.closeAll()
+  // Tear down tabs before the window goes away: a live WebContentsView keeps
+  // its Chromium process alive, and temporary tabs delete their profile as they
+  // close so nothing is left in the cache directory.
+  void services?.browser.closeAll()
   ipcMain.removeAllListeners?.()
 })
