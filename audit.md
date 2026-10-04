@@ -3,8 +3,9 @@
 Every claim below is backed by a command that was actually run. Anything not verified
 is marked **NOT VERIFIED**. Nothing here is inferred from reading code.
 
-Last audit: the agent loop, persistent conversation, and `run_command` — uncommitted
-working tree over `a57f4d3`.
+Last audit: hosted model providers (APINEX + two verified-free OpenRouter models),
+transient-failure retry, and GitHub Releases application updates — commit `6f7560f`
+on `master`, pushed to `origin/main`.
 
 ---
 
@@ -25,6 +26,42 @@ working tree over `a57f4d3`.
 | **Conversation survives restart** | relaunch with no new task | agent pane re-rendered the whole prior conversation from disk |
 | **Session grant stops repeat prompts** | `CRYPTORIC_SHOT_APPROVE=1` + a two-file prompt | exactly **1** `CRYPTORIC_AUTOAPPROVE` for **2** `write_file` calls |
 | **Denial is respected** | same run without auto-approval | `changedPaths: []`, no file written, denial reported |
+
+## Providers, retry and updates — this pass
+
+| Check | Command | Result |
+|---|---|---|
+| Unit tests | `npx vitest run` | **383 passed / 16 files**, exit 0 |
+| APINEX, live provider | `npm run test:apinex` | **18 pass / 0 fail** against `api.apinex.bond` |
+| APINEX key check, live | same run | `GET /v1/models` → 200 for a good key, 401 `"Invalid API key"` otherwise |
+| **Agent loop on a free APINEX model** | `npm run test:agent:apinex` | **13 pass / 0 fail** — real `write_file` → real 401-byte `index.html`, `$${cost}` 0.000000 |
+| **Agent loop on free OpenRouter models** | `npm run test:agent:laguna`, `npm run test:agent:ling` | **13/13** and **13/13** |
+| OpenRouter free models, live | `npm run test:model` | **8 pass / 0 fail**; both free models answered at `usage.cost` 0 |
+| APINEX models render in the real UI | `CRYPTORIC_SHOT=… npx electron .` | all five listed in Settings, frozen UI unchanged |
+| Update policy | `npx vitest run tests/unit/updater.test.ts` | **12 pass / 0 fail** — no false all-clear, no unasked download |
+| Packaged installer | `npx electron-builder --win nsis --publish never` | exit 0 → `.exe` 83,891,986 B + `latest.yml` + `.blockmap` |
+| Feed config baked into the app | read `release/win-unpacked/resources/app-update.yml` | `owner: Itz-Npg`, `repo: Cryptoric-Agent`, `provider: github` |
+| **Packaged app checks a real feed** | run `release/win-unpacked/cryptoricagent.exe` | before the release existed: `Error: No published versions on GitHub`, reported as an **error**, not "up to date" |
+| After the release was published | same binary | logs `Checking for update` with **no error**; Settings shows `Checking for updates…` mid-flight |
+| Feed endpoint electron-updater calls | `gh api repos/Itz-Npg/Cryptoric-Agent/releases/latest` | `v0.1.0`, assets: exe, `.blockmap`, `latest.yml` |
+| Download URL the updater uses | `curl …/releases/latest/download/latest.yml` | version/sha512/size all resolve |
+| No secret in any committed file | key-pattern scan over every staged file | clean; `.env` untracked and ignored |
+| Contributor attribution | `gh api …/contributors` | **`Itz-Npg` only** — no Codebuff co-author in any ref |
+
+### NOT VERIFIED
+
+- **The final `0.1.0 is the latest version.` string was never captured on screen.**
+  The review hook quits before the asynchronous check resolves; both packaged runs
+  caught `checking`. The transition itself is covered by unit test; the rendered
+  terminal line is not.
+- **A download and an install were never exercised.** That needs a real `v0.1.1`
+  newer than the running build. The download/install path is unit-tested against a
+  fake port only.
+- **macOS** — `.icns`/dmg cannot be produced on this Windows host. NOT BUILT.
+- **Linux** — `npx electron-builder --linux` still fails on this host
+  (`cross-spawn ENOENT`); undiagnosed. NOT BUILT.
+- **Code signing** — binaries unsigned, so SmartScreen warns and NSIS installs are
+  not verified by a signature.
 
 ### The complaint that started this pass
 

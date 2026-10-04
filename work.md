@@ -1,7 +1,8 @@
 # Cryptoric Agent — Working State
 
-**Last updated:** Phase 0.6 — the agent loop, persistent conversation and `run_command`,
-all verified against the live provider and the real Electron app.
+**Last updated:** hosted model providers (APINEX + verified-free OpenRouter models),
+transient-failure retry, and GitHub Releases application updates. Commit `6f7560f`,
+pushed to `origin/main`, release `v0.1.0` published.
 
 ---
 
@@ -10,14 +11,23 @@ all verified against the live provider and the real Electron app.
 ```bash
 npx tsc -p tsconfig.node.json --noEmit   # exit 0
 npx tsc -p tsconfig.web.json --noEmit    # exit 0
-npx vitest run                           # 351 passed / 15 files
+npx vitest run                           # 383 passed / 16 files
 npx electron-vite build                  # exit 0
 npx electron-vite dev                    # run the app
 npm run test:browser                     # 59 checks in real Electron, http target
 CRYPTORIC_BROWSER_TARGET=file npm run test:browser   # 50 checks, file target
-npm run test:model                       # 6 checks against the live OpenRouter API
+npm run test:model                       # 8 checks against the live OpenRouter API
+npm run test:apinex                      # 18 checks against the live APINEX API
 npm run test:agent                       # 13 checks: real model + real tools -> real files
+npm run test:agent:apinex                # the same loop on a free APINEX model
+npm run test:agent:laguna                # the same loop on OpenRouter Laguna S 2.1 (free)
+npm run test:agent:ling                  # the same loop on OpenRouter Ling 3.1 Flash (free)
+npm run test:command                     # 12 checks: real shells, refusals, cancellation
+npm run test:migration                   # 3 checks: settings schema migration
 ```
+
+`test:agent:*` take the provider as an **argument**, not an environment variable —
+npm runs scripts under `cmd.exe` on Windows, where `VAR=value cmd` does nothing.
 
 The live runs exceed the synchronous command timeout. Log to a file and read it back:
 
@@ -35,7 +45,14 @@ npm run test:browser > .review/tmp/live.log 2>&1; echo "EXIT=$?"
 
 `C:\Users\Deadaaditya\Downloads\Cryptoric Agent` — path contains a space, always quote.
 
-Branch `master`. Working tree must be clean at each checkpoint.
+Local branch `master` tracks `origin/main` on `https://github.com/Itz-Npg/Cryptoric-Agent.git`.
+Working tree must be clean at each checkpoint.
+
+**Attribution:** commit messages carry no `Co-Authored-By:` trailer. GitHub adds
+every co-author to the repository contributors graph, and the owner asked that no
+Codebuff account appear there. Verified with
+`gh api repos/Itz-Npg/Cryptoric-Agent/contributors` → `Itz-Npg` only. Do not add a
+co-author trailer to any commit in this repository.
 
 ---
 
