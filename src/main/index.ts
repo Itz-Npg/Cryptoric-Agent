@@ -30,6 +30,8 @@ import { AgentRuntime } from './services/agent/core'
 import { buildPipeline } from './services/agent/stages'
 import { IpcRouter } from './ipc/router'
 import { createStore, CredentialStore, type AppState } from './services/store'
+import { SettingsStore } from './services/settings/store'
+import type { SettingsSection } from './services/settings/schema'
 import { detectProject, computeGaps } from './services/project/detect'
 import { FileService } from './services/fs/files'
 import { GitService } from './services/git/service'
@@ -69,6 +71,11 @@ async function boot(): Promise<Services> {
 
   const store = createStore(userDataDir)
   const state = await store.load()
+
+  // Settings are loaded after the legacy state so the first run after an
+  // upgrade can seed the new schema from the old flat file.
+  const settings = new SettingsStore({ userDataDir, legacyState: state })
+  await settings.load()
 
   const policy = new PermissionPolicy(DEFAULT_PERMISSION_RULES)
   for (const [domain, decision] of Object.entries(state.permissionOverrides ?? {})) {
@@ -205,6 +212,7 @@ async function boot(): Promise<Services> {
     skills,
     agent,
     store,
+    settings,
     files,
     git,
     gateway,
@@ -251,6 +259,7 @@ interface RouteDeps {
   skills: SkillRegistry
   agent: AgentRuntime
   store: ReturnType<typeof createStore>
+  settings: SettingsStore
   files: FileService
   git: GitService
   gateway: ModelGateway
@@ -261,6 +270,7 @@ interface RouteDeps {
 
 function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   const { env, terminals, processes, tools, policy, approvals, skills, agent, store, files, git, gateway } = deps
+  const settings = deps.settings
 
   // ------------------------------------------------------------- bootstrap
   router.register(CHANNELS.appInfo, {
@@ -280,6 +290,40 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   router.register(CHANNELS.stateGet, { handler: () => store.get() })
   router.register(CHANNELS.stateSet, {
     handler: (args: { patch: Record<string, unknown> }) => store.set(args.patch as Partial<AppState>)
+  })
+
+  // ------------------------------------------------------------- settings
+  router.register(CHANNELS.settingsGet, { handler: () => settings.get() })
+  router.register(CHANNELS.settingsResolve, {
+    handler: (args: { projectRoot: string | null }) => settings.resolve(args.projectRoot)
+  })
+  router.register(CHANNELS.settingsUpdate, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: (args: { patch: Record<string, unknown> }) => settings.update(args.patch)
+  })
+  router.register(CHANNELS.settingsReset, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: async (args: { path?: string; section?: string; all?: boolean }) => {
+      if (args.all) return settings.resetAll()
+      if (args.path) return settings.resetPath(args.path)
+      if (args.section) return settings.resetSection(args.section as SettingsSection)
+      return settings.get()
+    }
+  })
+  router.register(CHANNELS.settingsExport, { handler: () => settings.export() })
+  router.register(CHANNELS.settingsImport, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: (args: { payload: unknown; mode?: 'merge' | 'replace' }) =>
+      settings.import(args.payload, args.mode ?? 'merge')
+  })
+  router.register(CHANNELS.settingsProjectOverride, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: (args: { projectRoot: string; override: Record<string, unknown> | null }) =>
+      settings.setProjectOverride(args.projectRoot, args.override as never)
   })
 
   // -------------------------------------------------------------- projects

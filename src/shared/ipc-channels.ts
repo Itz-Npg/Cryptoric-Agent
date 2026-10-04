@@ -13,6 +13,13 @@ export const CHANNELS = {
   appInfo: 'app:info',
   stateGet: 'state:get',
   stateSet: 'state:set',
+  settingsGet: 'settings:get',
+  settingsUpdate: 'settings:update',
+  settingsResolve: 'settings:resolve',
+  settingsReset: 'settings:reset',
+  settingsExport: 'settings:export',
+  settingsImport: 'settings:import',
+  settingsProjectOverride: 'settings:project-override',
 
   // --- projects
   projectOpen: 'project:open',

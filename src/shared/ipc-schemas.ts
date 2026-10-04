@@ -15,6 +15,23 @@ export const SCHEMAS = {
   [CHANNELS.appInfo]: z.object({}),
   [CHANNELS.stateGet]: z.object({}),
   [CHANNELS.stateSet]: z.object({ patch: z.record(z.unknown()) }),
+  [CHANNELS.settingsGet]: z.object({}),
+  [CHANNELS.settingsUpdate]: z.object({ patch: z.record(z.unknown()) }),
+  [CHANNELS.settingsResolve]: z.object({ projectRoot: z.string().nullable() }),
+  [CHANNELS.settingsReset]: z.object({
+    path: z.string().min(1).optional(),
+    section: z.string().min(1).optional(),
+    all: z.boolean().optional()
+  }),
+  [CHANNELS.settingsExport]: z.object({}),
+  [CHANNELS.settingsImport]: z.object({
+    payload: z.unknown(),
+    mode: z.enum(['merge', 'replace']).optional()
+  }),
+  [CHANNELS.settingsProjectOverride]: z.object({
+    projectRoot: z.string().min(1),
+    override: z.record(z.unknown()).nullable()
+  }),
 
   // An empty `root` means "prompt the user to pick a directory", so the string
   // is intentionally not length-constrained here.

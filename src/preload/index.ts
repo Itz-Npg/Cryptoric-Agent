@@ -33,6 +33,18 @@ import type {
 
 type Unsubscribe = () => void
 
+/**
+ * Settings cross the bridge as an opaque structure.
+ *
+ * The preload runs sandboxed and must not pull zod (or anything else heavy) into
+ * its bundle, so it describes the payload structurally instead of importing the
+ * main-process schema. The main process is the only place that validates it.
+ */
+export interface SettingsValidation {
+  ok: boolean
+  issues: { path: string; message: string }[]
+}
+
 async function invoke<T>(channel: string, payload: unknown): Promise<T> {
   const result = (await ipcRenderer.invoke(channel, payload)) as IpcResult<T>
   if (!result.ok) throw new Error(result.error)
@@ -136,6 +148,20 @@ const api = {
   state: {
     get: () => invoke<AppStatePatch>(CHANNELS.stateGet, {}),
     set: (patch: AppStatePatch) => invoke<AppStatePatch>(CHANNELS.stateSet, { patch })
+  },
+  settings: {
+    get: () => invoke<Record<string, unknown>>(CHANNELS.settingsGet, {}),
+    resolve: (projectRoot: string | null) =>
+      invoke<Record<string, unknown>>(CHANNELS.settingsResolve, { projectRoot }),
+    update: (patch: Record<string, unknown>) =>
+      invoke<SettingsValidation>(CHANNELS.settingsUpdate, { patch }),
+    reset: (selector: { path?: string; section?: string; all?: boolean }) =>
+      invoke<Record<string, unknown>>(CHANNELS.settingsReset, selector),
+    export: () => invoke<Record<string, unknown>>(CHANNELS.settingsExport, {}),
+    import: (payload: unknown, mode: 'merge' | 'replace' = 'merge') =>
+      invoke<SettingsValidation>(CHANNELS.settingsImport, { payload, mode }),
+    setProjectOverride: (projectRoot: string, override: Record<string, unknown> | null) =>
+      invoke<SettingsValidation>(CHANNELS.settingsProjectOverride, { projectRoot, override })
   },
   project: {
     open: (root?: string) => invoke<ProjectProfile>(CHANNELS.projectOpen, { root: root ?? '' }),
