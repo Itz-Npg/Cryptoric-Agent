@@ -194,11 +194,17 @@ export class UpdateService {
   async download(): Promise<UpdateStatus> {
     if (this.status.state === 'downloading') return this.getStatus()
     if (this.status.state !== 'available' && this.status.state !== 'downloaded') {
-      return this.set({
-        ...this.status,
-        state: this.status.state === 'idle' ? 'idle' : this.status.state,
-        error: 'There is no update to download. Check for updates first.'
-      })
+      // The refusal has to say which of the three "no" cases this is. Telling
+      // someone who is already on the latest release to "check for updates
+      // first" sends them round a loop they cannot leave: checking again
+      // returns the same answer, because the answer was correct the first time.
+      const why =
+        this.status.state === 'not-available'
+          ? `You are already on the latest version (${this.status.currentVersion}).`
+          : this.status.state === 'idle'
+            ? 'No update check has run yet. Use "Check now" first.'
+            : 'There is no update to download. Check for updates first.'
+      return this.set({ ...this.status, error: why })
     }
 
     const capability = this.deps.port.canCheck()

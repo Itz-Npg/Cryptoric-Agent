@@ -88,8 +88,12 @@ describe('update service', () => {
     await service.check()
     const status = await service.download()
 
+    // The refusal itself is the point of this test. The wording was changed on
+    // 2026-10-05: a check had already run and reported "no update", so telling
+    // the user to "check for updates first" sent them in a circle. It now names
+    // the real reason, which the next two tests pin separately.
     expect(calls.download).toBe(0)
-    expect(status.error).toMatch(/no update to download/i)
+    expect(status.error).toMatch(/already on the latest version/i)
   })
 
   it('downloads only after the user asks, and reports progress', async () => {
@@ -193,6 +197,53 @@ describe('update service', () => {
 
     expect(calls.download).toBe(0)
     expect(status.state).toBe('unsupported')
+  })
+
+  it('tells an up-to-date user they are up to date, not to check again', async () => {
+    // Regression: the refusal used to say "Check for updates first" even when a
+    // check had already run and correctly reported "no update". Following that
+    // advice loops forever, because checking again returns the same answer.
+    const { port, calls } = fakePort({ found: { version: null } })
+    const service = new UpdateService({ port, checkIntervalMs: 0 })
+
+    await service.check()
+    expect(service.getStatus().state).toBe('not-available')
+
+    const first = await service.download()
+    expect(first.error).toMatch(/already on the latest version/i)
+    expect(first.error).not.toMatch(/check for updates first/i)
+    expect(calls.download).toBe(0)
+
+    // The exact reported sequence: click Download, click Check now, click Download.
+    await service.check({ force: true })
+    const second = await service.download()
+    expect(second.error).toMatch(/already on the latest version/i)
+    expect(calls.check).toBe(2)
+    expect(calls.download).toBe(0)
+  })
+
+  it('asks for a check only when no check has run yet', async () => {
+    // The other half of the distinction: `idle` genuinely does mean "check first".
+    const { port, calls } = fakePort({ found: { version: null } })
+    const service = new UpdateService({ port, checkIntervalMs: 0 })
+
+    const status = await service.download()
+
+    expect(status.error).toMatch(/no update check has run yet/i)
+    expect(status.error).not.toMatch(/already on the latest version/i)
+    expect(calls.check).toBe(0)
+    expect(calls.download).toBe(0)
+  })
+
+  it('does not report the release page for a build with nothing newer', async () => {
+    const { port } = fakePort({ found: { version: null } })
+    const service = new UpdateService({ port, checkIntervalMs: 0 })
+
+    const status = await service.check()
+
+    expect(status.state).toBe('not-available')
+    expect(status.releasePageUrl).toBeNull()
+    expect(status.availableVersion).toBeNull()
   })
 
   it('reports the release page so a human can read the notes', async () => {
