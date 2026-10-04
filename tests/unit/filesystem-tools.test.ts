@@ -2,7 +2,14 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { buildFilesystemTools, globToMatcher, filterTree, PROTECTED_DIRECTORIES } from '../../src/main/services/tools/builtin/filesystem'
+import {
+  buildFilesystemTools,
+  detectEncoding,
+  filterTree,
+  globToMatcher,
+  looksBinary,
+  PROTECTED_DIRECTORIES
+} from '../../src/main/services/tools/builtin/filesystem'
 import { PermissionPolicy } from '../../src/main/services/permissions/policy'
 import { FileService } from '../../src/main/services/fs/files'
 import { ToolRuntime } from '../../src/main/services/tools/runtime'
@@ -248,6 +255,21 @@ describe('filesystem tools', () => {
     expect((exists.data as { kind: string }).kind).toBe('dir')
   })
 
+  it('reports file metadata without reading the whole file', async () => {
+    const result = await call('file_metadata', { path: join(root, 'src', 'index.ts') })
+    expect(result.ok).toBe(true)
+    const data = result.data as {
+      sizeBytes: number
+      isBinary: boolean
+      encoding: string
+      modifiedAt: string
+    }
+    expect(data.sizeBytes).toBeGreaterThan(0)
+    expect(data.isBinary).toBe(false)
+    expect(data.encoding).toBe('utf-8')
+    expect(data.modifiedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+  })
+
   it('redacts a secret that leaks through a file read into the transcript', async () => {
     const result = await call('read_file', { path: join(root, 'src', 'index.ts') })
     expect(result.summary).not.toContain('hunter2')
@@ -275,5 +297,33 @@ describe('filesystem helpers', () => {
     expect(globToMatcher('*.test.ts')('index.ts')).toBe(false)
     expect(globToMatcher('index')('src/index.ts')).toBe(true)
     expect(globToMatcher('INDEX.TS')('index.ts')).toBe(true)
+  })
+})
+
+describe('content classification', () => {
+  it('treats source text as text', () => {
+    expect(looksBinary(Buffer.from("export const answer = 42\nconst x = 'hi'\n"))).toBe(false)
+  })
+
+  it('treats a NUL-containing blob as binary', () => {
+    expect(looksBinary(Buffer.from([0x89, 0x50, 0x4e, 0x00, 0x47, 0x0d]))).toBe(true)
+  })
+
+  it('treats a mostly non-printable sample as binary', () => {
+    // A gzip header: control bytes throughout.
+    expect(looksBinary(Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0xff, 0xfe, 0x03, 0x04]))).toBe(true)
+    // Mostly printable text with a stray control character is still text; the
+    // heuristic looks at the share of unprintable bytes, not their presence.
+    expect(looksBinary(Buffer.from('const a = 1\n\tlet b = 2\r\nreturn a + b', 'utf8'))).toBe(false)
+  })
+
+  it('treats an empty sample as text rather than guessing', () => {
+    expect(looksBinary(Buffer.alloc(0))).toBe(false)
+  })
+
+  it('detects a byte order mark and otherwise assumes UTF-8', () => {
+    expect(detectEncoding(Buffer.from([0xef, 0xbb, 0xbf, 0x61]))).toBe('utf-8-bom')
+    expect(detectEncoding(Buffer.from([0xff, 0xfe, 0x61]))).toBe('utf-16le')
+    expect(detectEncoding(Buffer.from('plain', 'utf8'))).toBe('utf-8')
   })
 })

@@ -21,7 +21,7 @@
 
 import { constants } from 'node:fs'
 import type { Dirent } from 'node:fs'
-import { access, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { access, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join, relative, resolve, sep } from 'node:path'
 import { z } from 'zod'
 import type { PermissionDomain, ToolDescriptor } from '@shared/types'
@@ -265,7 +265,8 @@ export function buildFilesystemTools(deps: FilesystemToolDeps): ToolDefinition[]
       {
         id: 'file_metadata',
         label: 'File metadata',
-        description: 'Return size, timestamps and type for a file, including whether it looks binary.',
+        description:
+          'Return size, timestamps, type and whether a file looks binary, reading only a small prefix rather than the whole file.',
         dependsOn: ['file_exists'],
         tier: 'safe',
         inputSchema: {}
@@ -277,15 +278,22 @@ export function buildFilesystemTools(deps: FilesystemToolDeps): ToolDefinition[]
         if (!checked.ok) return fail('Path rejected', checked.error, 'permission-denied')
         try {
           const info = await stat(checked.absolute)
-          const handle = await readFile(checked.absolute)
-          void handle
+          const isDirectory = info.isDirectory()
+          // A prefix is enough to classify binary content; reading a whole
+          // multi-gigabyte artefact to answer "is this binary" is not.
+          const probe = isDirectory
+            ? Buffer.alloc(0)
+            : await readPrefix(checked.absolute, BINARY_PROBE_BYTES)
           return ok(`${basename(checked.absolute)}: ${info.size} bytes`, {
             path: checked.absolute,
             extension: extname(checked.absolute),
             sizeBytes: info.size,
             createdAt: info.birthtime.toISOString(),
             modifiedAt: info.mtime.toISOString(),
-            isDirectory: info.isDirectory()
+            isDirectory,
+            isBinary: isDirectory ? false : looksBinary(probe),
+            /** Only meaningful for text files; used to choose a decoder. */
+            encoding: isDirectory ? null : detectEncoding(probe)
           })
         } catch (err) {
           return fail(
@@ -595,6 +603,48 @@ export function buildFilesystemTools(deps: FilesystemToolDeps): ToolDefinition[]
 }
 
 // ---------------------------------------------------------------- helpers
+
+/** Bytes sampled when classifying a file's content. */
+const BINARY_PROBE_BYTES = 8192
+
+/** Read the first `bytes` of a file without loading the rest. */
+async function readPrefix(path: string, bytes: number): Promise<Buffer> {
+  const handle = await open(path, 'r')
+  try {
+    const buffer = Buffer.alloc(bytes)
+    const { bytesRead } = await handle.read(buffer, 0, bytes, 0)
+    return buffer.subarray(0, bytesRead)
+  } finally {
+    await handle.close()
+  }
+}
+
+/**
+ * Heuristic binary detection: a NUL byte, or a high share of bytes that are
+ * not printable and not common whitespace, means the agent should not try to
+ * read this as source.
+ */
+export function looksBinary(sample: Buffer): boolean {
+  if (sample.length === 0) return false
+  if (sample.includes(0)) return true
+  let suspicious = 0
+  for (const byte of sample) {
+    const printable =
+      byte === 9 || byte === 10 || byte === 13 || (byte >= 32 && byte !== 127)
+    if (!printable) suspicious += 1
+  }
+  return suspicious / sample.length > 0.3
+}
+
+/** BOM sniffing for the encodings that declare one; otherwise UTF-8. */
+export function detectEncoding(sample: Buffer): string {
+  if (sample.length >= 3 && sample[0] === 0xef && sample[1] === 0xbb && sample[2] === 0xbf) {
+    return 'utf-8-bom'
+  }
+  if (sample.length >= 2 && sample[0] === 0xff && sample[1] === 0xfe) return 'utf-16le'
+  if (sample.length >= 2 && sample[0] === 0xfe && sample[1] === 0xff) return 'utf-16be'
+  return 'utf-8'
+}
 
 function dirnameOf(path: string): string {
   const index = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'))
