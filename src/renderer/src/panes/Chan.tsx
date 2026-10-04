@@ -45,7 +45,8 @@ export function ChanPanel({
   workspaceState,
   onSubmit,
   onResolveApproval,
-  onClearConversation
+  onClearConversation,
+  onStop
 }: {
   transcript: TranscriptEntry[]
   timeline: TimelineEntry[]
@@ -55,12 +56,35 @@ export function ChanPanel({
   onSubmit: (prompt: string) => void
   onResolveApproval: (id: string, approved: boolean, remember?: boolean, toolId?: string) => void
   onClearConversation: () => void
+  onStop: (taskId: string) => void
 }) {
   const activeTask = tasks.find((t) => !['COMPLETED', 'FAILED', 'CANCELLED'].includes(t.status)) ?? null
   const idle = !activeTask && transcript.length === 0 && approvals.length === 0
 
   return (
     <div className="surface">
+      {/* A running agent must always be stoppable. The control appears only
+          while a task is live, so it never sits there inviting a click that
+          would do nothing. */}
+      {activeTask && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            padding: '8px 24px',
+            borderBottom: '1px solid var(--line)',
+            background: 'var(--surface-1)'
+          }}
+        >
+          <span className="caption" style={{ flex: 1 }}>
+            Running — {activeTask.status.toLowerCase()}
+          </span>
+          <Button variant="ghost" onClick={() => onStop(activeTask.id)}>
+            Stop
+          </Button>
+        </div>
+      )}
       {idle ? (
         <ChanIdle onSubmit={onSubmit} workspaceState={workspaceState} />
       ) : (
