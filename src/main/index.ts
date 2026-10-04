@@ -23,6 +23,7 @@ import { ProcessSupervisor, findFreePort, scanPorts } from './services/proc/supe
 import { PermissionPolicy, ApprovalQueue, DEFAULT_PERMISSION_RULES, tierForDomain } from './services/permissions/policy'
 import { SkillRegistry, DEFAULT_SKILL_ROOTS, routeSkills } from './services/skills/registry'
 import { ToolRegistry } from './services/tools/registry'
+import { ToolRuntime } from './services/tools/runtime'
 import { buildEnvironmentTools } from './services/tools/builtin/environment'
 import { AgentRuntime } from './services/agent/core'
 import { buildPipeline } from './services/agent/stages'
@@ -156,8 +157,12 @@ async function boot(): Promise<Services> {
   const agent = new AgentRuntime(
     {
       tools,
-      policy,
-      approvals,
+      runtime: new ToolRuntime({
+        registry: tools,
+        policy,
+        approvals,
+        onRecord: (record) => push({ type: 'log', level: 'info', message: `${record.toolId} ${record.ok ? 'ok' : 'failed'} (${record.durationMs}ms)`, at: new Date().toISOString() })
+      }),
       skills,
       skillTokenBudget: 6000,
       maxSkillsPerTask: 4,
@@ -811,6 +816,12 @@ async function attachDesignReviewHooks(window: BrowserWindow): Promise<void> {
     const image = await window.webContents.capturePage()
     writeFileSync(join(shotDir, `${name}.png`), image.toPNG())
     console.log('CRYPTORIC_SHOT', join(shotDir, `${name}.png`))
+    // Text of the stage at this destination: proves what actually rendered,
+    // which a screenshot alone cannot assert.
+    const text = await window.webContents.executeJavaScript(
+      `document.querySelector('.stage')?.innerText?.slice(0, 900) ?? ''`
+    )
+    console.log('CRYPTORIC_STAGE_TEXT', name, JSON.stringify(text))
   }
 
   app.quit()

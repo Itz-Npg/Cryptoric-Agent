@@ -12,7 +12,13 @@
  */
 
 import { z } from 'zod'
-import type { PermissionDomain, PermissionTier, ToolDescriptor } from '@shared/types'
+import type {
+  PermissionDomain,
+  PermissionTier,
+  ToolArtifact,
+  ToolDescriptor,
+  ToolFailureKind
+} from '@shared/types'
 
 export interface ToolContext {
   /** Currently open project root, or null. */
@@ -23,6 +29,10 @@ export interface ToolContext {
   signal: AbortSignal
   /** Emit a timeline entry without ending the turn. */
   note(message: string, status?: 'ok' | 'error' | 'info'): void
+  /** Id of the owning task, for artifact and audit attribution. */
+  taskId?: string | null
+  /** Ceiling the caller granted; a tool may never exceed it. */
+  grantedTier?: PermissionTier
 }
 
 export interface ToolInvocation<A = unknown> {
@@ -41,6 +51,16 @@ export interface ToolResult {
   error?: string
   /** Set when the agent must stop and wait for a human. */
   requiresApproval?: boolean
+  /** Process exit code, for tools that shell out. */
+  exitCode?: number | null
+  /** Files produced, so the agent can reference them by path. */
+  artifacts?: ToolArtifact[]
+  /** Non-fatal problems the agent should know about but that did not stop it. */
+  warnings?: string[]
+  /** Free-form provenance: versions, pids, snapshot ids. */
+  metadata?: Record<string, unknown>
+  /** Set by the runtime; a tool should not set this itself. */
+  failureKind?: ToolFailureKind
 }
 
 export interface ToolDefinition<S extends z.ZodTypeAny = z.ZodTypeAny> {

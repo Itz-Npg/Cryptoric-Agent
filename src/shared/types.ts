@@ -50,6 +50,27 @@ export type ToolInstallState =
   | 'failed'
   | 'unverified'
 
+/**
+ * Why a tool call failed.
+ *
+ * Classification is what makes recovery possible: "command not found" and
+ * "permission denied" are both tool errors, but only the first is fixed by
+ * refreshing the environment. An unclassified error has to be surfaced instead
+ * of guessed at.
+ */
+export type ToolFailureKind =
+  | 'invalid-args'
+  | 'permission-denied'
+  | 'not-approved'
+  | 'timeout'
+  | 'cancelled'
+  | 'unavailable'
+  | 'dependency-missing'
+  | 'platform-unsupported'
+  | 'output-invalid'
+  | 'threw'
+  | 'failed'
+
 export type ToolSourceKind =
   | 'path'
   | 'winget'
@@ -316,6 +337,39 @@ export interface ApprovalResolution {
 // Tools & the agent
 // ---------------------------------------------------------------------------
 
+/**
+ * Capability families. A tool belongs to exactly one, and the tool router uses
+ * it to select capabilities for a task instead of invoking everything.
+ */
+export type ToolCategory =
+  | 'files'
+  | 'code'
+  | 'terminal'
+  | 'runtime'
+  | 'process'
+  | 'git'
+  | 'build'
+  | 'test'
+  | 'browser'
+  | 'security'
+  | 'research'
+  | 'models'
+  | 'skills'
+  | 'network'
+  | 'containers'
+  | 'database'
+  | 'observability'
+
+/**
+ * Risk of the effect, independent of who is asking.
+ *
+ * `PermissionTier` answers "is this caller allowed"; `ToolRiskLevel` answers "how
+ * much does this hurt if it is wrong". Both are needed: a read-only tool can
+ * still be high-risk (a network fetch to an attacker-controlled host), and a
+ * destructive tool can be low-risk when scoped to a temp directory.
+ */
+export type ToolRiskLevel = 'safe' | 'low' | 'medium' | 'high' | 'critical'
+
 export interface ToolDescriptor {
   id: string
   label: string
@@ -325,6 +379,63 @@ export interface ToolDescriptor {
   tier: PermissionTier
   /** JSON-schema-ish input description for display. */
   inputSchema: Record<string, unknown>
+  /** Capability family; defaults to `files` when a tool does not declare one. */
+  category?: ToolCategory
+  /** Risk of the effect, independent of permission. */
+  risk?: ToolRiskLevel
+  /** Hard ceiling on a single invocation. */
+  timeoutMs?: number
+  /** Platforms the tool can run on; `['*']` means all. */
+  platforms?: NodeJS.Platform[] | ['*']
+  /** Structured result contract, rendered for the UI and validated at runtime. */
+  outputSchema?: Record<string, unknown>
+  /** Whether the tool changes the workspace or the machine. */
+  mutates?: boolean
+  /**
+   * Argument names whose values must never be written to the audit log, the
+   * transcript, or an approval prompt.
+   */
+  sensitiveArgs?: string[]
+}
+
+/**
+ * A file a tool produced that the agent may need to inspect or reference.
+ * Tracked per task so an agent can say "the screenshot is here" without
+ * inventing a path.
+ */
+export interface ToolArtifact {
+  id: string
+  taskId: string | null
+  toolId: string
+  kind: 'screenshot' | 'log' | 'diff' | 'report' | 'build' | 'test' | 'research' | 'other'
+  path: string
+  bytes: number
+  createdAt: string
+  summary: string
+}
+
+/**
+ * One audited tool execution.
+ *
+ * Arguments are redacted before they land here — an audit trail that leaks the
+ * secrets it was written to detect is worse than no audit trail at all.
+ */
+export interface ToolAuditRecord {
+  id: string
+  taskId: string | null
+  toolId: string
+  category: ToolCategory
+  risk: ToolRiskLevel
+  /** Redacted arguments. */
+  args: string
+  ok: boolean
+  /** Normalised failure class, or null on success. */
+  error: string | null
+  errorKind: ToolFailureKind | null
+  exitCode: number | null
+  durationMs: number
+  approved: boolean
+  startedAt: string
 }
 
 export type TaskStatus =

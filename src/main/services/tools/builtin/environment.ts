@@ -6,13 +6,37 @@
  * behaviour and the safety checks. Tools never re-implement policy.
  */
 
-import { spawn } from 'node:child_process'
 import { z } from 'zod'
 import type { PermissionDomain, PermissionTier, ToolDescriptor } from '@shared/types'
 import type { EnvironmentManager } from '../../env/manager'
 import type { ProcessSupervisor } from '../../proc/supervisor'
 import type { TerminalSessionManager } from '../../terminal/sessions'
 import { describeSchema, type ToolContext, type ToolDefinition, type ToolResult } from '../registry'
+import { runCaptured } from '../exec'
+
+/**
+ * Execution metadata for every tool in this module.
+ *
+ * Kept as one auditable table rather than inline in each descriptor: risk,
+ * timeout and capability family are the properties a reviewer wants to see side
+ * by side, and having them in a single block makes an unsafe tool obvious.
+ *
+ * `risk` is the effect's blast radius, independent of who may call it — an
+ * install that changes the machine is `medium` even when the user asked for it.
+ */
+const TOOL_META: Record<string, Pick<ToolDescriptor, 'category' | 'risk'> & { timeoutMs: number; mutates: boolean }> = {
+  detect_runtime: { category: 'runtime', risk: 'safe', timeoutMs: 60_000, mutates: false },
+  detect_package_manager: { category: 'runtime', risk: 'safe', timeoutMs: 60_000, mutates: false },
+  install_runtime: { category: 'runtime', risk: 'medium', timeoutMs: 900_000, mutates: true },
+  install_package_manager: { category: 'runtime', risk: 'medium', timeoutMs: 900_000, mutates: true },
+  verify_runtime: { category: 'runtime', risk: 'safe', timeoutMs: 60_000, mutates: false },
+  refresh_environment: { category: 'runtime', risk: 'low', timeoutMs: 120_000, mutates: false },
+  inspect_environment: { category: 'runtime', risk: 'safe', timeoutMs: 180_000, mutates: false },
+  create_terminal_session: { category: 'terminal', risk: 'low', timeoutMs: 30_000, mutates: true },
+  list_running_processes: { category: 'process', risk: 'safe', timeoutMs: 30_000, mutates: false },
+  stop_process: { category: 'process', risk: 'medium', timeoutMs: 30_000, mutates: true },
+  restart_process: { category: 'process', risk: 'medium', timeoutMs: 120_000, mutates: true }
+}
 
 export interface EnvironmentToolDeps {
   env: EnvironmentManager
@@ -35,7 +59,14 @@ export function buildEnvironmentTools(deps: EnvironmentToolDeps): ToolDefinition
     execute: (input: never, ctx: ToolContext) => Promise<ToolResult>,
     dependsOn?: string[]
   ): ToolDefinition => ({
-    descriptor: { ...descriptor, inputSchema: describeSchema(schema) },
+    descriptor: {
+      // Execution metadata is declared once per tool id; an explicit value in
+      // the descriptor always wins, so the table cannot override a tool.
+      ...TOOL_META[descriptor.id],
+      ...descriptor,
+      platforms: descriptor.platforms ?? ['*'],
+      inputSchema: describeSchema(schema)
+    },
     domain,
     schema,
     dependsOn,
@@ -340,36 +371,4 @@ export function buildEnvironmentTools(deps: EnvironmentToolDeps): ToolDefinition
 
 // Small helpers kept local so the tool bodies read declaratively.
 
-/** Run a command with an explicit environment; used by git and diff tools. */
-export function runCaptured(
-  command: string,
-  args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number }
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: options.env,
-      shell: false,
-      windowsHide: true
-    })
-    let stdout = ''
-    let stderr = ''
-    const timer = setTimeout(() => child.kill(), options.timeoutMs ?? 30_000)
-    timer.unref?.()
-    child.stdout?.on('data', (d: Buffer) => {
-      stdout += d.toString()
-    })
-    child.stderr?.on('data', (d: Buffer) => {
-      stderr += d.toString()
-    })
-    child.on('error', (err) => {
-      clearTimeout(timer)
-      resolve({ code: 127, stdout, stderr: String(err) })
-    })
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      resolve({ code: code ?? 0, stdout, stderr })
-    })
-  })
-}
+export { runCaptured }

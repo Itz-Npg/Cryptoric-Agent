@@ -24,11 +24,11 @@ import type {
   TimelineEntry,
   UsageRecord
 } from '@shared/types'
-import type { PermissionPolicy } from '../permissions/policy'
-import { ApprovalQueue } from '../permissions/policy'
+import type { PermissionTier } from '@shared/types'
 import type { SkillRegistry } from '../skills/registry'
 import { buildSkillContext, routeSkills, type TaskCategory } from '../skills/registry'
-import type { ToolContext, ToolRegistry, ToolResult } from '../tools/registry'
+import type { ToolRegistry, ToolResult } from '../tools/registry'
+import type { NormalizedToolResult, ToolRuntime } from '../tools/runtime'
 import type { Stage, StageContext, StageOutcome } from './pipeline-types'
 
 export type { Stage, StageContext, StageOutcome }
@@ -44,8 +44,12 @@ export interface AgentEventSink {
 
 export interface AgentDeps {
   tools: ToolRegistry
-  policy: PermissionPolicy
-  approvals: ApprovalQueue
+  /**
+   * Every tool call goes through the runtime, which owns policy, approval,
+   * timeout, cancellation, redaction and audit. The agent does not re-implement
+   * any of it — a second enforcement path is a second thing to get wrong.
+   */
+  runtime: ToolRuntime
   skills: SkillRegistry
   events: AgentEventSink
   /** Root of the currently open project, or null. */
@@ -219,12 +223,16 @@ export class AgentRuntime {
       this.note(task, 'SYSTEM', 'skills-routed', `No skill matched; ${routing.skipped.length} considered`, 'info')
     }
 
+    // The stage ceiling is captured here so every tool call the stage makes is
+    // clamped to the stage's own grant, not the task's widest one.
+    let ceiling: PermissionTier = 'safe'
+
     const ctx: StageContext = {
       task,
       signal: controller.signal,
       maxTier: 'safe',
       note: (message, status) => this.note(task, 'SYSTEM', 'progress', message, status ?? 'info'),
-      call: async (toolId, args) => this.invoke(task, toolId, args, controller.signal),
+      call: async (toolId, args) => this.invoke(task, toolId, args, controller.signal, ceiling),
       workspaceRoots: task.projectRoot ? [task.projectRoot] : [],
       skillContext,
       selectedSkills: routing.skillIds
@@ -237,6 +245,7 @@ export class AgentRuntime {
       }
       task.status = statusForRole(stage.role, task.status)
       this.touch(task)
+      ceiling = stage.maxTier
       this.note(task, stage.role, stage.name, `${stage.role} · ${stage.name}`, 'info')
 
       try {
@@ -275,83 +284,90 @@ export class AgentRuntime {
    * clamped by the stage ceiling. An `allow` decision is never granted to a tool
    * whose declared tier exceeds the caller's grant.
    */
+  /**
+   * Policy-enforcing tool invocation.
+   *
+   * The agent's job here is narrow: name the tool, narrate the outcome, and
+   * record it on the timeline. Deciding *whether it may run* is the runtime's
+   * job — tier clamping, approval, timeout, cancellation and redaction all
+   * happen there, in one place, so there is a single enforcement path to audit.
+   */
   private async invoke(
     task: AgentTask,
     toolId: string,
     args: Record<string, unknown>,
-    signal: AbortSignal
-  ): Promise<ToolResult> {
+    signal: AbortSignal,
+    maxTier: PermissionTier = 'destructive'
+  ): Promise<NormalizedToolResult> {
     if (signal.aborted) {
-      return { ok: false, summary: 'Task stopped', error: 'The task was stopped before this tool ran.' }
+      return {
+        ok: false,
+        summary: 'Task stopped',
+        error: 'The task was stopped before this tool ran.',
+        failureKind: 'cancelled',
+        durationMs: 0,
+        artifacts: [],
+        warnings: [],
+        metadata: {}
+      }
     }
 
-    const tool = this.deps.tools.get(toolId)
-    if (!tool) {
-      return { ok: false, summary: 'Unknown tool', error: `No tool registered with id "${toolId}".` }
-    }
-
-    const parsed = this.deps.tools.parse(toolId, args)
-    if (!parsed.ok) {
-      this.note(task, 'IMPLEMENTER', 'tool-invalid-args', parsed.error, 'error')
-      return { ok: false, summary: 'Invalid arguments', error: parsed.error }
-    }
-
-    // 1. Domain policy.
-    const decision = this.deps.policy.evaluateDomain(tool.domain)
-    const requiredTier = tool.descriptor.tier
-
-    // 2. Approval. Timeouts deny, so a dismissed dialog cannot stall a task.
-    let approved = decision === 'allow'
-    if (decision !== 'allow') {
-      const request = this.deps.approvals.request({
-        toolId,
-        tier: requiredTier,
-        title: `Allow ${tool.descriptor.label}?`,
-        detail: summarizeArgs(toolId, parsed.value),
-        risk: `Requires ${requiredTier} permission (${tool.domain}).`
-      })
-      this.deps.events.timeline({
-        id: randomUUID(),
-        taskId: task.id,
-        at: new Date().toISOString(),
-        role: 'SYSTEM',
-        stage: 'approval',
-        message: `Waiting for approval: ${tool.descriptor.label}`,
-        status: 'pending',
-        ref: request.id
-      })
-      approved = await this.deps.approvals.wait(request.id)
-    }
-
-    if (!approved) {
-      this.note(task, 'IMPLEMENTER', 'tool-denied', `${toolId} was not approved`, 'error')
-      return { ok: false, summary: 'Denied', error: 'The user did not approve this action.' }
-    }
-
-    // 3. Execute.
     this.note(task, 'IMPLEMENTER', 'tool-start', `${toolId}`, 'info')
-    const toolCtx: ToolContext = {
+
+    const result = await this.deps.runtime.invoke(toolId, args, {
+      taskId: task.id,
+      grantedTier: maxTier,
+      signal,
       projectRoot: task.projectRoot,
       taskEnv: null,
-      signal,
+      workspaceRoots: task.projectRoot ? [task.projectRoot] : [],
       note: (message, status) => this.note(task, 'IMPLEMENTER', 'tool-note', message, status ?? 'info')
+    })
+
+    this.note(
+      task,
+      'IMPLEMENTER',
+      result.ok ? 'tool-ok' : 'tool-error',
+      `${toolId}: ${result.summary}${result.ok ? '' : ` (${result.failureKind ?? 'failed'})`}`,
+      result.ok ? 'ok' : 'error'
+    )
+    this.deps.events.toolResult(toolId, result)
+
+    // A failure the agent can recover from is a signal, not a dead end. These
+    // are the transitions that used to require the user to intervene by hand.
+    void this.suggestRecovery(task, toolId, result)
+
+    return result
+  }
+
+  /**
+   * Turn a classified failure into the next useful action.
+   *
+   * Deliberately conservative: it only acts on failures whose fix is
+   * unambiguous and side-effect free. Everything else is reported for a human.
+   */
+  private async suggestRecovery(
+    task: AgentTask,
+    toolId: string,
+    result: NormalizedToolResult
+  ): Promise<void> {
+    if (result.ok || task.status === 'CANCELLED') return
+
+    const message = `${result.error ?? ''} ${result.summary}`.toLowerCase()
+    let hint: string | null = null
+
+    if (result.failureKind === 'unavailable' || /\bcommand not found\b|\bnot recognized as an internal/.test(message)) {
+      hint = 'The command is not on the current PATH. Refresh the environment and retry.'
+    } else if (result.failureKind === 'dependency-missing') {
+      hint = 'A prerequisite tool is missing. Detect and install it, then retry.'
+    } else if (/\beaddrinuse\b|\bport .* already in use\b/.test(message)) {
+      hint = 'A port is occupied. Identify the occupant or pick a free port.'
+    } else if (result.failureKind === 'permission-denied' || result.failureKind === 'not-approved') {
+      hint = 'Permission was refused. Ask the user to grant it, or choose a lower-risk path.'
     }
 
-    try {
-      const result = await tool.execute(parsed.value, toolCtx)
-      this.note(
-        task,
-        'IMPLEMENTER',
-        result.ok ? 'tool-ok' : 'tool-error',
-        `${toolId}: ${result.summary}`,
-        result.ok ? 'ok' : 'error'
-      )
-      this.deps.events.toolResult(toolId, result)
-      return result
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      this.note(task, 'IMPLEMENTER', 'tool-throw', `${toolId}: ${message}`, 'error')
-      return { ok: false, summary: `${toolId} threw`, error: message }
+    if (hint) {
+      this.note(task, 'SYSTEM', 'recovery-hint', `${toolId}: ${hint}`, 'info')
     }
   }
 
@@ -446,4 +462,4 @@ function summarizeArgs(toolId: string, args: unknown): string {
   }
 }
 
-export { randomUUID }
+export { randomUUID, summarizeArgs }
