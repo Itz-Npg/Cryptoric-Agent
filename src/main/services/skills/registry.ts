@@ -56,10 +56,11 @@ export function parseFrontmatter(text: string): ParsedFrontmatter {
   if (!normalized.startsWith('---')) return { data: {}, body: normalized }
 
   const end = normalized.indexOf('\n---', 3)
-  if (end === -1) return { data: {}, body: normalized }
-
-  const header = normalized.slice(3, end)
-  const body = normalized.slice(end + 4).replace(/^\s*\r?\n/, '')
+  // An unterminated block is a truncated manifest, not a plain document: parse
+  // what is there rather than discarding the metadata the author wrote.
+  const truncated = end === -1
+  const header = truncated ? normalized.slice(3) : normalized.slice(3, end)
+  const body = truncated ? '' : normalized.slice(end + 4).replace(/^\s*\r?\n/, '')
   const data: Record<string, string> = {}
   let currentListKey: string | null = null
 
@@ -372,7 +373,7 @@ export function routeSkills(
     const body = registry.body(skill.id) ?? ''
     const tokens = estimateTokens(body)
     if (used + tokens > options.tokenBudget) {
-      skipped.push({ id: skill.id, reason: `would exceed the ${options.tokenBudget}-token skill budget` })
+      skipped.push({ id: skill.id, reason: `would exceed the ${options.tokenBudget} token budget for skill context` })
       continue
     }
     used += tokens

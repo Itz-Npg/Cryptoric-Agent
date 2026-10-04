@@ -8,15 +8,17 @@ function fsFixture(files: Record<string, string>) {
       const key = Object.keys(files).find((f) => f.endsWith(path.replace(/\\/g, '/')) || path.endsWith(f))
       return key ? (files[key] as string) : null
     },
-    listDir: async (path: string): Promise<string[]> => {
-      const normalized = path.replace(/\\/g, '/').replace(/\/$/, '')
+    listDir: async (root: string): Promise<string[]> => {
+      const prefix = root.replace(/\\/g, '/').replace(/\/+$/, '')
       const names = new Set<string>()
       for (const file of Object.keys(files)) {
-        const rel = normalized === '' ? file : file.slice(normalized.length + 1)
+        let rel = file.replace(/\\/g, '/').replace(/^\/+/, '')
+        if (prefix && rel.startsWith(prefix)) rel = rel.slice(prefix.length + 1)
         if (!rel || rel.startsWith('..')) continue
         names.add(rel.split('/')[0] as string)
       }
-      return [...names]
+      // readdir order is unspecified; sort so the fixture is deterministic.
+      return [...names].sort()
     },
     isGitRepo: async () => false
   }

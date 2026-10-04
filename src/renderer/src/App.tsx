@@ -1,67 +1,60 @@
 /**
- * Cryptoric Agent workbench.
+ * Cryptoric Agent shell.
  *
- * Information architecture (DESIGN.md, "Instrument Console"):
+ * Information architecture:
  *
- *   ┌ topbar ─ brand · Project · Search · ⌘K · Chan status ────────────┐
- *   │ rail │                  main workspace               │  chat    │
- *   │ Home │                                                   │ Cryptoric│
- *   │ Files│                                                   │  Chan    │
- *   │ Agent│                                                   │          │
- *   │ Tasks│                                                   │ activity │
- *   │ Tools│                                                   │          │
- *   ├ dock ─ Environment │ Git │ Terminal │ Processes │ Changes ──────┤
+ *   rail (60px, expandable)  │  contextual stage
+ *   topbar: brand · project · … · palette · model · balance · Chan
+ *   statusbar: runtimes · branch · changes · ready · version
  *
- * Three nested grids (.workspace → .main → .dock). The nesting is deliberate:
- * a single flat grid lets auto-placement strand panes in unnamed cells.
+ * The stage shows one thing at a time. Home is a prompt; a project turns the
+ * stage into a working surface; Chan is reachable from the rail and never
+ * permanently consumes the centre when the developer is reading code.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import type {
-  AgentTask,
-  EnvironmentGap,
-  ProcessInfo,
-  ProjectProfile,
-  TerminalSessionInfo,
-  ToolStatus
-} from '@shared/types'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { EnvironmentGap, ProjectProfile } from '@shared/types'
 import { CommandPalette, type Command } from './palette/CommandPalette'
-import { Chip, EmptyState, RailIcon, Seal, Splitter, StatusBar3 } from './components/marks'
-import { ChatPanel } from './panes/ChatPanel'
-import { Dock } from './panes/Dock'
-import { HomeSurface, FilesSurface, AgentSurface, TasksSurface, ToolsSurface } from './panes/surfaces'
-import { describe, useAppStore } from './state/store'
+import {
+  Button,
+  Chip,
+  CryptoricMark,
+  Dot,
+  Icon,
+  Resizer,
+  toneForInstallState,
+  type IconName
+} from './components/primitives'
+import { HomeSurface } from './panes/Home'
+import { ChanPanel } from './panes/Chan'
+import { RuntimeManager, useRuntimeSummary } from './panes/RuntimeManager'
+import { Workspace, type WorkspaceView } from './panes/Workspace'
+import { ModelPicker, StatusBar, type BudgetSummary, type ModelSummary } from './panes/ModelPicker'
+import { SettingsSurface, ToolsSurface } from './panes/Settings'
+import { useAppState } from './state/useAppState'
+import { describe } from './state/store'
 
-const MIN_RAIL = 104
-const MAX_RAIL = 220
-const MIN_CHAT = 300
-const MAX_CHAT = 560
-const MIN_DOCK = 140
-const MAX_DOCK = 620
+type Section = 'home' | 'files' | 'agent' | 'tasks' | 'search' | 'environment' | 'settings'
 
-type Section = 'home' | 'files' | 'agent' | 'tasks' | 'tools'
-
-const SECTIONS: { id: Section; label: string }[] = [
-  { id: 'home', label: 'Home' },
-  { id: 'files', label: 'Files' },
-  { id: 'agent', label: 'Agent' },
-  { id: 'tasks', label: 'Tasks' },
-  { id: 'tools', label: 'Tools' }
+const NAV: { id: Section; label: string; icon: IconName }[] = [
+  { id: 'home', label: 'Home', icon: 'home' },
+  { id: 'files', label: 'Files', icon: 'files' },
+  { id: 'agent', label: 'Agent', icon: 'agent' },
+  { id: 'tasks', label: 'Tasks', icon: 'tasks' },
+  { id: 'search', label: 'Search', icon: 'search' },
+  { id: 'environment', label: 'Environment', icon: 'environment' },
+  { id: 'settings', label: 'Settings', icon: 'settings' }
 ]
 
 export function App() {
-  const { state, refreshEnvironment } = useAppStore()
+  const { state, actions } = useAppState()
+  const openProjectRef = useRef<(() => void) | null>(null)
 
   const [section, setSection] = useState<Section>('home')
-  const [railWidth, setRailWidth] = useState(132)
-  const [chatWidth, setChatWidth] = useState(340)
-  const [dockHeight, setDockHeight] = useState(232)
+  const [railOpen, setRailOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
-  const [gaps, setGaps] = useState<EnvironmentGap[]>([])
-  const [notice, setNotice] = useState<string | null>(null)
+  const [view, setView] = useState<WorkspaceView>('files')
   const [theme, setTheme] = useState<'graphite' | 'bone'>('graphite')
-
-  // ---------------------------------------------------------------- effects
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -73,75 +66,18 @@ export function App() {
         e.preventDefault()
         setPaletteOpen((v) => !v)
       }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault()
+        setRailOpen((v) => !v)
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
+        e.preventDefault()
+        void openProjectRef.current?.()
+      }
       if (e.key === 'Escape') setPaletteOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
-
-  const refreshGaps = useCallback(async () => {
-    if (!state.project) {
-      setGaps([])
-      return
-    }
-    try {
-      setGaps(await window.cryptoric.project.gaps())
-    } catch (err) {
-      setNotice(describe(err))
-    }
-  }, [state.project])
-
-  useEffect(() => {
-    void refreshGaps()
-  }, [refreshGaps, state.snapshotId])
-
-  // ---------------------------------------------------------------- actions
-
-  const handleInstall = useCallback(
-    async (toolId: string) => {
-      try {
-        const outcome = await window.cryptoric.env.install(toolId)
-        setNotice(
-          outcome.ok
-            ? `${toolId} installed and verified · environment refreshed (snapshot ${outcome.snapshotBefore} → ${outcome.snapshotAfter}) · Cryptoric Agent did not restart`
-            : `Install failed: ${outcome.error ?? 'unknown error'}`
-        )
-        await refreshEnvironment()
-        await refreshGaps()
-      } catch (err) {
-        setNotice(describe(err))
-      }
-    },
-    [refreshEnvironment, refreshGaps]
-  )
-
-  const handleRefreshEnv = useCallback(async () => {
-    try {
-      await window.cryptoric.env.refresh()
-      await refreshEnvironment()
-      await refreshGaps()
-      setNotice('Environment refreshed. New shells get the updated PATH; existing ones were preserved.')
-    } catch (err) {
-      setNotice(describe(err))
-    }
-  }, [refreshEnvironment, refreshGaps])
-
-  const openProject = useCallback(async () => {
-    try {
-      const project = await window.cryptoric.project.open()
-      setNotice(`Opened ${project.name} — ${project.kind}, ${project.manifests.length} manifest(s)`)
-      setSection('files')
-    } catch (err) {
-      setNotice(describe(err))
-    }
-  }, [])
-
-  const submitTask = useCallback(async (prompt: string) => {
-    try {
-      await window.cryptoric.agent.submit(prompt)
-    } catch (err) {
-      setNotice(describe(err))
-    }
   }, [])
 
   const busy = useMemo(
@@ -149,267 +85,274 @@ export function App() {
     [state.tasks]
   )
 
-  // ---------------------------------------------------------------- palette
+  const openProject = useCallback(async () => {
+    await actions.openProject()
+    setSection('files')
+  }, [actions])
+
+  openProjectRef.current = () => {
+    void openProject()
+  }
 
   const commands = useMemo<Command[]>(
     () => [
+      { id: 'project.open', group: 'Workspace', title: 'Open project…', hint: 'Detect manifests and required runtimes', run: () => void openProject() },
+      ...NAV.map((n) => ({ id: `nav.${n.id}`, group: 'Go to', title: n.label, run: () => setSection(n.id) })),
       {
-        id: 'project.open',
-        group: 'Workspace',
-        title: 'Open project…',
-        keys: 'Ctrl+O',
-        hint: 'Detect manifests, required runtimes and package manager',
-        run: openProject
+        id: 'view.files',
+        group: 'View',
+        title: 'Workspace → Files',
+        run: () => {
+          setSection('files')
+          setView('files')
+        }
       },
-      ...SECTIONS.map((s) => ({
-        id: `section.${s.id}`,
-        group: 'Go to',
-        title: s.label,
-        run: () => setSection(s.id)
-      })),
+      { id: 'view.diff', group: 'View', title: 'Workspace → Changes', run: () => { setSection('files'); setView('diff') } },
+      { id: 'view.terminal', group: 'View', title: 'Workspace → Terminal', run: () => { setSection('files'); setView('terminal') } },
+      { id: 'env.refresh', group: 'Environment', title: 'Refresh environment', hint: 'No restart required', run: () => void actions.refreshEnvironment() },
       {
         id: 'env.install',
         group: 'Environment',
         title: 'Install a missing runtime',
-        hint: gaps.length > 0 ? `Needed here: ${gaps.map((g) => g.label).join(', ')}` : 'No gaps detected',
-        available: () => gaps.length > 0,
-        run: () => handleInstall(gaps[0]?.toolId ?? 'node')
+        hint: state.gaps.length ? `Needed: ${state.gaps.map((g) => g.label).join(', ')}` : 'No gaps detected',
+        available: () => state.gaps.length > 0,
+        run: () => void actions.install(state.gaps[0]?.toolId ?? 'node')
       },
-      {
-        id: 'env.refresh',
-        group: 'Environment',
-        title: 'Refresh environment',
-        hint: 'Re-read the OS environment without restarting Cryptoric Agent',
-        run: handleRefreshEnv
-      },
-      {
-        id: 'env.inspect',
-        group: 'Environment',
-        title: 'Inspect all runtimes',
-        run: refreshEnvironment
-      },
+      { id: 'env.open', group: 'Environment', title: 'Open Runtime Manager', run: () => setSection('environment') },
       {
         id: 'theme.toggle',
         group: 'View',
-        title: `Switch to ${theme === 'graphite' ? 'Bone Ledger' : 'Graphite'} theme`,
+        title: `Switch to ${theme === 'graphite' ? 'Bone' : 'Graphite'} theme`,
         run: () => setTheme((t) => (t === 'graphite' ? 'bone' : 'graphite'))
+      },
+      {
+        id: 'rail.toggle',
+        group: 'View',
+        title: 'Expand navigation rail',
+        hint: 'Ctrl+B',
+        run: () => setRailOpen((v) => !v)
       },
       {
         id: 'diagnostics.run',
         group: 'Diagnostics',
         title: 'Run diagnostics',
         run: async () => {
-          try {
-            const report = await window.cryptoric.diagnostics.run()
-            const missing = report.tools.filter((t) => !t.ok).length
-            setNotice(
-              `Diagnostics — Electron ${report.app.electron} · Node ${report.app.node} · pid ${report.app.pid} · ${report.tools.length} runtimes (${missing} unavailable)`
-            )
-          } catch (err) {
-            setNotice(describe(err))
-          }
-        }
-      },
-      {
-        id: 'diagnostics.copy',
-        group: 'Diagnostics',
-        title: 'Copy diagnostics to clipboard',
-        run: async () => {
-          try {
-            await navigator.clipboard.writeText(JSON.stringify(await window.cryptoric.diagnostics.run(), null, 2))
-            setNotice('Diagnostics copied to clipboard.')
-          } catch (err) {
-            setNotice(describe(err))
-          }
+          const report = await actions.diagnostics()
+          actions.notify(
+            `Diagnostics — Electron ${report.app.electron} · Node ${report.app.node} · ${report.tools.filter((t) => !t.ok).length} runtime(s) unavailable`
+          )
         }
       },
       {
         id: 'skills.route',
         group: 'Skills',
-        title: 'Show skill routing for the last request',
-        hint: 'Which skills apply, and which were deliberately skipped',
+        title: 'Show skill routing',
+        hint: 'Which skills apply, and which were skipped',
         run: async () => {
-          try {
-            const d = await window.cryptoric.skill.route(state.transcript.at(-1)?.text ?? '')
-            setNotice(
-              d.skillIds.length > 0
-                ? `Loaded ${d.skillIds.length} skill(s) (~${d.estimatedTokens} tokens): ${d.skillIds.join(', ')}. ${d.skipped.length} skipped.`
-                : `No skill matched. ${d.skipped.length} skill(s) considered and skipped — nothing was dumped into context.`
-            )
-          } catch (err) {
-            setNotice(describe(err))
-          }
+          const d = await actions.routeSkills(state.transcript.at(-1)?.text ?? '')
+          actions.notify(
+            d.skillIds.length
+              ? `Loaded ${d.skillIds.join(', ')} (~${d.estimatedTokens} tokens). ${d.skipped.length} skill(s) skipped.`
+              : `No skill matched. ${d.skipped.length} considered and skipped — nothing was dumped into context.`
+          )
         }
       }
     ],
-    [theme, gaps, openProject, handleInstall, handleRefreshEnv, refreshEnvironment, state.transcript]
+    [theme, openProject, state.gaps, state.transcript, actions]
   )
-
-  // ----------------------------------------------------------------- render
 
   if (state.bootError) {
     return (
-      <div style={{ display: 'grid', placeContent: 'center', height: '100vh', gap: 'var(--space-4)' }}>
-        <EmptyState title="Cryptoric Agent could not start" hint={state.bootError} />
+      <div className="app">
+        <div className="empty-view">
+          <CryptoricMark size={44} />
+          <span className="title">Cryptoric Agent could not start</span>
+          <span className="subtitle" style={{ maxWidth: '52ch' }}>
+            {state.bootError}
+          </span>
+        </div>
       </div>
     )
   }
 
-  const shared = { project: state.project, gaps, tools: state.tools, notice: setNotice }
+  const runtimeSummary = useRuntimeSummary(state.tools)
 
   return (
-    <div
-      className="workspace"
-      style={
-        {
-          '--rail-width': `${railWidth}px`,
-          '--chat-width': `${chatWidth}px`,
-          '--dock-height': `${dockHeight}px`
-        } as React.CSSProperties
-      }
-    >
-      {/* ------------------------------------------------------------ topbar */}
+    <div className="app">
+      {/* ---------------------------------------------------------- topbar */}
       <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">
-            <BrandMark />
-          </span>
-          <span className="brand-name">Cryptoric</span>
-        </div>
-
-        <button className="topbar-item" onClick={() => void openProject()}>
-          {state.project ? state.project.name : 'Project'}
-          <span className="dim">·</span>
-          <span className="dim">open</span>
+        <button
+          className="topbar-brand"
+          onClick={() => setRailOpen((v) => !v)}
+          title="Toggle navigation (Ctrl+B)"
+        >
+          <CryptoricMark size={22} />
+          <span className="topbar-name">Cryptoric Agent</span>
         </button>
 
-        <button className="topbar-item" onClick={() => setSection('files')}>
-          Search files
-        </button>
-
-        <button className="topbar-item" onClick={() => setPaletteOpen(true)}>
-          Command palette <span className="kbd">Ctrl K</span>
+        <button className="topbar-project" onClick={() => void openProject()} title="Open project">
+          {state.project ? (
+            <>
+              <Icon name="files" size={14} />
+              <span className="truncate">{state.project.name}</span>
+            </>
+          ) : (
+            <>
+              <span style={{ color: 'var(--text-3)' }}>Open a project</span>
+            </>
+          )}
         </button>
 
         <div style={{ flex: 1 }} />
 
-        <span className="micro-label" style={{ marginRight: 'var(--space-2)' }}>
-          agent
-        </span>
+        <button className="topbar-btn" onClick={() => setPaletteOpen(true)}>
+          <Icon name="search" size={14} />
+          <span className="kbd">Ctrl K</span>
+        </button>
+
+        <ModelPicker
+          models={state.models}
+          budget={state.budget}
+          onSelect={(id) => void actions.selectModel(id)}
+          onConfigure={() => setSection('settings')}
+        />
+
         <button
-          className="topbar-item"
-          data-active={busy ? 'true' : undefined}
+          className="topbar-btn"
+          data-on={busy ? 'true' : undefined}
           onClick={() => setSection('agent')}
-          title={busy ? 'Cryptoric Chan is working' : 'Cryptoric Chan is idle'}
+          title={busy ? 'Cryptoric Chan is working' : 'Cryptoric Chan'}
         >
-          <Seal state={busy ? 'installing' : 'present'} />
+          <Dot tone={busy ? 'accent' : 'ok'} pulse={busy} />
           Chan
-          <StatusBar3 level={busy ? 2 : 1} label={busy ? 'working' : 'idle'} />
         </button>
       </header>
 
-      {/* --------------------------------------------------------------- main */}
-      <div className="main">
-        <nav className="rail" aria-label="Sections">
-          {SECTIONS.map((s) => (
+      {/* ------------------------------------------------------------ body */}
+      <div className="body">
+        <nav className="rail" data-open={railOpen} aria-label="Sections">
+          {NAV.map((item) => (
             <button
-              key={s.id}
-              className="rail-item"
-              aria-current={section === s.id ? 'page' : undefined}
-              onClick={() => setSection(s.id)}
+              key={item.id}
+              className="rail-btn"
+              data-section={item.id}
+              data-tip={item.label}
+              aria-current={section === item.id ? 'page' : undefined}
+              onClick={() => setSection(item.id)}
             >
-              <RailIcon id={s.id} />
-              {s.label}
+              <Icon name={item.icon} size={19} />
+              {railOpen && <span className="rail-label">{item.label}</span>}
             </button>
           ))}
           <div style={{ flex: 1 }} />
-          {!state.online && <Chip tone="error">offline</Chip>}
+          {!state.online && (
+            <span style={{ display: 'inline-flex', color: 'var(--warn)', padding: 6 }} title="Offline">
+              <Dot tone="warn" />
+            </span>
+          )}
         </nav>
-        <Splitter
-          orientation="x"
-          onDelta={(d) => setRailWidth((w) => clamp(w + d, MIN_RAIL, MAX_RAIL))}
-          onReset={() => setRailWidth(132)}
-        />
 
-        <main className="workspace-surface">
-          {section === 'home' && <HomeSurface {...shared} onOpen={() => void openProject()} />}
-          {section === 'files' && <FilesSurface {...shared} />}
-          {section === 'agent' && <AgentSurface {...shared} onSubmit={(p) => void submitTask(p)} />}
-          {section === 'tasks' && <TasksSurface tasks={state.tasks} timeline={state.timeline} />}
-          {section === 'tools' && <ToolsSurface {...shared} />}
-        </main>
+        <div className="stage">
+          {section === 'home' && (
+            <HomeSurface
+              project={state.project}
+              ready={state.project !== null}
+              onSubmit={(p) => void actions.submitTask(p)}
+              onOpenProject={() => void openProject()}
+            />
+          )}
 
-        <Splitter
-          orientation="x"
-          onDelta={(d) => setChatWidth((w) => clamp(w - d, MIN_CHAT, MAX_CHAT))}
-          onReset={() => setChatWidth(340)}
-        />
+          {(section === 'files' || section === 'search') && (
+            <Workspace
+              view={section === 'search' ? 'files' : view}
+              onView={setView}
+              project={state.project}
+              tasks={state.tasks}
+              timeline={state.timeline}
+              terminals={state.terminals}
+              processes={state.processes}
+              onRefreshProcessTree={actions.syncTerminals}
+            />
+          )}
 
-        <ChatPanel
-          transcript={state.transcript}
-          approvals={state.approvals}
-          timeline={state.timeline}
-          tasks={state.tasks}
-          workspaceState={state.workspaceState}
-          onSubmit={(p) => void submitTask(p)}
-          onResolveApproval={(id, approved) => void window.cryptoric.approval.resolve(id, approved)}
-        />
+          {section === 'agent' && (
+            <ChanPanel
+              transcript={state.transcript}
+              timeline={state.timeline}
+              tasks={state.tasks}
+              approvals={state.approvals}
+              workspaceState={state.workspaceState}
+              onSubmit={(p) => void actions.submitTask(p)}
+              onResolveApproval={(id, approved) => void actions.resolveApproval(id, approved)}
+            />
+          )}
+
+          {section === 'tasks' && (
+            <div className="surface">
+              <TasksOverview tasks={state.tasks} timeline={state.timeline} />
+            </div>
+          )}
+
+          {section === 'environment' && (
+            <RuntimeManager
+              tools={state.tools}
+              install={state.install}
+              project={state.project}
+              gaps={state.gaps}
+              snapshotId={state.snapshotId}
+              onInstall={(id) => void actions.install(id)}
+              onRefresh={() => void actions.refreshEnvironment()}
+            />
+          )}
+
+          {section === 'settings' && (
+            <SettingsSurface
+              state={state}
+              models={state.models}
+              onSelectModel={(id) => void actions.selectModel(id)}
+              onSetTheme={setTheme}
+              onRefresh={() => void actions.refreshEnvironment()}
+            />
+          )}
+        </div>
       </div>
 
-      <Splitter
-        orientation="y"
-        onDelta={(d) => setDockHeight((h) => clamp(h - d, MIN_DOCK, MAX_DOCK))}
-        onReset={() => setDockHeight(232)}
+      {/* -------------------------------------------------------- statusbar */}
+      <StatusBar
+        runtimeSummary={runtimeSummary}
+        branch={state.branch}
+        changes={state.changeCount}
+        ready={!busy}
+        version={state.version}
+        online={state.online}
       />
 
-      {/* --------------------------------------------------------------- dock */}
-      <Dock
-        tools={state.tools}
-        install={state.install}
-        project={state.project}
-        gaps={gaps}
-        terminals={state.terminals}
-        processes={state.processes}
-        tasks={state.tasks}
-        snapshotId={state.snapshotId}
-        onInstall={(id) => void handleInstall(id)}
-        onRefreshEnv={() => void handleRefreshEnv()}
-        onCreateTerminal={() => void window.cryptoric.terminal.create()}
-        onStopProcess={(id) => void window.cryptoric.process.stop(id)}
-        onRestartProcess={(id) => void window.cryptoric.process.restart(id)}
-        onStopTask={(id) => void window.cryptoric.agent.stop(id)}
-        onPauseTask={(id) => void window.cryptoric.agent.pause(id)}
-        onResumeTask={(id) => void window.cryptoric.agent.resume(id)}
-        onRefreshTree={() => setSection('files')}
-        onNotice={setNotice}
-      />
-
-      {notice && (
+      {state.notice && (
         <div
           role="status"
           style={{
             position: 'fixed',
-            bottom: 14,
+            bottom: 40,
             left: '50%',
             transform: 'translateX(-50%)',
-            background: 'var(--surface-overlay)',
-            border: '1px solid var(--hairline-strong)',
-            borderRadius: 'var(--radius-sm)',
-            padding: 'var(--space-3) var(--space-4)',
-            boxShadow: 'var(--elevation-popover)',
+            maxWidth: 'min(760px, 80vw)',
             display: 'flex',
             alignItems: 'center',
-            gap: 'var(--space-4)',
-            maxWidth: 'min(860px, 78vw)',
-            zIndex: 30
+            gap: 12,
+            padding: '11px 12px 11px 16px',
+            borderRadius: 'var(--r-md)',
+            background: 'var(--surface-3)',
+            border: '1px solid var(--line)',
+            boxShadow: 'var(--elev-3)',
+            zIndex: 80
           }}
         >
-          <span className="data selectable" style={{ fontSize: 'var(--text-data)' }}>
-            {notice}
+          <span className="selectable" style={{ color: 'var(--text-1)', fontSize: 'var(--t-sm)' }}>
+            {state.notice}
           </span>
-          <button className="btn" data-variant="ghost" onClick={() => setNotice(null)}>
-            dismiss
-          </button>
+          <Button variant="ghost" onClick={() => actions.notify(null)}>
+            Dismiss
+          </Button>
         </div>
       )}
 
@@ -418,26 +361,84 @@ export function App() {
   )
 }
 
-/** The Cryptoric mark, drawn on the same 16px grid as every other glyph. */
-function BrandMark() {
+// ------------------------------------------------------------------- tasks
+
+function TasksOverview({
+  tasks,
+  timeline
+}: {
+  tasks: import('@shared/types').AgentTask[]
+  timeline: import('@shared/types').TimelineEntry[]
+}) {
+  const recent = timeline.slice(-60).reverse()
+
+  if (tasks.length === 0 && recent.length === 0) {
+    return (
+      <div className="empty-view">
+        <span className="title">Nothing running</span>
+        <span className="subtitle" style={{ maxWidth: '42ch' }}>
+          Tasks you start will appear here with their full execution history.
+        </span>
+      </div>
+    )
+  }
+
   return (
-    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M10.5 2.5H13v11h-2.5M5.5 13.5H3v-11h2.5" fill="none" stroke="currentColor" strokeWidth="1.25" />
-      <path d="M6 6l4 4M10 6l-4 4" stroke="currentColor" strokeWidth="1.25" opacity="0.45" />
-      <circle cx="8" cy="8" r="1.6" fill="currentColor" />
-    </svg>
+    <div className="split" style={{ gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', flex: 1 }}>
+      <div className="surface" style={{ padding: 20, overflow: 'auto' }}>
+        <div className="section-head">Tasks</div>
+        <div style={{ display: 'grid', gap: 8 }}>
+          {tasks.map((task) => (
+            <div key={task.id} className="card card-pad" style={{ display: 'grid', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Dot tone={toneForInstallState(task.status)} />
+                <span style={{ fontWeight: 550 }} className="truncate">
+                  {task.title}
+                </span>
+                <div style={{ flex: 1 }} />
+                <Chip tone={task.status === 'COMPLETED' ? 'ok' : task.status === 'FAILED' ? 'error' : 'idle'}>
+                  {task.status}
+                </Chip>
+              </div>
+              <span className="caption">{task.role.replace(/_/g, ' ').toLowerCase()}</span>
+              {task.error && <span style={{ color: 'var(--err)', fontSize: 'var(--t-sm)' }}>{task.error}</span>}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Button variant="ghost" onClick={() => void window.cryptoric.agent.pause(task.id)}>
+                  Pause
+                </Button>
+                <Button variant="ghost" onClick={() => void window.cryptoric.agent.stop(task.id)}>
+                  Stop
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="surface" style={{ padding: 20, overflow: 'auto' }}>
+        <div className="section-head">Activity</div>
+        <div style={{ display: 'grid', gap: 7 }}>
+          {recent.map((entry) => (
+            <div key={entry.id} style={{ display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', gap: 10, alignItems: 'baseline' }}>
+              <span className="caption mono" style={{ fontSize: 'var(--t-xs)' }}>
+                {entry.at.slice(11, 19)}
+              </span>
+              <span
+                className="mono selectable"
+                style={{ fontSize: 'var(--t-xs)', color: entry.status === 'error' ? 'var(--err)' : 'var(--text-2)' }}
+              >
+                {entry.message}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   )
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value))
-}
+// ------------------------------------------------------------------ tools
 
-export type SurfaceProps = {
-  project: ProjectProfile | null
-  gaps: EnvironmentGap[]
-  tools: ToolStatus[]
-  notice: (message: string | null) => void
-}
-
-export type { AgentTask, ProcessInfo, TerminalSessionInfo }
+export { ToolsSurface, toneForInstallState, describe }
+export type { EnvironmentGap, ProjectProfile, BudgetSummary, ModelSummary }
+export { Resizer }

@@ -99,6 +99,17 @@ export const SCHEMAS = {
     scope: z.string().optional()
   }),
 
+  [CHANNELS.modelsCatalog]: z.object({}),
+  [CHANNELS.modelsSelect]: z.object({ modelId: z.string().min(1) }),
+  [CHANNELS.modelsAvailable]: z.object({}),
+  [CHANNELS.modelsSetBudget]: z.object({ coins: z.number().int().min(0).max(100_000) }),
+  [CHANNELS.modelsSetProvider]: z.object({
+    provider: z.enum(['none', 'ollama', 'openai-compatible']),
+    endpoint: z.string().max(400),
+    model: z.string().max(200),
+    credentialKey: z.string().max(120).nullable()
+  }),
+
   [CHANNELS.diagnostics]: z.object({})
 } as const
 

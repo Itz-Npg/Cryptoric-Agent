@@ -73,6 +73,13 @@ export const CHANNELS = {
   permissionList: 'permission:list',
   permissionSet: 'permission:set',
 
+  // --- models
+  modelsCatalog: 'models:catalog',
+  modelsSelect: 'models:select',
+  modelsAvailable: 'models:available',
+  modelsSetBudget: 'models:set-budget',
+  modelsSetProvider: 'models:set-provider',
+
   // --- diagnostics
   diagnostics: 'diagnostics:run',
 

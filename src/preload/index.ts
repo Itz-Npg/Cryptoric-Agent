@@ -105,6 +105,30 @@ export interface DiagnosticsReport {
   security: Record<string, unknown>
 }
 
+export interface ModelSummaryDto {
+  id: string
+  label: string
+  provider: string
+  kind: 'local' | 'hosted'
+  inputPerMillion: number | null
+  outputPerMillion: number | null
+  active: boolean
+}
+
+export interface BudgetSummaryDto {
+  usedCoins: number
+  budgetCoins: number
+  day: string
+  exceeded: boolean
+  enabled: boolean
+  model: string
+}
+
+export interface ModelCatalogSnapshot {
+  models: ModelSummaryDto[]
+  budget: BudgetSummaryDto
+}
+
 const api = {
   app: {
     info: () => invoke<AppInfo>(CHANNELS.appInfo, {})
@@ -180,6 +204,18 @@ const api = {
     list: () => invoke<PermissionRule[]>(CHANNELS.permissionList, {}),
     set: (domain: string, decision: 'allow' | 'ask' | 'deny', scope?: string) =>
       invoke<PermissionRule[]>(CHANNELS.permissionSet, { domain, decision, scope })
+  },
+  models: {
+    catalog: () => invoke<ModelCatalogSnapshot>(CHANNELS.modelsCatalog, {}),
+    select: (modelId: string) => invoke<ModelCatalogSnapshot>(CHANNELS.modelsSelect, { modelId }),
+    available: () => invoke<{ ok: boolean; models: { id: string }[]; error: string | null }>(CHANNELS.modelsAvailable, {}),
+    setBudget: (coins: number) => invoke<ModelCatalogSnapshot>(CHANNELS.modelsSetBudget, { coins }),
+    setProvider: (input: {
+      provider: 'none' | 'ollama' | 'openai-compatible'
+      endpoint: string
+      model: string
+      credentialKey: string | null
+    }) => invoke<ModelCatalogSnapshot>(CHANNELS.modelsSetProvider, input)
   },
   diagnostics: {
     run: () => invoke<DiagnosticsReport>(CHANNELS.diagnostics, {})

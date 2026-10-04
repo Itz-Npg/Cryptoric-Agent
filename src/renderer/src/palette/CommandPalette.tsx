@@ -1,13 +1,14 @@
 /**
  * Command palette (Ctrl/Cmd + K).
  *
- * Styled as an operator overlay rather than a search modal: monospace command
- * ids, a grouped result list, and keyboard-first navigation. It controls the
- * whole application, including actions that only exist in the main process
- * (installing a runtime, refreshing the environment, exporting diagnostics).
+ * A calm overlay rather than a search modal: one field, ranked results, no
+ * decorative chrome. It drives the whole application, including actions that
+ * only exist in the main process (installing a runtime, refreshing the
+ * environment, exporting diagnostics).
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { fuzzyScore } from '../../../shared/fuzzy'
 
 export interface Command {
   id: string
@@ -34,13 +35,23 @@ export function CommandPalette({
   const listRef = useRef<HTMLDivElement>(null)
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
     const available = commands.filter((c) => c.available?.() ?? true)
+    const q = query.trim()
     if (!q) return available.slice(0, 40)
-    // Subsequence match so "ri" finds "Refresh environment".
+    // Ranked subsequence match so "ri" finds "Refresh environment" and "open"
+    // finds "Open project", with the strongest candidate on top.
     return available
-      .filter((c) => subsequence(`${c.group} ${c.title} ${c.id}`, q))
+      .map((command) => ({
+        command,
+        score: Math.max(
+          fuzzyScore(command.title, q),
+          fuzzyScore(`${command.group} ${command.title}`, q) - 2
+        )
+      }))
+      .filter((hit) => hit.score >= 0)
+      .sort((a, b) => b.score - a.score)
       .slice(0, 40)
+      .map((hit) => hit.command)
   }, [commands, query])
 
   useEffect(() => setCursor(0), [query])
@@ -48,6 +59,12 @@ export function CommandPalette({
   useEffect(() => {
     if (!open) setQuery('')
   }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const active = listRef.current?.querySelector<HTMLElement>('[data-active="true"]')
+    active?.scrollIntoView({ block: 'nearest' })
+  }, [cursor, open])
 
   const execute = async (command: Command | undefined): Promise<void> => {
     if (!command) return
@@ -58,50 +75,17 @@ export function CommandPalette({
   if (!open) return null
 
   return (
-    <div
-      onClick={onClose}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(7, 8, 10, 0.62)',
-        display: 'grid',
-        placeItems: 'start center',
-        paddingTop: '14vh',
-        zIndex: 50
-      }}
-      role="presentation"
-    >
+    <div className="palette-scrim" role="presentation" onClick={onClose}>
       <div
-        onClick={(e) => e.stopPropagation()}
+        className="palette-panel"
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
-        style={{
-          width: 'min(720px, 90vw)',
-          background: 'var(--surface-overlay)',
-          border: '1px solid var(--hairline-strong)',
-          borderRadius: 'var(--radius-md)',
-          boxShadow: 'var(--elevation-overlay)',
-          overflow: 'hidden',
-          display: 'flex',
-          flexDirection: 'column',
-          maxHeight: '62vh',
-          animation: 'palette-rise 120ms var(--ease-out)'
-        }}
+        onClick={(e) => e.stopPropagation()}
       >
-        <style>{`@keyframes palette-rise { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }`}</style>
-
         <input
           autoFocus
-          className="input"
-          style={{
-            height: 42,
-            border: 'none',
-            borderBottom: '1px solid var(--hairline)',
-            borderRadius: 0,
-            fontSize: 'var(--text-body)',
-            background: 'transparent'
-          }}
+          className="palette-input"
           placeholder="Type a command…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -123,66 +107,52 @@ export function CommandPalette({
           aria-label="Command search"
         />
 
-        <div ref={listRef} style={{ overflow: 'auto', padding: 'var(--space-2)' }}>
+        <div ref={listRef} className="palette-list scroll">
           {filtered.length === 0 && (
-            <div className="empty" style={{ padding: 'var(--space-6)' }}>
-              <span className="empty-title">No matching command</span>
+            <div className="empty-view" style={{ height: 'auto', padding: '30px 20px' }}>
+              <span className="subtitle">No matching command</span>
             </div>
           )}
+
           {filtered.map((command, index) => {
             const groupChanged = index === 0 || filtered[index - 1]?.group !== command.group
+            const active = index === cursor
             return (
               <div key={command.id}>
                 {groupChanged && (
-                  <div style={{ padding: 'var(--space-3) var(--space-3) var(--space-2)' }}>
-                    <span className="micro-label">{command.group}</span>
+                  <div className="palette-group">
+                    <span>{command.group}</span>
                   </div>
                 )}
                 <button
+                  className="palette-item"
+                  data-active={active ? 'true' : undefined}
                   onMouseEnter={() => setCursor(index)}
                   onClick={() => void execute(command)}
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'minmax(0, 1fr) auto',
-                    alignItems: 'center',
-                    gap: 'var(--space-4)',
-                    width: '100%',
-                    padding: 'var(--space-2) var(--space-3)',
-                    border: 'none',
-                    borderRadius: 'var(--radius-xs)',
-                    background: index === cursor ? 'var(--surface-selected)' : 'transparent',
-                    color: index === cursor ? 'var(--ink-primary)' : 'var(--ink-secondary)',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    font: 'inherit'
-                  }}
                 >
-                  <span style={{ display: 'grid', minWidth: 0 }}>
-                    <span style={{ fontSize: 'var(--text-body)' }}>{command.title}</span>
-                    {command.hint && (
-                      <span className="ledger-meta" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {command.hint}
-                      </span>
-                    )}
+                  <span className="palette-item-label">
+                    <span className="truncate">{command.title}</span>
+                    {command.hint && <span className="palette-item-hint truncate">{command.hint}</span>}
                   </span>
-                  {command.keys && <span className="micro-label">{command.keys}</span>}
+                  {command.keys && <span className="kbd">{command.keys}</span>}
                 </button>
               </div>
             )
           })}
         </div>
+
+        <div className="palette-foot">
+          <span>
+            <span className="kbd">↑</span> <span className="kbd">↓</span> to navigate
+          </span>
+          <span>
+            <span className="kbd">↵</span> to run
+          </span>
+          <span>
+            <span className="kbd">esc</span> to dismiss
+          </span>
+        </div>
       </div>
     </div>
   )
-}
-
-/** Fuzzy subsequence match: every query character appears in order. */
-export function subsequence(haystack: string, needle: string): boolean {
-  let i = 0
-  for (const char of needle) {
-    i = haystack.indexOf(char, i)
-    if (i === -1) return false
-    i += 1
-  }
-  return true
-}
+}

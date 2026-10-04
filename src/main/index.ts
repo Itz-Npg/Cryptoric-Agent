@@ -11,8 +11,8 @@
  * first snapshot, so the UI never renders against a half-initialised registry.
  */
 
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, safeStorage, shell, Menu } from 'electron'
-import { existsSync } from 'node:fs'
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, safeStorage, screen, shell, Menu } from 'electron'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CHANNELS } from '@shared/ipc-channels'
@@ -31,6 +31,7 @@ import { createStore, CredentialStore, type AppState } from './services/store'
 import { detectProject, computeGaps } from './services/project/detect'
 import { FileService } from './services/fs/files'
 import { GitService } from './services/git/service'
+import { ModelGateway, MODEL_CATALOG, type ModelConfig } from './services/models/gateway'
 import type { ProjectProfile, ToolStatus, MainEvent } from '@shared/types'
 
 const dirname_ = fileURLToPath(new URL('.', import.meta.url))
@@ -132,6 +133,26 @@ async function boot(): Promise<Services> {
   const files = new FileService(getRoots)
   const git = new GitService(getRoots)
 
+  // Model gateway. Reads its API key from the OS-encrypted credential store;
+  // the key is never written to the plain state file.
+  let activeModelId = state.modelName || 'local-default'
+  const gateway = new ModelGateway({
+    config: {
+      provider: state.modelProvider,
+      endpoint: state.modelEndpoint,
+      model: activeModelId,
+      credentialKey: 'model-api-key',
+      dailyBudgetCoins: state.dailyBudgetUsd * 100
+    },
+    getApiKey: () => credentialsRef.get('model-api-key'),
+    onUsage: () => undefined
+  })
+  // Declared after `boot` closes over `credentials`; resolved lazily.
+  const credentialsRef: { get(key: string): string | null } = { get: () => null }
+  const bindCredentials = (c: CredentialStore): void => {
+    credentialsRef.get = (key: string) => c.get(key)
+  }
+
   const agent = new AgentRuntime(
     {
       tools,
@@ -176,6 +197,7 @@ async function boot(): Promise<Services> {
     store,
     files,
     git,
+    gateway,
     getProject: () => project,
     setProject: async (root) => {
       const detected = await detectProject(root)
@@ -201,6 +223,7 @@ async function boot(): Promise<Services> {
     encryptString: (v) => safeStorage.encryptString(v),
     decryptString: (b) => safeStorage.decryptString(b)
   })
+  bindCredentials(credentials)
 
   return {
     env, terminals, processes, tools, policy, approvals, skills, agent, router, store, credentials,
@@ -220,13 +243,14 @@ interface RouteDeps {
   store: ReturnType<typeof createStore>
   files: FileService
   git: GitService
+  gateway: ModelGateway
   getProject(): ProjectProfile | null
   setProject(root: string): Promise<ProjectProfile>
   push(event: MainEvent): void
 }
 
 function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
-  const { env, terminals, processes, tools, policy, approvals, skills, agent, store, files, git } = deps
+  const { env, terminals, processes, tools, policy, approvals, skills, agent, store, files, git, gateway } = deps
 
   // ------------------------------------------------------------- bootstrap
   router.register(CHANNELS.appInfo, {
@@ -464,6 +488,85 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
     }
   })
 
+  // -------------------------------------------------------------- models
+  const modelSnapshot = () => {
+    const config = gateway.getConfig()
+    const budget = gateway.budget()
+    return {
+      models: MODEL_CATALOG.map((m) => ({
+        id: m.id,
+        label: m.label,
+        provider: m.provider,
+        kind: m.kind,
+        inputPerMillion: m.inputPerMillion,
+        outputPerMillion: m.outputPerMillion,
+        active: m.id === config.model
+      })),
+      budget: {
+        usedCoins: budget.usedCoins,
+        budgetCoins: budget.budgetCoins,
+        day: budget.day,
+        exceeded: budget.exceeded,
+        enabled: gateway.isEnabled(),
+        model: config.model
+      }
+    }
+  }
+
+  router.register(CHANNELS.modelsCatalog, {
+    domain: 'env.detect',
+    requiresApproval: false,
+    handler: () => modelSnapshot()
+  })
+  router.register(CHANNELS.modelsSelect, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: (args: { modelId: string }) => {
+      const config: ModelConfig = { ...gateway.getConfig(), model: args.modelId }
+      gateway.setConfig(config)
+      void store.set({ modelName: args.modelId })
+      return modelSnapshot()
+    }
+  })
+  router.register(CHANNELS.modelsAvailable, {
+    domain: 'network.read',
+    requiresApproval: false,
+    handler: () => gateway.listAvailable()
+  })
+  router.register(CHANNELS.modelsSetBudget, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: (args: { coins: number }) => {
+      gateway.setConfig({ ...gateway.getConfig(), dailyBudgetCoins: args.coins })
+      void store.set({ dailyBudgetUsd: args.coins / 100 })
+      return modelSnapshot()
+    }
+  })
+  router.register(CHANNELS.modelsSetProvider, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: (args: {
+      provider: 'none' | 'ollama' | 'openai-compatible'
+      endpoint: string
+      model: string
+      credentialKey: string | null
+    }) => {
+      gateway.setConfig({
+        ...gateway.getConfig(),
+        provider: args.provider,
+        endpoint: args.endpoint,
+        model: args.model,
+        credentialKey: args.credentialKey
+      })
+      void store.set({
+        modelProvider: args.provider,
+        modelEndpoint: args.endpoint,
+        modelName: args.model
+      })
+      return modelSnapshot()
+    }
+  })
+
   // ----------------------------------------------------------- diagnostics
   router.register(CHANNELS.diagnostics, {
     domain: 'env.detect',
@@ -484,7 +587,8 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
           sandbox: true,
           nodeIntegration: false,
           permissionTierForInstall: tierForDomain('env.install')
-        }
+        },
+        models: modelSnapshot()
       }
     }
   })
@@ -512,6 +616,31 @@ function appIconPath(): string {
   return ''
 }
 
+/**
+ * Keep a restored window inside the work area of the display it sits on.
+ *
+ * Windows restores the previous "normal" bounds when a maximized window is
+ * un-maximized. If those bounds are stale — a monitor was unplugged, the
+ * resolution changed, or something resized the window while it was maximized —
+ * the window comes back larger than the screen. The renderer then lays out at
+ * the stale viewport and the status bar ends up behind the taskbar, with no
+ * way to drag the window back into view. Clamping on every restore/resize makes
+ * the window always land somewhere the user can reach.
+ */
+function clampToWorkArea(win: BrowserWindow): void {
+  if (win.isDestroyed() || win.isMinimized() || win.isMaximized() || win.isFullScreen()) return
+
+  const bounds = win.getBounds()
+  const area = screen.getDisplayMatching(bounds).workArea
+  const width = Math.min(bounds.width, area.width)
+  const height = Math.min(bounds.height, area.height)
+  const x = Math.min(Math.max(bounds.x, area.x), area.x + Math.max(0, area.width - width))
+  const y = Math.min(Math.max(bounds.y, area.y), area.y + Math.max(0, area.height - height))
+
+  if (x === bounds.x && y === bounds.y && width === bounds.width && height === bounds.height) return
+  win.setBounds({ x, y, width, height })
+}
+
 function createWindow(): BrowserWindow {
   const iconPath = appIconPath()
   const window = new BrowserWindow({
@@ -534,32 +663,30 @@ function createWindow(): BrowserWindow {
     }
   })
 
-  window.once('ready-to-show', () => window.show())
+  window.once('ready-to-show', () => {
+    clampToWorkArea(window)
+    window.show()
+  })
 
-  if (process.env['CRYPTORIC_DEBUG_DUMP']) {
-    window.webContents.on('console-message', (_e, level, message) => console.log('[renderer]', level, message))
-    window.webContents.once('did-finish-load', () => {
-      setTimeout(() => {
-        void window.webContents
-          .executeJavaScript(
-            `JSON.stringify({
-              bridge: typeof window.cryptoric === 'object',
-              panes: document.querySelectorAll('.pane').length,
-              ledgers: document.querySelectorAll('.ledger-row').length,
-              text: document.body.innerText.slice(0, 400)
-            })`
-          )
-          .then((v) => {
-            console.log('CRYPTORIC_DUMP', v)
-            app.quit()
-          })
-          .catch((e: unknown) => {
-            console.log('CRYPTORIC_DUMP_ERROR', String(e))
-            app.quit()
-          })
-      }, 5000)
-    })
+  // Re-clamp whenever the window returns to a normal size, and debounce the
+  // resize path so a drag does not fight the user's window placement.
+  let clampTimer: NodeJS.Timeout | null = null
+  const scheduleClamp = (): void => {
+    if (clampTimer) clearTimeout(clampTimer)
+    clampTimer = setTimeout(() => clampToWorkArea(window), 120)
+    clampTimer.unref?.()
   }
+  window.on('unmaximize', () => clampToWorkArea(window))
+  window.on('restore', () => clampToWorkArea(window))
+  window.on('resize', scheduleClamp)
+  window.on('move', scheduleClamp)
+  window.on('closed', () => {
+    if (clampTimer) clearTimeout(clampTimer)
+  })
+
+  void attachDesignReviewHooks(window)
+
+  // Deny navigation and popups outright: the renderer must never navigate away.
 
   // Deny navigation and popups outright: the renderer must never navigate away.
   window.webContents.on('will-navigate', (event) => event.preventDefault())
@@ -576,6 +703,130 @@ function createWindow(): BrowserWindow {
   }
 
   return window
+}
+
+/**
+ * Development-only visual review hooks.
+ *
+ * `CRYPTORIC_SHOT=<dir>` renders the real window at each rail destination and
+ * writes PNGs, so the design can be judged from the actual product surface
+ * instead of from a mock. `CRYPTORIC_SHOT_SIZE=1280x720` sets the viewport, and
+ * `CRYPTORIC_DEBUG_DUMP=1` prints a layout/console report. Both quit the app
+ * when finished; neither is reachable without an explicit env var.
+ */
+async function attachDesignReviewHooks(window: BrowserWindow): Promise<void> {
+  const shotDir = process.env['CRYPTORIC_SHOT']
+  const dump = Boolean(process.env['CRYPTORIC_DEBUG_DUMP'])
+  if (!shotDir && !dump) return
+
+  window.webContents.on('console-message', (_e, level, message) => {
+    // 3 === error in Electron's console-message event.
+    if (level >= 2) console.log('[renderer]', level, message)
+  })
+
+  await new Promise<void>((resolve) => {
+    if (window.webContents.isLoading()) {
+      window.webContents.once('did-finish-load', () => resolve())
+    } else {
+      resolve()
+    }
+  })
+  await delay(1200)
+
+  if (dump) {
+    const report = await window.webContents.executeJavaScript(
+      `JSON.stringify({
+        bridge: typeof window.cryptoric === 'object',
+        rail: document.querySelectorAll('.rail-btn').length,
+        stage: !!document.querySelector('.stage'),
+        cards: document.querySelectorAll('.card').length,
+        overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        text: document.body.innerText.slice(0, 600)
+      })`
+    )
+    console.log('CRYPTORIC_DUMP', report)
+    if (!shotDir) {
+      app.quit()
+      return
+    }
+  }
+
+  if (!shotDir) return
+
+  const [width, height] = (process.env['CRYPTORIC_SHOT_SIZE'] ?? '1600x1000').split('x').map(Number)
+  if (width && height) {
+    // Resizing a maximized window corrupts its restore bounds, which is the
+    // bug this clamp exists to contain — so drop out of maximized first.
+    const wasMaximized = window.isMaximized()
+    if (wasMaximized) window.unmaximize()
+    await delay(200)
+    window.setContentSize(width, height)
+    clampToWorkArea(window)
+    await delay(200)
+  }
+  mkdirSync(shotDir, { recursive: true })
+
+  // Optionally open a real project first, so the workspace and runtime screens
+  // are reviewed against live data rather than an empty state.
+  const reviewProject = process.env['CRYPTORIC_SHOT_PROJECT']
+  if (reviewProject) {
+    await run(window, `window.cryptoric.project.open(${JSON.stringify(reviewProject)})`)
+    await delay(1500)
+  }
+
+  // Optionally start a real task, so the execution timeline is reviewed with
+  // live data rather than an empty state.
+  const reviewTask = process.env['CRYPTORIC_SHOT_TASK']
+  if (reviewTask) {
+    await run(window, `window.cryptoric.agent.submit(${JSON.stringify(reviewTask)}, 'Review the project')`)
+    await delay(4000)
+  }
+
+  const destinations: [string, string][] = [
+    ['home', 'home'],
+    ['agent', 'agent'],
+    ['environment', 'environment'],
+    ['workspace', 'files'],
+    ['settings', 'settings'],
+    ['palette', 'home']
+  ]
+
+  for (const [name, section] of destinations) {
+    await run(window, `document.querySelector('[data-section="${section}"]')?.click()`)
+    await delay(360)
+    if (name === 'palette') {
+      await run(window, `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }))`)
+      await delay(360)
+    }
+    if (name === 'home' && process.env['CRYPTORIC_SHOT_RESIZE']) {
+      // Prove the maximize -> restore path: the layout must still fill the
+      // window exactly, with the status bar on screen and not behind the taskbar.
+      window.maximize()
+      await delay(600)
+      window.unmaximize()
+      await delay(600)
+      writeFileSync(join(shotDir, 'restored.png'), (await window.webContents.capturePage()).toPNG())
+      console.log('CRYPTORIC_SHOT', join(shotDir, 'restored.png'))
+    }
+    const image = await window.webContents.capturePage()
+    writeFileSync(join(shotDir, `${name}.png`), image.toPNG())
+    console.log('CRYPTORIC_SHOT', join(shotDir, `${name}.png`))
+  }
+
+  app.quit()
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Evaluate renderer script for the review pass, logging rather than throwing. */
+async function run(window: BrowserWindow, script: string): Promise<void> {
+  try {
+    await window.webContents.executeJavaScript(script)
+  } catch (e: unknown) {
+    console.log('CRYPTORIC_REVIEW_SCRIPT_FAILED', script.slice(0, 60), String(e))
+  }
 }
 
 function buildMenu(): void {

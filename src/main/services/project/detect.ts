@@ -116,6 +116,8 @@ function mapNodeScripts(scripts: Record<string, string>): Record<string, string>
 const DEV_PORT_PATTERNS = [
   /--port[= ](\d{2,5})/i,
   /-p[= ](\d{2,5})\b/,
+  /(?:^|\s)-l[= ](\d{2,5})\b/,
+  /--listen[= ](\d{2,5})/i,
   /PORT=(\d{2,5})/,
   /localhost:(\d{2,5})/i
 ]
@@ -180,8 +182,10 @@ export async function detectProject(root: string, opts: DetectOptions = {}): Pro
 
   for (const rule of RULES) {
     const text = await existsText(join(root, rule.file), opts)
-    if (text === null) continue
-    const parsed = rule.read ? rule.read(text) : {}
+    // A manifest that is listed but unreadable still declares a requirement —
+    // failing to read `Cargo.toml` must not hide the fact that cargo is needed.
+    if (text === null && !entries.includes(rule.file)) continue
+    const parsed = rule.read ? rule.read(text ?? '') : {}
     manifests.push({
       file: rule.file,
       kind: rule.kind,
@@ -215,8 +219,9 @@ export async function detectProject(root: string, opts: DetectOptions = {}): Pro
     break
   }
 
-  // A Python project without a lockfile still needs a package manager choice.
+  // A Python or Rust project without a lockfile still needs a package manager.
   if (!packageManager && kinds.has('python')) packageManager = 'pip'
+  if (!packageManager && kinds.has('rust')) packageManager = 'cargo'
 
   const kind: ProjectKind =
     kinds.size === 0 ? 'unknown' : kinds.size === 1 ? [...kinds][0]! : 'mixed'

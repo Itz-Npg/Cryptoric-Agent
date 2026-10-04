@@ -8,3 +8,6 @@ release/
 coverage/
 *.tsbuildinfo
 node_modules/.tmp/
+
+# Local design-review screenshots (CRYPTORIC_SHOT output)
+.review/

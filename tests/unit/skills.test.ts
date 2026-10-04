@@ -7,7 +7,7 @@ import {
   routeSkills,
   SkillRegistry
 } from '../../src/main/services/skills/registry'
-import { subsequence } from '../../src/renderer/src/palette/CommandPalette'
+import { subsequence } from '../../src/shared/fuzzy'
 
 describe('parseFrontmatter', () => {
   it('parses scalars', () => {

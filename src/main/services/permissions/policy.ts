@@ -167,11 +167,12 @@ export function classifyCommand(command: string, args: string[] = []): CommandVe
 
   // --- Package managers -----------------------------------------------------
   if (['npm', 'pnpm', 'yarn', 'bun'].includes(base)) {
-    const script = argv[1] ?? ''
+    // The subcommand is argv[0]; anything after it is an argument to it.
+    const script = argv[0] ?? ''
     if (['publish', 'unpublish', 'deprecate'].includes(script)) {
       return { tier: 'destructive', reason: `Publishes to a public registry (${base} ${script})`, trigger: script }
     }
-    if (script === 'install' || script === 'i' || script === 'add') {
+    if (['install', 'i', 'ci', 'add'].includes(script)) {
       const global = has('-g', '--global')
       const scriptsFlag = argv.some((a) => a === '--ignore-scripts')
       return {
@@ -189,6 +190,11 @@ export function classifyCommand(command: string, args: string[] = []): CommandVe
 
   // --- Interpreters and runners execute arbitrary project code ---------------
   if (['python', 'python3', 'py', 'node', 'ruby', 'perl', 'php', 'sh', 'bash', 'zsh', 'pwsh', 'powershell'].includes(base)) {
+    // `node --version` runs nothing, so it stays safe; anything else executes code.
+    const PROBES = new Set(['--version', '-v', '-V', '--help', '-h', '-?', '--usage'])
+    if (argv.length > 0 && argv.every((a) => PROBES.has(a))) {
+      return { tier: 'safe', reason: 'Reports the runtime version or usage; executes nothing', trigger: null }
+    }
     const inline = all.some((a) => a === '-c' || a === '-e' || a === '/c')
     return {
       tier: 'elevated',
@@ -246,9 +252,16 @@ export function classifyCommand(command: string, args: string[] = []): CommandVe
   }
 }
 
+/**
+ * Executable base name, lower-cased and stripped of its Windows extension.
+ *
+ * `C:\Windows\System32\del.exe` and `/usr/bin/rm` must classify identically to
+ * `del` and `rm`, otherwise a full path becomes a trivial disguise.
+ */
 function basenameOf(p: string): string {
   const parts = p.split(/[\\/]/)
-  return parts[parts.length - 1] ?? p
+  const name = parts[parts.length - 1] ?? p
+  return name.replace(/\.(exe|cmd|bat|com|scr|ps1)$/i, '').toLowerCase()
 }
 
 // ---------------------------------------------------------------------------
@@ -329,8 +342,14 @@ export class PermissionPolicy {
   }
 
   private decide(domain: PermissionDomain, scope?: string): PermissionDecision {
-    const session = this.sessionGrants.get(`${domain}::${scope ?? ''}`)
-    if (session) return session
+    // A grant recorded for the exact path wins, then a domain-wide "always
+    // allow" for the rest of the session, then the configured rules.
+    if (scope) {
+      const exact = this.sessionGrants.get(`${domain}::${scope}`)
+      if (exact) return exact
+    }
+    const domainWide = this.sessionGrants.get(`${domain}::`)
+    if (domainWide) return domainWide
 
     // The most specific matching rule wins; an exact scope beats a global rule.
     const scoped = this.rules.filter((r) => r.domain === domain && r.scope && scope && matchScope(r.scope, scope))
