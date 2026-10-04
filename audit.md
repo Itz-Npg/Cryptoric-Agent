@@ -356,9 +356,13 @@ inside a **real Electron process**, against a **real local HTTP server**:
 | L3 | No performance benchmark exists. | Never run. | Tool timeouts are reasoned bounds, not measured. |
 | L4 | Settings persist and validate but most values are not yet consumed by engine consumers. | By inspection. | Real gap. |
 | L5 | Router exists and is tested but the pipeline still runs a fixed stage list around the model. | By inspection. The **implement** stage is now model-driven with real tools; `analyze`/`verify`/`review` remain deterministic. | Real gap, much reduced. |
-| L6 | A project-scoped conversation: one transcript for the whole app, not per project. | By inspection. | Real gap. Switching projects keeps the history, which is wrong once PHASE A lands. |
+| L6 | Conversation is project-scoped, but the app still runs **one project at a time**. | `ConversationStore` v2 keeps a `scopes` map keyed by project root; opening a second project swaps the workspace rather than running both. | Real gap — the persistence half of PHASE A exists; the parallel half does not. |
 | L7 | The agent loop offers the model every registered tool (~55) rather than a routed subset. | By inspection. | PHASE 12 router. The context window is 1M so this is a precision problem, not a capacity one. |
-| L8 | `run_command` has no live check of its own. | `npm run test:agent` exercises the loop and the filesystem tools; `run_command` itself is not driven by a live run. | Gap. It is registered and typechecked; its argv refusal is unit-tested. |
+| L8 | `run_command` live check. | **DONE** — `npm run test:command`, **12/12**: real `node -e` stdout, real exit code and stderr, `npm --version` through `cmd.exe`, `rm -rf /` and `git push --force` refused with a sentinel file proving nothing ran, cancellation kills the child, 10 invocations audited. | Closed. |
+| L9 | **A downloaded update was never installed.** | `UpdateService` is 12 unit-tested against a fake port. `v0.1.1` and `v0.1.2` are a real pair, so the owner can exercise this himself; no scripted run has observed a download complete and an install apply. | Unverified by machine. |
+| L10 | The **Stop** button and the update prompt have never been clicked by a human. | Wired, typechecked, unit-tested. The scripted harness stops the task before it can screenshot the running state, so live capture is impossible with the current hook. | Unverified by machine. |
+| L11 | OpenRouter free models share a **50-request/day per-account cap**, separate from `GET /api/v1/key`. | Exhausted by live probing on 2026-10-05; `/chat/completions` returned HTTP 429 `free-models-per-day` while `/api/v1/key` still reported 100/100. | Environment, not product. Makes a live provider run **BLOCKED**, never `FAILED`. |
+| L12 | The agent loop offers the model every registered tool. | `routeTools()` exists in `src/main/services/tools/router.ts` but is **not wired into `runAgentLoop`** (`LoopDeps.listTools` is the seam). Its intent chains name tool ids that do not exist yet (`analyze_project`, `search_code`, `run_tests`). | PHASE 12 router. |
 
 ---
 
@@ -376,7 +380,16 @@ inside a **real Electron process**, against a **real local HTTP server**:
 - Visual regression, responsive testing, accessibility audit, performance observation
 - API testing, database testing, Docker, network diagnostics
 - Security scanning, dependency auditing
-- MCP / connectors
+- MCP / connectors — **foundation only, deliberately not surfaced.**
+  `src/main/services/connectors/{http.ts,definitions.ts}` define 9 real connectors
+  (vercel, cloudflare, netlify, render, supabase, sentry, stripe, notion, linear),
+  each with a `verify()` that must return a provider-supplied account name. There is
+  **no manager, no Settings screen, no tool registration and no tests**, confirmed by
+  grep across `src/main/index.ts`, `src/preload/index.ts` and `Settings.tsx`. No
+  Connectors UI ships, because an empty one would read as working.
+- Streaming replies
+- Tool routing into the agent loop
+- Real update download+install (see L9)
 - TEST MODE, PRODUCTION MODE, Release Readiness Engine
 - Multi-project workspace, project registry
 - Coin economy, account system, Google auth, admin roles

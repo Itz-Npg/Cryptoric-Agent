@@ -82,6 +82,41 @@ describe('model catalogue', () => {
   })
 })
 
+describe('rejected OpenRouter models', () => {
+  const shipped = new Set(MODEL_CATALOG.map((m) => m.providerModelId ?? m.id))
+
+  it('keeps every rejected id out of the catalogue', () => {
+    // A catalogue entry that 400s on first use is worse than no entry, so the
+    // ids measured on 2026-10-05 must never quietly reappear in the picker.
+    const leaked = REJECTED_OPENROUTER_MODELS.filter((m) => shipped.has(m.id)).map((m) => m.id)
+    expect(leaked).toEqual([])
+  })
+
+  it('records a reason for every rejection', () => {
+    // A rejection with no stated reason is indistinguishable from an oversight.
+    expect(REJECTED_OPENROUTER_MODELS.length).toBeGreaterThan(0)
+    for (const model of REJECTED_OPENROUTER_MODELS) {
+      expect(model.reason.trim().length).toBeGreaterThan(10)
+    }
+  })
+
+  it('ships Laguna XS, which a 32-token sample wrongly called broken', () => {
+    // `poolside/laguna-xs-2.1:free` is a reasoning model: at 32 tokens it returns
+    // `content: ""`. At the app's default 2048 it answered 3/3. It was rejected
+    // upstream in error and is now shipped.
+    expect(shipped.has('poolside/laguna-xs-2.1:free')).toBe(true)
+    expect(REJECTED_OPENROUTER_MODELS.map((m) => m.id)).not.toContain('poolside/laguna-xs-2.1:free')
+  })
+
+  it('does not ship the TTS model, because chat/completions refuses it', () => {
+    // `fish-audio/s2.1-pro-free:free` works — POST /api/v1/audio/speech returned
+    // 208,896 bytes of audio/pcm — but a chat row calling it gets HTTP 400.
+    const entry = REJECTED_OPENROUTER_MODELS.find((m) => m.id === 'fish-audio/s2.1-pro-free:free')
+    expect(entry).toBeDefined()
+    expect(shipped.has('fish-audio/s2.1-pro-free:free')).toBe(false)
+  })
+})
+
 describe('APINEX catalogue', () => {
   const apinex = MODEL_CATALOG.filter((m) => m.servedBy === 'apinex')
 

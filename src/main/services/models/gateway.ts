@@ -270,6 +270,28 @@ export const MODEL_CATALOG: ModelDescriptor[] = [
     pricingFetchedAt: '2026-10-04'
   },
   {
+    id: 'laguna-xs-2.1-free',
+    label: 'Laguna XS 2.1 (free)',
+    provider: 'OpenRouter',
+    kind: 'hosted',
+    // OpenRouter reports prompt "0" and completion "0"; a real completion came
+    // back with usage.cost 0 on 2026-10-05.
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: 262_144,
+    // This is a reasoning model: it spends 250-800 tokens thinking before it
+    // emits any text. At a 32-token budget it returns `content: ""` with
+    // `finish_reason: "length"`, which is why an earlier pass judged it broken.
+    // Measured 2026-10-05: 3/3 answers at the app's default 2048-token budget,
+    // 6/7 at 1024. It is also burst rate-limited upstream (HTTP 429 between
+    // successes), which is what the gateway's retry ladder absorbs.
+    providerModelId: 'poolside/laguna-xs-2.1:free',
+    servedBy: 'openrouter',
+    endpoint: OPENROUTER_ENDPOINT,
+    pricingSource: 'openrouter.ai /api/v1/models + live completion',
+    pricingFetchedAt: '2026-10-05'
+  },
+  {
     id: 'ling-3.1-flash',
     label: 'Ling 3.1 Flash (free)',
     provider: 'OpenRouter',
@@ -395,6 +417,11 @@ export const MODEL_CATALOG: ModelDescriptor[] = [
  * is otherwise unanswerable and the obvious next move is to add it and ship a
  * row that 403s on first use. Each was exercised against the live API on
  * 2026-10-05 with the owner's key.
+ *
+ * An id may never appear both here and in MODEL_CATALOG; a unit test enforces
+ * that. `poolside/laguna-xs-2.1:free` used to sit in this list on a 429 reading
+ * and was wrongly rejected - it is a reasoning model that returns empty content
+ * at a 32-token budget and answers normally at 2048. It ships now.
  */
 export const REJECTED_OPENROUTER_MODELS: { id: string; reason: string }[] = [
   {
@@ -422,10 +449,6 @@ export const REJECTED_OPENROUTER_MODELS: { id: string; reason: string }[] = [
     reason: 'Sustained HTTP 429 upstream rate limiting across repeated attempts'
   },
   {
-    id: 'poolside/laguna-xs-2.1:free',
-    reason: 'Sustained HTTP 429 upstream rate limiting across repeated attempts'
-  },
-  {
     id: 'nvidia/nemotron-3.5-content-safety:free',
     reason: 'Answers as a moderation classifier and never emits tool calls, so it cannot drive the agent'
   },
@@ -440,6 +463,14 @@ export const REJECTED_OPENROUTER_MODELS: { id: string; reason: string }[] = [
   {
     id: 'nvidia/llama-nemotron-rerank-vl-1b-v2:free',
     reason: 'Rerank model — works but /api/v1/rerank is not chat/completions'
+  },
+  {
+    id: 'fish-audio/s2.1-pro-free:free',
+    reason:
+      'Text-to-speech model. chat/completions returns HTTP 400 "is a text-to-speech ' +
+      'model and cannot be used with the chat/completions endpoint". It is genuinely ' +
+      'usable — POST /api/v1/audio/speech returned HTTP 200 audio/pcm, 208,896 bytes — ' +
+      'but this app drives a text agent, so there is nothing for a chat row to call'
   }
 ]
 

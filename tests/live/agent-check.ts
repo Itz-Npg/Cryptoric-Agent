@@ -93,6 +93,15 @@ const PROVIDERS = {
     catalogId: 'ling-3.1-flash',
     endpoint: OPENROUTER_ENDPOINT,
     credential: OPENROUTER_CREDENTIAL
+  },
+  'laguna-xs': {
+    keyEnv: 'OPENROUTER_API_KEY',
+    // A reasoning model that was rejected upstream in error on a 429 reading.
+    // It emits hundreds of reasoning tokens before any text, which is the
+    // strongest existing check that the loop tolerates an empty turn.
+    catalogId: 'laguna-xs-2.1-free',
+    endpoint: OPENROUTER_ENDPOINT,
+    credential: OPENROUTER_CREDENTIAL
   }
 } as const
 

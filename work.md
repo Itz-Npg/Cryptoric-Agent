@@ -11,16 +11,17 @@ pushed to `origin/main`, release `v0.1.0` published.
 ```bash
 npx tsc -p tsconfig.node.json --noEmit   # exit 0
 npx tsc -p tsconfig.web.json --noEmit    # exit 0
-npx vitest run                           # 383 passed / 16 files
+npx vitest run                           # 387 passed / 16 files
 npx electron-vite build                  # exit 0
 npx electron-vite dev                    # run the app
 npm run test:browser                     # 59 checks in real Electron, http target
 CRYPTORIC_BROWSER_TARGET=file npm run test:browser   # 50 checks, file target
-npm run test:model                       # 8 checks against the live OpenRouter API
+npm run test:model                       # 18 checks against the live OpenRouter API
 npm run test:apinex                      # 18 checks against the live APINEX API
 npm run test:agent                       # 13 checks: real model + real tools -> real files
 npm run test:agent:apinex                # the same loop on a free APINEX model
 npm run test:agent:laguna                # the same loop on OpenRouter Laguna S 2.1 (free)
+npm run test:agent:laguna-xs             # the same loop on Laguna XS 2.1 — a reasoning model
 npm run test:agent:ling                  # the same loop on OpenRouter Ling 3.1 Flash (free)
 npm run test:command                     # 12 checks: real shells, refusals, cancellation
 npm run test:migration                   # 3 checks: settings schema migration
@@ -190,6 +191,16 @@ Env switches exist so the check stays honest on any machine:
   headless harness.
 - `process.exit()` truncates buffered stdout on Windows when stdout is redirected to a
   file. Set `process.exitCode` instead, so the last lines of a failing run survive.
+- **OpenRouter free models share a 50-requests-per-day cap per account**, separate
+  from `GET /api/v1/key`, which still reports `limit: 100, limit_remaining: 100`.
+  When it is spent, `/chat/completions` answers HTTP 429
+  `free-models-per-day` with `X-RateLimit-Reset`. Extensive live probing burns it
+  fast; a run that fails this way is an **account limit, not a broken model**.
+- **A reasoning model looks broken at a small `max_tokens`.** `poolside/laguna-xs-2.1:free`
+  returns `content: ""` with `finish_reason: "length"` at 32 tokens, and answers
+  normally at the app's default 2048. Judge these at the budget the app actually sends.
+- `str_replace` rejects a `path` sent as an object; both `path` and `replacements`
+  must be top-level strings/arrays in the tool arguments.
 
 ---
 
@@ -209,4 +220,14 @@ b01546d Give the agent a real browser built on Electron's own Chromium
 baf2d2a Give the agent a filesystem it cannot be trusted to misuse
 167ab24 Give every tool call one enforced path: registry, runtime, router
 a8be942 Rebuild the shell around a workspace-first visual language
+```
+
+Later passes, on top of `a57f4d3`:
+
+```
+31de4ea Add ten more free OpenRouter models, and record the eleven that do not work
+4b57f37 Ask before downloading an update, and install it when the app closes
+16d29c9 Give the user a way to stop the agent
+5a041c0 Stop the Execution panel from being crushed to a sliver
+ed9294d Record what was verified, and what was not
 ```
