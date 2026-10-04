@@ -32,7 +32,8 @@
     "test:apinex": "node scripts/build-live-check.mjs tests/live/apinex-check.ts .review/live/apinex-check.mjs && node .review/live/apinex-check.mjs",
     "test:agent:apinex": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs apinex",
     "test:agent:laguna": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs laguna",
-    "test:agent:ling": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs ling"
+    "test:agent:ling": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs ling",
+    "test:agent:laguna-xs": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs laguna-xs"
   },
   "dependencies": {
     "@fontsource-variable/instrument-sans": "^5.1.0",

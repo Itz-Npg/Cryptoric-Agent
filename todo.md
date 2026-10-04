@@ -222,6 +222,30 @@ and stopped it not working, I sent a big prompt for making the website."*
 - [x] Eleven other `free/`-prefixed ids answer HTTP 402 "subscription only" on a
       plain key — deliberately not shipped
 - [x] OpenRouter free models: `poolside/laguna-s-2.1:free`, `inclusionai/ling-3.1-flash`
+- [x] **Thirteen free OpenRouter models ship** (v0.1.3). Ten added this pass:
+      `apodex-1.1-mini-free`, `ling-3.0-flash-sante-free`, `qwen3.8-27b-free`,
+      `dots-3-note-preview-free`, `lfm-2.5-2.6b-free`, `nemotron-3.5-lightning-free`,
+      `north-mini-code-free`, `nemotron-3-ultra-free`, `nemotron-3-super-free`,
+      `nemotron-3-nano-omni-free`
+- [x] **`poolside/laguna-xs-2.1:free` restored — it was rejected in error.** It is a
+      *reasoning* model: at a 32-token budget it returns `content: ""` with
+      `finish_reason: "length"`, which an earlier pass read as broken. Measured at the
+      app's real 2048-token default: **3/3 answered**. Judged a model at the budget
+      the app actually sends, not a smaller one.
+- [x] **`fish-audio/s2.1-pro-free:free` rejected, with proof it works.** chat/completions
+      returns HTTP 400 "is a text-to-speech model"; `POST /api/v1/audio/speech`
+      returned HTTP 200, `audio/pcm`, 208,896 bytes. Real capability, wrong shape for a
+      text agent — recorded, not shipped
+- [x] `REJECTED_OPENROUTER_MODELS` holds 12 ids, each with a measured reason
+- [x] **New invariant, unit-tested:** no id may appear both in `REJECTED_OPENROUTER_MODELS`
+      and in `MODEL_CATALOG`, and every rejection must state a reason. This caught the
+      real bug where Laguna XS was added to the catalogue while its old rejection entry
+      was still present
+- [x] `npm run test:agent:laguna-xs` — drives the agent loop with a reasoning model
+- [x] **v0.1.3 built and published** — exe + `.blockmap` + `latest.yml`; published
+      sha512 verified identical to the local build. `curl …/releases/latest/download/
+      latest.yml` → `version: 0.1.3`. The ten new models now actually reach an
+      installed app
 - [x] Bounded retry with measured backoff (3s/10s/25s) for 429 and 5xx — the Ling
       model needs ~30s, a 1/2/4s ladder failed
 - [x] Fixed a key leak: `resolveModel` preferred the configured credential slot, so
@@ -236,9 +260,24 @@ and stopped it not working, I sent a big prompt for making the website."*
 - [x] Pushed to `origin/main`; release `v0.1.0` published with exe + `latest.yml` + `.blockmap`
 - [x] Codebuff attribution stripped from all 15 prior commits; GitHub's contributor
       graph shows `Itz-Npg` only
-- [ ] **A download and an install were never exercised** — needs a real `v0.1.1`
-      newer than the running build. Path is unit-tested against a fake port only.
+- [ ] **A download and an install were never exercised** — needs a real newer build than
+      the running one. Path is unit-tested against a fake port only. `v0.1.1`/`v0.1.2`
+      are a real pair and `v0.1.3` is out, so the owner can exercise it directly.
+- [ ] **The Stop button and the update prompt have never been clicked by a human.**
+      Wired, typechecked, unit-tested. The scripted harness stops the task before it can
+      screenshot a running task, so live capture is impossible with the current hook.
 - [ ] Binaries are unsigned; SmartScreen warns. Code signing not configured.
+
+## PHASE 0.9 — Real connectors *(foundation only, deliberately unsurfaced)*
+
+- [x] `http.ts` — `request()`, `isAuthFailure` (400/401/403 — **Cloudflare returns
+      400, not 401**, for a bad token), `extractErrorMessage`, `redact`
+- [x] `definitions.ts` — 9 connectors, each `verify()` must return a provider-supplied
+      account name. **Linear takes a bare API key, not `Bearer`.**
+- [ ] Connector manager, credential slots, Settings → Connectors, tool registration, tests
+- [ ] **No Connectors screen ships until all of the above exist.** An empty one reads as
+      working. All 9 identity endpoints were probed live with invalid tokens: vercel 403,
+      cloudflare 400, netlify/render/supabase/sentry/stripe/notion/linear 401
 
 ## PHASE 0.8 — Accounts / auth (owner-approved, not started)
 
@@ -373,7 +412,11 @@ and stopped it not working, I sent a big prompt for making the website."*
       retries, state transitions, readiness transitions
 - [ ] Resource cleanup — temp dirs, processes, ports, containers, browser sessions
 
-## PHASE A — Multi-project workspace *(after the agent engine is healthy)*
+## PHASE A — Multi-project workspace *(the open user complaint)*
+
+The user can only work one project at a time; opening another swaps it. The persistence
+half already exists (`ConversationStore` v2 scopes by project root). The parallel half
+does not. This is the next thing to build.
 
 - [ ] Project Registry with stable IDs (path is not identity) + ProjectDependencyGraph
 - [ ] Project isolation: workspaceId / projectId / taskId on every scoped operation
