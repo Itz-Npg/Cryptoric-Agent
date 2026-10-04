@@ -198,6 +198,25 @@ async function boot(): Promise<Services> {
       skillTokenBudget: 6000,
       maxSkillsPerTask: 4,
       getProjectRoot: () => project?.root ?? null,
+      respond: async ({ prompt, projectRoot, signal }) => {
+        if (!gateway.isEnabled()) {
+          return {
+            ok: false,
+            text: '',
+            error:
+              'No model provider is configured, so Cryptoric Chan cannot answer. Pick one in Settings, then add your API key.'
+          }
+        }
+        const result = await gateway.complete({
+          messages: [
+            { role: 'system', content: chanSystemPrompt(projectRoot) },
+            { role: 'user', content: prompt }
+          ],
+          maxTokens: 900,
+          signal
+        })
+        return { ok: result.ok, text: result.text, error: result.error }
+      },
       events: {
         timeline: (entry) => push({ type: 'timeline', entry }),
         task: (task) => push({ type: 'task', task }),
@@ -228,6 +247,26 @@ async function boot(): Promise<Services> {
   })
   bindCredentials(credentials)
   await seedProviderCredentials(credentials)
+
+  /**
+   * Adopt the hosted provider when the machine already holds its key.
+   *
+   * A stored OpenRouter key is the user saying "use this". Shipping a default of
+   * `none` while a working key sits in the credential store is how you get an
+   * assistant that silently answers nothing. Resolved through the gateway so the
+   * endpoint and wire id come from the catalogue, not from a hand-typed string.
+   */
+  if (state.modelProvider === 'none' && credentials.get(OPENROUTER_CREDENTIAL)) {
+    const adopted = gateway.resolveModel('space-bunny-alpha')
+    if (adopted) {
+      gateway.setConfig(adopted)
+      await store.set({
+        modelProvider: adopted.provider,
+        modelEndpoint: adopted.endpoint,
+        modelName: 'space-bunny-alpha'
+      })
+    }
+  }
 
   registerRoutes(router, {
     env,
@@ -958,11 +997,67 @@ async function attachDesignReviewHooks(window: BrowserWindow): Promise<void> {
     console.log('CRYPTORIC_STAGE_TEXT', name, JSON.stringify(text))
   }
 
+  // The transient popup is too short-lived to catch by accident, and a popup
+  // that never leaves is the failure nobody notices. Click the real control
+  // that raises one, then prove both halves: it appears, and it is gone.
+  if (process.env['CRYPTORIC_SHOT_TOAST']) {
+    await run(window, `document.querySelector('[data-section="environment"]')?.click()`)
+    await delay(400)
+    await run(
+      window,
+      `[...document.querySelectorAll('button')].find((b) => /re-read os environment/i.test(b.textContent ?? ''))?.click()`
+    )
+    await delay(600)
+    // Re-reading the environment probes every runtime, so the popup can arrive
+    // seconds after the click. Poll rather than guess a delay.
+    let shown = ''
+    for (let i = 0; i < 60 && !shown; i++) {
+      shown = await window.webContents.executeJavaScript(
+        `document.querySelector('[role="status"]')?.innerText?.slice(0, 160) ?? ''`
+      )
+      if (!shown) await delay(200)
+    }
+    writeFileSync(join(shotDir, 'toast.png'), (await window.webContents.capturePage()).toPNG())
+    console.log('CRYPTORIC_TOAST_SHOWN', JSON.stringify(shown))
+    await delay(2600)
+    const gone = await window.webContents.executeJavaScript(
+      `document.querySelector('[role="status"]') ? 'still present' : 'dismissed'`
+    )
+    console.log('CRYPTORIC_TOAST_AFTER_TIMEOUT', gone)
+  }
+
   app.quit()
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Chan's standing instructions.
+ *
+ * The honesty clauses are load-bearing. Without them a language model in a tool
+ * loop will cheerfully report having run a test suite, edited a file or checked
+ * a port — none of which it can see. The pipeline runs the tools and reports
+ * what actually happened; the model's job here is to talk to the developer
+ * without claiming to be the thing that did the work.
+ */
+function chanSystemPrompt(projectRoot: string | null): string {
+  return [
+    'You are Cryptoric Chan, the autonomous software engineering agent inside Cryptoric Agent,',
+    'a desktop development environment for Windows.',
+    '',
+    'Rules:',
+    '- Be brief and concrete. Two or three sentences unless asked for detail.',
+    '- Never claim to have run a command, edited a file, started a process or checked a result.',
+    '  A separate pipeline does that and reports the real outcome. You do not see its output.',
+    '- If you are asked to do something and cannot, say what would be needed.',
+    '- Plain text. No markdown headings, no code fences unless code is the whole answer.',
+    '',
+    projectRoot
+      ? `The developer has the project at ${projectRoot} open.`
+      : 'No project is open, so nothing about the workspace is known yet.'
+  ].join('\n')
 }
 
 /** Evaluate renderer script for the review pass, logging rather than throwing. */

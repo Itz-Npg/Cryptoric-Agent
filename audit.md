@@ -20,6 +20,8 @@ Last audit: browser subsystem + hosted model gateway, uncommitted working tree o
 | Browser, live, http target | `npm run test:browser` | **59 pass / 0 fail** |
 | Browser, live, file target | `CRYPTORIC_BROWSER_TARGET=file npm run test:browser` | **50 pass / 0 fail** (9 http-only checks report as skipped, not passed) |
 | Model gateway, live provider | `npm run test:model` | **6 pass / 0 fail** against `api.openrouter.ai` |
+| Toast appears and leaves | `CRYPTORIC_SHOT_TOAST=1 npx electron .` | `CRYPTORIC_TOAST_SHOWN "Environment refreshed to snapshot 2…"` then `CRYPTORIC_TOAST_AFTER_TIMEOUT dismissed` |
+| Chan answers a prompt | `CRYPTORIC_SHOT_TASK="hi" npx electron .` | real window DOM text: `Cryptoric Chan / Hi! How can I help? / No project is open.` |
 
 ### What the live model check actually proves
 
@@ -34,6 +36,30 @@ with a real key. No stubbed fetch, no canned response, no "connection successful
 - token usage came back from the provider (163 in / 2 out), not synthesised locally
 - with a user-supplied key installed the gateway reports `metered: false` and draws
   **0 of 25 coins**
+
+### Bug found and fixed: "hi" got no reply
+
+Sending a prompt produced **silence**. The agent ran its fixed five-stage pipeline,
+and the model gateway was never connected to it — `pipeline.tools.call` was a stub
+returning `{ ok: false, summary: 'unavailable' }`. With no project open the first
+stage returned `FAILED: 'No project is open.'`, so the transcript got one line and
+no answer.
+
+Fixed, and verified against a real window:
+
+- `AgentRuntime.answer()` runs before any stage. It asks the configured model and
+  puts the reply in the transcript. No model configured, provider refusing, or the
+  task cancelled — all three report words back instead of silence.
+- `chanSystemPrompt()` forbids claiming to have run tools, edited files or checked
+  results. The pipeline reports what actually happened; the model is not allowed to
+  narrate it.
+- Boot adopts the hosted provider when the credential store already holds its key,
+  so a working key next to a `none` default no longer means an assistant that says
+  nothing.
+- Submitting from Home switches to the Chan pane. The reply was always landing in the
+  transcript; the view just never moved.
+
+**"Space Bunny Alpha Max" does not exist** — see below.
 
 ### Model id finding — recorded, not papered over
 

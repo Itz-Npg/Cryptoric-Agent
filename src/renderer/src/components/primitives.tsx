@@ -6,7 +6,7 @@
  * designed system rather than a pile of bespoke panels.
  */
 
-import { useRef, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { ToolInstallState, WorkspaceState } from '@shared/types'
 
 // ---------------------------------------------------------------- identity
@@ -219,6 +219,81 @@ export function Button({
     >
       {children}
     </button>
+  )
+}
+
+// ------------------------------------------------------------------ toast
+
+/**
+ * Transient in-app popup.
+ *
+ * Deliberately not a dialog. A native `confirm()` takes the whole OS window,
+ * blocks the renderer behind it and waits for a human — the wrong tool for
+ * telling the agent something that is already true, and a real hazard when the
+ * thing doing the clicking is an automated browser session.
+ *
+ * This says the message and leaves on its own. It is an announcement, not a
+ * question: a confirmation that vanishes in two seconds is not a confirmation
+ * anyone can answer.
+ */
+export function Toast({
+  message,
+  tone = 'info',
+  durationMs = 2000,
+  onDismiss
+}: {
+  message: string
+  tone?: 'info' | 'error'
+  durationMs?: number
+  onDismiss?: () => void
+}) {
+  const [shown, setShown] = useState(true)
+
+  useEffect(() => {
+    setShown(true)
+    if (durationMs <= 0) return
+    const timer = window.setTimeout(() => {
+      setShown(false)
+      onDismiss?.()
+    }, durationMs)
+    return () => window.clearTimeout(timer)
+  }, [message, durationMs, onDismiss])
+
+  if (!shown) return null
+
+  return (
+    <div
+      className="toast"
+      role="status"
+      aria-live="polite"
+      style={{
+        position: 'fixed',
+        bottom: 40,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        maxWidth: 'min(760px, 80vw)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        padding: '11px 12px 11px 16px',
+        borderRadius: 'var(--r-md)',
+        background: 'var(--surface-3)',
+        border: `1px solid ${tone === 'error' ? 'var(--err)' : 'var(--line)'}`,
+        boxShadow: 'var(--elev-3)',
+        zIndex: 80,
+        animation: 'toast-in var(--t-base) var(--ease)'
+      }}
+    >
+      <style>{`@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 6px) } to { opacity: 1; transform: translate(-50%, 0) } }`}</style>
+      <span className="selectable" style={{ color: tone === 'error' ? 'var(--err)' : 'var(--text-1)', fontSize: 'var(--t-sm)' }}>
+        {message}
+      </span>
+      {onDismiss && (
+        <Button variant="ghost" onClick={() => { setShown(false); onDismiss() }}>
+          Dismiss
+        </Button>
+      )}
+    </div>
   )
 }
 

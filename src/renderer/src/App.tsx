@@ -22,6 +22,7 @@ import {
   Dot,
   Icon,
   Resizer,
+  Toast,
   toneForInstallState,
   type IconName
 } from './components/primitives'
@@ -257,7 +258,12 @@ export function App() {
             <HomeSurface
               project={state.project}
               ready={state.project !== null}
-              onSubmit={(p) => void actions.submitTask(p)}
+              onSubmit={(p) => {
+                // Chan's answer lands in the transcript, so show the transcript.
+                // Submitting and staying on the prompt reads as nothing happening.
+                setSection('agent')
+                void actions.submitTask(p)
+              }}
               onOpenProject={() => void openProject()}
             />
           )}
@@ -282,7 +288,12 @@ export function App() {
               tasks={state.tasks}
               approvals={state.approvals}
               workspaceState={state.workspaceState}
-              onSubmit={(p) => void actions.submitTask(p)}
+              onSubmit={(p) => {
+                // Chan's answer lands in the transcript, so show the transcript.
+                // Submitting and staying on the prompt reads as nothing happening.
+                setSection('agent')
+                void actions.submitTask(p)
+              }}
               onResolveApproval={(id, approved) => void actions.resolveApproval(id, approved)}
             />
           )}
@@ -328,32 +339,7 @@ export function App() {
       />
 
       {state.notice && (
-        <div
-          role="status"
-          style={{
-            position: 'fixed',
-            bottom: 40,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            maxWidth: 'min(760px, 80vw)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            padding: '11px 12px 11px 16px',
-            borderRadius: 'var(--r-md)',
-            background: 'var(--surface-3)',
-            border: '1px solid var(--line)',
-            boxShadow: 'var(--elev-3)',
-            zIndex: 80
-          }}
-        >
-          <span className="selectable" style={{ color: 'var(--text-1)', fontSize: 'var(--t-sm)' }}>
-            {state.notice}
-          </span>
-          <Button variant="ghost" onClick={() => actions.notify(null)}>
-            Dismiss
-          </Button>
-        </div>
+        <Toast message={state.notice} onDismiss={() => actions.notify(null)} />
       )}
 
       <CommandPalette commands={commands} open={paletteOpen} onClose={() => setPaletteOpen(false)} />

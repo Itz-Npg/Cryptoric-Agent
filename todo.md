@@ -87,15 +87,30 @@ against real Chromium.**
 - [x] Daily allowance reduced **500 → 25 coins**; `lowBalanceWarningAt` 50 → 5
 - [x] Live check against the real provider — 6 pass / 0 fail
 
-## PHASE 0.5 — Small transient popup *(requested, trigger unconfirmed)*
+## PHASE 0.5 — Small transient popup — DONE, VERIFIED
 
-- [ ] A small in-app popup that shows a message and self-dismisses after 1–2 s,
-      replacing a blocking native dialog
-- [ ] Blocked on one answer: which action should raise it. There is no delete flow
-      in the app today; the only “Do you want to delete …?” dialog is the browser
-      live-check fixture's `confirm('Delete the account?')`, which exists to test
-      `browser_handle_dialog`. Removed without replacing it, that subsystem loses
-      its subject.
+- [x] `Toast` primitive: `role="status"`, announces politely, self-dismisses after
+      2 s, keeps the Dismiss button
+- [x] The app's notice is a `Toast` — same position, same surface, same border
+- [x] Verified end to end: a real "Re-read OS environment" click produced
+      `CRYPTORIC_TOAST_SHOWN "Environment refreshed to snapshot 2…"` followed by
+      `CRYPTORIC_TOAST_AFTER_TIMEOUT dismissed`
+- [ ] Still undecided: which **destructive** action should raise a
+      “Do you want to delete…?” popup. There is no delete flow in the app yet. The
+      browser live-check fixture's `confirm()` is deliberately left alone — it is the
+      only real subject for `browser_handle_dialog`, and removing it would delete the
+      evidence that the dialog subsystem works.
+
+## PHASE 0.4 — Chan has a voice — DONE, VERIFIED
+
+- [x] `AgentRuntime.answer()` asks the configured model before any stage runs
+- [x] Every failure reports words: no provider, provider error, cancellation
+- [x] System prompt forbids claiming tool results the model cannot see
+- [x] Boot adopts the hosted provider when the credential store holds its key
+- [x] Submitting switches to the Chan pane, where the reply already was
+- [x] Verified: `CRYPTORIC_SHOT_TASK="hi"` → real DOM text `Hi! How can I help?`
+- [ ] Multi-turn conversation history is **not** stored — each task is stateless
+- [ ] The five-stage pipeline is still fixed; the adaptive planner is Phase 1
 
 ---
 

@@ -54,6 +54,19 @@ export interface AgentDeps {
   events: AgentEventSink
   /** Root of the currently open project, or null. */
   getProjectRoot(): string | null
+  /**
+   * Chan's own answer to the developer.
+   *
+   * Optional on purpose: an agent that runs tools in silence reads as a hung
+   * app. When this is absent the runtime says so plainly instead of producing
+   * an empty transcript — silence is the worst error report there is.
+   */
+  respond?(input: {
+    prompt: string
+    title: string
+    projectRoot: string | null
+    signal: AbortSignal
+  }): Promise<{ ok: boolean; text: string; error: string | null }>
   /** Skill routing budget. */
   skillTokenBudget: number
   maxSkillsPerTask: number
@@ -227,6 +240,8 @@ export class AgentRuntime {
     // clamped to the stage's own grant, not the task's widest one.
     let ceiling: PermissionTier = 'safe'
 
+    await this.answer(task, controller.signal)
+
     const ctx: StageContext = {
       task,
       signal: controller.signal,
@@ -275,6 +290,36 @@ export class AgentRuntime {
     this.touch(task)
     this.releasePaths(task.id)
     this.controllers.delete(task.id)
+  }
+
+  /**
+   * Chan's answer to the developer, before any tool runs.
+   *
+   * Every failure mode reports rather than swallows: no model configured, the
+   * provider refusing the call, a cancelled task. The developer typed something
+   * and is owed words back in all three cases.
+   */
+  private async answer(task: AgentTask, signal: AbortSignal): Promise<void> {
+    const respond = this.deps.respond
+    if (!respond) {
+      this.deps.events.say(
+        'Cryptoric Chan has no model provider configured. Pick one in Settings, then add your API key.'
+      )
+      return
+    }
+    try {
+      const reply = await respond({
+        prompt: task.prompt,
+        title: task.title,
+        projectRoot: task.projectRoot,
+        signal
+      })
+      if (signal.aborted) return
+      this.deps.events.say(reply.ok && reply.text.trim() ? reply.text.trim() : reply.error ?? 'The model returned nothing.')
+    } catch (err) {
+      if (signal.aborted) return
+      this.deps.events.say(err instanceof Error ? err.message : String(err))
+    }
   }
 
   /**
