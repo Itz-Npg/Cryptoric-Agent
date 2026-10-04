@@ -121,11 +121,17 @@ export const SCHEMAS = {
   [CHANNELS.modelsAvailable]: z.object({}),
   [CHANNELS.modelsSetBudget]: z.object({ coins: z.number().int().min(0).max(100_000) }),
   [CHANNELS.modelsSetProvider]: z.object({
-    provider: z.enum(['none', 'ollama', 'openai-compatible']),
+    provider: z.enum(['none', 'ollama', 'openai-compatible', 'openrouter']),
     endpoint: z.string().max(400),
     model: z.string().max(200),
-    credentialKey: z.string().max(120).nullable()
+    credentialKey: z.string().max(120).nullable(),
+    referer: z.string().max(400).optional()
   }),
+
+  [CHANNELS.modelsVerifyKey]: z.object({}),
+  // An API key is a secret: the schema bounds it, and the handler stores it
+  // encrypted. It is never echoed back and never written to the state file.
+  [CHANNELS.modelsSetKey]: z.object({ apiKey: z.string().min(8).max(400) }),
 
   [CHANNELS.diagnostics]: z.object({})
 } as const

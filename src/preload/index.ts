@@ -76,7 +76,7 @@ export interface AppStatePatch {
   theme?: 'graphite' | 'bone'
   density?: 'compact' | 'default' | 'relaxed'
   motion?: 'full' | 'reduced'
-  modelProvider?: 'none' | 'ollama' | 'openai-compatible'
+  modelProvider?: 'none' | 'ollama' | 'openai-compatible' | 'openrouter'
   modelEndpoint?: string
   modelName?: string
   dailyBudgetUsd?: number
@@ -139,6 +139,17 @@ export interface BudgetSummaryDto {
 export interface ModelCatalogSnapshot {
   models: ModelSummaryDto[]
   budget: BudgetSummaryDto
+}
+
+export interface ModelKeyReportDto {
+  ok: boolean
+  configured: boolean
+  label: string | null
+  usage: number | null
+  limit: number | null
+  limitRemaining: number | null
+  isFreeTier: boolean | null
+  error: string | null
 }
 
 const api = {
@@ -237,11 +248,14 @@ const api = {
     available: () => invoke<{ ok: boolean; models: { id: string }[]; error: string | null }>(CHANNELS.modelsAvailable, {}),
     setBudget: (coins: number) => invoke<ModelCatalogSnapshot>(CHANNELS.modelsSetBudget, { coins }),
     setProvider: (input: {
-      provider: 'none' | 'ollama' | 'openai-compatible'
+      provider: 'none' | 'ollama' | 'openai-compatible' | 'openrouter'
       endpoint: string
       model: string
       credentialKey: string | null
-    }) => invoke<ModelCatalogSnapshot>(CHANNELS.modelsSetProvider, input)
+      referer?: string
+    }) => invoke<ModelCatalogSnapshot>(CHANNELS.modelsSetProvider, input),
+    verifyKey: () => invoke<ModelKeyReportDto>(CHANNELS.modelsVerifyKey, {}),
+    setKey: (apiKey: string) => invoke<ModelKeyReportDto>(CHANNELS.modelsSetKey, { apiKey })
   },
   diagnostics: {
     run: () => invoke<DiagnosticsReport>(CHANNELS.diagnostics, {})

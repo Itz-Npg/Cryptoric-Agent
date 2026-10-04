@@ -86,6 +86,8 @@ export const CHANNELS = {
   modelsAvailable: 'models:available',
   modelsSetBudget: 'models:set-budget',
   modelsSetProvider: 'models:set-provider',
+  modelsVerifyKey: 'models:verify-key',
+  modelsSetKey: 'models:set-key',
 
   // --- diagnostics
   diagnostics: 'diagnostics:run',

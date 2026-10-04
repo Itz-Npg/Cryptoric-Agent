@@ -155,9 +155,14 @@ export interface AppState {
   theme: 'graphite' | 'bone'
   density: 'compact' | 'default' | 'relaxed'
   motion: 'full' | 'reduced'
-  modelProvider: 'none' | 'ollama' | 'openai-compatible'
+  modelProvider: 'none' | 'ollama' | 'openai-compatible' | 'openrouter'
   modelEndpoint: string
   modelName: string
+  /**
+   * Display ceiling in USD. The daily allowance is 25 coins and one coin is one
+   * cent, so the shipped default is 0.25. The server is authoritative once
+   * accounts exist; this is the local ceiling used before that.
+   */
   dailyBudgetUsd: number
   permissionOverrides: Record<string, string>
   onboardingComplete: boolean
@@ -174,7 +179,7 @@ export const DEFAULT_STATE: AppState = {
   modelProvider: 'none',
   modelEndpoint: 'http://127.0.0.1:11434/v1',
   modelName: 'qwen2.5-coder:14b',
-  dailyBudgetUsd: 5,
+  dailyBudgetUsd: 0.25,
   permissionOverrides: {},
   onboardingComplete: false
 }

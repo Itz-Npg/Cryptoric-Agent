@@ -37,7 +37,14 @@ import type { SettingsSection } from './services/settings/schema'
 import { detectProject, computeGaps } from './services/project/detect'
 import { FileService } from './services/fs/files'
 import { GitService } from './services/git/service'
-import { ModelGateway, MODEL_CATALOG, type ModelConfig } from './services/models/gateway'
+import {
+  ModelGateway,
+  MODEL_CATALOG,
+  OPENROUTER_CREDENTIAL,
+  type ModelConfig,
+  type ProviderKind
+} from './services/models/gateway'
+import { readEnvFile } from './services/models/dotenv'
 import type { ProjectProfile, ToolStatus, MainEvent } from '@shared/types'
 
 const dirname_ = fileURLToPath(new URL('.', import.meta.url))
@@ -160,22 +167,22 @@ async function boot(): Promise<Services> {
 
   // Model gateway. Reads its API key from the OS-encrypted credential store;
   // the key is never written to the plain state file.
-  let activeModelId = state.modelName || 'local-default'
+  const activeModelId = state.modelName || 'local-default'
   const gateway = new ModelGateway({
     config: {
       provider: state.modelProvider,
       endpoint: state.modelEndpoint,
       model: activeModelId,
-      credentialKey: 'model-api-key',
-      dailyBudgetCoins: state.dailyBudgetUsd * 100
+      credentialKey: state.modelProvider === 'openrouter' ? OPENROUTER_CREDENTIAL : 'model-api-key',
+      dailyBudgetCoins: Math.round(state.dailyBudgetUsd * 100)
     },
-    getApiKey: () => credentialsRef.get('model-api-key'),
+    getApiKey: (key) => credentialsRef.get(key),
     onUsage: () => undefined
   })
   // Declared after `boot` closes over `credentials`; resolved lazily.
-  const credentialsRef: { get(key: string): string | null } = { get: () => null }
+  const credentialsRef: { get(key: string | null): string | null } = { get: () => null }
   const bindCredentials = (c: CredentialStore): void => {
-    credentialsRef.get = (key: string) => c.get(key)
+    credentialsRef.get = (key: string | null) => (key ? c.get(key) : null)
   }
 
   const agent = new AgentRuntime(
@@ -214,6 +221,14 @@ async function boot(): Promise<Services> {
     approvals
   })
 
+  const credentials = new CredentialStore(join(userDataDir, 'credentials.json'), {
+    isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+    encryptString: (v) => safeStorage.encryptString(v),
+    decryptString: (b) => safeStorage.decryptString(b)
+  })
+  bindCredentials(credentials)
+  await seedProviderCredentials(credentials)
+
   registerRoutes(router, {
     env,
     terminals,
@@ -228,6 +243,7 @@ async function boot(): Promise<Services> {
     files,
     git,
     gateway,
+    credentials,
     getProject: () => project,
     setProject: async (root) => {
       const detected = await detectProject(root)
@@ -248,12 +264,29 @@ async function boot(): Promise<Services> {
     push
   })
 
-  const credentials = new CredentialStore(join(userDataDir, 'credentials.json'), {
-    isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
-    encryptString: (v) => safeStorage.encryptString(v),
-    decryptString: (b) => safeStorage.decryptString(b)
-  })
-  bindCredentials(credentials)
+  /**
+   * Move a provider key from the developer's untracked `.env` into the
+   * OS-encrypted credential store, once.
+   *
+   * The `.env` file is gitignored and stays on disk; the credential store is
+   * what the gateway reads, encrypted by safeStorage. A key already in the
+   * store always wins, so deleting the line from `.env` later does not silently
+   * downgrade a working install — and nothing is ever written back to `.env`.
+   */
+  async function seedProviderCredentials(creds: CredentialStore): Promise<void> {
+    const fromFile = readEnvFile([app.getAppPath(), process.cwd(), userDataDir])
+    const wanted: { slot: string; env: string }[] = [
+      { slot: OPENROUTER_CREDENTIAL, env: 'OPENROUTER_API_KEY' },
+      { slot: 'model-api-key', env: 'OPENAI_API_KEY' }
+    ]
+    for (const { slot, env } of wanted) {
+      const value = process.env[env] ?? fromFile[env]
+      if (!value || creds.has(slot)) continue
+      const saved = await creds.set(slot, value)
+      if (saved) push({ type: 'log', level: 'info', message: `Stored ${env} in the encrypted credential store.`, at: new Date().toISOString() })
+      else push({ type: 'log', level: 'warn', message: `OS encryption unavailable; ${env} was not stored.`, at: new Date().toISOString() })
+    }
+  }
 
   return {
     env, terminals, processes, browser, tools, policy, approvals, skills, agent, router, store, credentials,
@@ -275,6 +308,7 @@ interface RouteDeps {
   files: FileService
   git: GitService
   gateway: ModelGateway
+  credentials: CredentialStore
   getProject(): ProjectProfile | null
   setProject(root: string): Promise<ProjectProfile>
   push(event: MainEvent): void
@@ -283,6 +317,7 @@ interface RouteDeps {
 function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   const { env, terminals, processes, tools, policy, approvals, skills, agent, store, files, git, gateway } = deps
   const settings = deps.settings
+  const credentials = deps.credentials
 
   // ------------------------------------------------------------- bootstrap
   router.register(CHANNELS.appInfo, {
@@ -566,7 +601,7 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
         kind: m.kind,
         inputPerMillion: m.inputPerMillion,
         outputPerMillion: m.outputPerMillion,
-        active: m.id === config.model
+        active: gateway.isActive(m, config.model)
       })),
       budget: {
         usedCoins: budget.usedCoins,
@@ -574,7 +609,12 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
         day: budget.day,
         exceeded: budget.exceeded,
         enabled: gateway.isEnabled(),
-        model: config.model
+        model: config.model,
+        metered: budget.metered,
+        spendUsd: budget.spendUsd,
+        hasKey: gateway.usesUserKey(),
+        provider: config.provider,
+        endpoint: config.endpoint
       }
     }
   }
@@ -588,9 +628,13 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
     domain: 'env.modify',
     requiresApproval: false,
     handler: (args: { modelId: string }) => {
-      const config: ModelConfig = { ...gateway.getConfig(), model: args.modelId }
+      // A catalogue entry that names a provider carries its own endpoint and
+      // wire id. Selecting it must actually select that model — a row in the
+      // picker that does not change the request is worse than no row.
+      const resolved = gateway.resolveModel(args.modelId)
+      const config: ModelConfig = resolved ?? { ...gateway.getConfig(), model: args.modelId }
       gateway.setConfig(config)
-      void store.set({ modelName: args.modelId })
+      void store.set({ modelName: args.modelId, modelProvider: config.provider, modelEndpoint: config.endpoint })
       return modelSnapshot()
     }
   })
@@ -612,17 +656,21 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
     domain: 'env.modify',
     requiresApproval: false,
     handler: (args: {
-      provider: 'none' | 'ollama' | 'openai-compatible'
+      provider: ProviderKind
       endpoint: string
       model: string
       credentialKey: string | null
+      referer?: string
     }) => {
       gateway.setConfig({
         ...gateway.getConfig(),
         provider: args.provider,
         endpoint: args.endpoint,
         model: args.model,
-        credentialKey: args.credentialKey
+        // Default to the provider's own slot. Sending a previous provider's key
+        // to a new endpoint would leak it, so the slot moves with the provider.
+        credentialKey: args.credentialKey ?? (args.provider === 'openrouter' ? OPENROUTER_CREDENTIAL : null),
+        referer: args.referer
       })
       void store.set({
         modelProvider: args.provider,
@@ -630,6 +678,28 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
         modelName: args.model
       })
       return modelSnapshot()
+    }
+  })
+
+  // Real verification, not "the field is filled in". Asks the provider.
+  router.register(CHANNELS.modelsVerifyKey, {
+    domain: 'network.read',
+    requiresApproval: false,
+    handler: () => gateway.describeKey()
+  })
+
+  router.register(CHANNELS.modelsSetKey, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: async (args: { apiKey: string }) => {
+      const key = typeof args.apiKey === 'string' ? args.apiKey.trim() : ''
+      if (!key) return { ok: false, configured: gateway.usesUserKey(), label: null, usage: null, limit: null, limitRemaining: null, isFreeTier: null, error: 'No key was provided.' }
+      const slot = gateway.getConfig().credentialKey ?? OPENROUTER_CREDENTIAL
+      const stored = await credentials.set(slot, key)
+      if (!stored) {
+        return { ok: false, configured: gateway.usesUserKey(), label: null, usage: null, limit: null, limitRemaining: null, isFreeTier: null, error: 'OS encryption is unavailable, so the key was not stored.' }
+      }
+      return gateway.describeKey()
     }
   })
 

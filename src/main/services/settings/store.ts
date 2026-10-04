@@ -362,17 +362,21 @@ export function migrateLegacyState(legacy: unknown): Partial<Settings> {
   const agent: Record<string, unknown> = {}
   if (typeof source['modelName'] === 'string' && source['modelName']) agent['defaultModel'] = source['modelName']
 
-  // A configured local endpoint becomes a provider entry, minus any secret.
+  // A configured endpoint becomes a provider entry, minus any secret.
   if (typeof source['modelEndpoint'] === 'string' && source['modelEndpoint']) {
     const provider = source['modelProvider']
-    const kind = provider === 'none' ? 'openai-compatible' : provider
+    // OpenRouter is OpenAI-compatible on the wire, which is what the `kind`
+    // describes; `id`/`label` keep the specific provider visible.
+    const kind = 'openai-compatible'
+    const named = provider === 'ollama' || provider === 'openrouter'
     out['providers'] = [
       {
-        id: provider === 'ollama' ? 'ollama' : 'custom',
-        label: provider === 'ollama' ? 'Ollama' : 'Custom endpoint',
+        id: named ? provider : 'custom',
+        label:
+          provider === 'ollama' ? 'Ollama' : provider === 'openrouter' ? 'OpenRouter' : 'Custom endpoint',
         kind,
         baseUrl: source['modelEndpoint'],
-        credentialKey: null,
+        credentialKey: provider === 'openrouter' ? 'openrouter-api-key' : null,
         models: typeof source['modelName'] === 'string' ? [source['modelName']] : [],
         byok: true,
         enabled: provider !== 'none'

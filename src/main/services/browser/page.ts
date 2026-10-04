@@ -76,6 +76,15 @@ interface AxNode {
   disabled?: boolean
 }
 
+/**
+ * How long a JavaScript dialog is allowed to block its renderer.
+ *
+ * Long enough that the next tool call can answer it deliberately, short enough
+ * that an unattended page is never stuck. `browser_handle_dialog` waits 5s by
+ * default, so a deliberate answer always wins this race.
+ */
+const DIALOG_HOLD_MS = 4_000
+
 export class PageController {
   /**
    * Attaches the DevTools protocol on first use.
@@ -172,19 +181,118 @@ export class PageController {
    */
   async attachProtocol(): Promise<void> {
     if (this.destroyed) return
-    if (this.wc.debugger.isAttached()) {
-      this.debuggerAttached = true
-      return
+    if (!this.wc.debugger.isAttached()) {
+      try {
+        this.wc.debugger.attach('1.3')
+        this.debuggerAttached = true
+        this.armed = true
+      } catch {
+        // The tab still works for reading and navigation; only input degrades.
+        this.debuggerAttached = false
+      }
+    }
+    if (this.wc.debugger.isAttached()) this.watchDialogs()
+  }
+
+  /** Send one DevTools protocol command. Bounded; never hangs the caller. */
+  async send<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    return this.cdp<T>(method, params)
+  }
+
+  /**
+   * Watch for `alert`/`confirm`/`prompt` and dismiss immediately.
+   *
+   * A JavaScript dialog blocks the renderer until it is answered. Nothing in the
+   * app is going to answer it — the developer is not watching — so the page
+   * would hang until the tool timed out. Instead every dialog is reported to the
+   * tab manager (so `browser_handle_dialog` can answer it deliberately) and
+   * then dismissed so the page is never stuck.
+   */
+  private watchDialogs(): void {
+    if (this.dialogWatcher) return
+    this.dialogWatcher = (_event: unknown, method: string, params: unknown): void => {
+      if (method !== 'Page.javascriptDialogOpening') return
+      const details = (params ?? {}) as { type?: string; message?: string; defaultPrompt?: string; url?: string }
+      this.dialogOpen = true
+      this.dialogOpenedAt = Date.now()
+      for (const waiter of this.dialogWaiters.splice(0)) waiter()
+      this.onDialog?.({
+        type: (details.type === 'confirm' || details.type === 'prompt' || details.type === 'beforeunload'
+          ? details.type
+          : 'alert') as 'alert' | 'confirm' | 'prompt' | 'beforeunload',
+        message: details.message ?? '',
+        defaultValue: details.defaultPrompt ?? '',
+        url: details.url ?? ''
+      })
+
+      if (this.dialogHold) clearTimeout(this.dialogHold)
+      this.dialogHold = setTimeout(() => {
+        this.dialogHold = null
+        if (!this.dialogOpen) return
+        this.dialogOpen = false
+        void this.send('Page.handleJavaScriptDialog', { accept: false }).catch(() => undefined)
+      }, DIALOG_HOLD_MS)
+      this.dialogHold.unref?.()
+    }
+    this.wc.debugger.on('message', this.dialogWatcher as (...args: unknown[]) => void)
+  }
+
+  /**
+   * Answer the dialog currently blocking the page.
+   *
+   * The error distinguishes "there was no dialog" from "the hold already expired
+   * and dismissed it", because they call for different next steps: the first is a
+   * wrong selector, the second is being too slow.
+   */
+  async answerDialog(accept: boolean, promptText?: string): Promise<void> {
+    const wasOpen = this.dialogOpen
+    const openedAt = this.dialogOpenedAt
+    this.dialogOpen = false
+    if (this.dialogHold) {
+      clearTimeout(this.dialogHold)
+      this.dialogHold = null
+    }
+    if (!wasOpen) {
+      throw new Error(
+        openedAt
+          ? `The dialog was already answered or dismissed ${Date.now() - openedAt}ms after it opened. ` +
+            'It is held for ' +
+            `${DIALOG_HOLD_MS}ms, so answer it within the same or the next tool call.`
+          : 'No dialog is open on this page right now.'
+      )
     }
     try {
-      this.wc.debugger.attach('1.3')
-      this.debuggerAttached = true
-      this.armed = true
+      await this.send('Page.handleJavaScriptDialog', {
+        accept,
+        ...(accept && promptText !== undefined ? { promptText } : {})
+      })
+      // Chromium keeps the dialog manager in a per-frame state; re-arming the
+      // domain after an answer is what guarantees the *next* alert, confirm or
+      // prompt on the same page is still reported instead of silently blocking
+      // a renderer nobody is watching.
+      await this.send('Page.enable').catch(() => undefined)
     } catch (err) {
-      // The tab still works for reading and navigation; only input degrades.
-      this.debuggerAttached = false
+      throw new Error(
+        `The dialog was dismissed before it could be answered (it is held for ${DIALOG_HOLD_MS}ms): ` +
+          (err instanceof Error ? err.message : String(err))
+      )
     }
   }
+
+  /** Set by the tab manager to receive intercepted dialogs. */
+  onDialog: ((dialog: {
+    type: 'alert' | 'confirm' | 'prompt' | 'beforeunload'
+    message: string
+    defaultValue: string
+    url: string
+  }) => void) | null = null
+
+  private dialogWatcher: ((event: unknown, method: string, params: unknown) => void) | null = null
+  private dialogHold: NodeJS.Timeout | null = null
+  private dialogOpen = false
+  private dialogOpenedAt = 0
+  /** Resolvers waiting for a dialog to appear, so input can stop blocking. */
+  private readonly dialogWaiters: (() => void)[] = []
 
   /** The view has begun loading. */
   arm(): void {
@@ -345,6 +453,38 @@ export class PageController {
    * affordances attach their handlers to `mouseover`, and skipping it produces
    * a click that lands on nothing.
    */
+  /**
+   * Dispatch one input event, giving up if it blocks on a dialog.
+   *
+   * A `confirm()` freezes the renderer, and Chromium does not answer the
+   * dispatch command until the renderer is free again — so awaiting it would
+   * make the click tool block for exactly as long as the dialog hold, and the
+   * tool call meant to *answer* that dialog would only start after it expired.
+   * Racing the dispatch against the dialog signal breaks that deadlock: the
+   * click returns with the dialog open and waiting, which is the state the
+   * agent needs to see.
+   *
+   * Returns true when the event was delivered, false when a dialog took over.
+   */
+  private async dispatchOrDialog(method: string, params: Record<string, unknown>): Promise<boolean> {
+    const delivered = this.cdp(method, params).then(
+      () => 'sent' as const,
+      () => 'failed' as const
+    )
+    const outcome = await Promise.race([delivered, this.dialogSignal().then(() => 'dialog' as const)])
+    return outcome !== 'dialog'
+  }
+
+  /** Resolves as soon as a dialog is open on this page, now or shortly. */
+  private dialogSignal(): Promise<void> {
+    if (this.dialogOpen) return Promise.resolve()
+    return new Promise<void>((resolve) => {
+      this.dialogWaiters.push(resolve)
+      // A waiter must never keep the process alive on its own.
+      if (this.dialogWaiters.length > 8) this.dialogWaiters.shift()
+    })
+  }
+
   async clickAt(point: { x: number; y: number }, clickCount = 1): Promise<void> {
     this.focus()
     await this.cdp('Input.dispatchMouseEvent', {
@@ -354,7 +494,7 @@ export class PageController {
       button: 'none',
       buttons: 0
     })
-    await this.cdp('Input.dispatchMouseEvent', {
+    await this.dispatchOrDialog('Input.dispatchMouseEvent', {
       type: 'mousePressed',
       x: point.x,
       y: point.y,
@@ -362,7 +502,15 @@ export class PageController {
       buttons: 1,
       clickCount
     })
-    await this.cdp('Input.dispatchMouseEvent', {
+    // The release is skipped when a dialog opened on the press: the page is
+    // blocked, so the release would be dispatched into a paused renderer and
+    // would land on the next interaction instead.
+    if (this.dialogOpen) return
+    // The release races too, because a `click` handler is where most pages put
+    // their `confirm()`: the renderer only blocks after the mouseup, so
+    // awaiting this command normally is what deadlocks the click that opened
+    // the dialog in the first place.
+    await this.dispatchOrDialog('Input.dispatchMouseEvent', {
       type: 'mouseReleased',
       x: point.x,
       y: point.y,
@@ -374,6 +522,7 @@ export class PageController {
 
   async doubleClickAt(point: { x: number; y: number }): Promise<void> {
     await this.clickAt(point, 1)
+    if (this.dialogOpen) return
     await sleep(40)
     await this.clickAt(point, 2)
   }
@@ -412,15 +561,323 @@ async typeText(text: string, mode: 'insert' | 'keys' = 'insert', delayMs = 0): P
       if (delayMs > 0) await sleep(delayMs)
     }
     return typed
+  }  /** Replace a field's contents with text, leaving the caret at the end. */
+  async replaceValue(text: string, selector?: string, index?: number): Promise<void> {
+    await this.clearField(selector, index)
+    await this.dispatchOrDialog('Input.insertText', { text })
   }
 
-  /** Replace a field's contents with text, leaving the caret at the end. */
-async replaceValue(text: string): Promise<void> {
-    const chord = describeKey('Ctrl+A')
-    if (chord.ok && chord.sequence) await this.pressKeys(chord.sequence)
+  /**
+   * Empty a field the way a user does, and report how it was achieved.
+   *
+   * Selecting the content in the page and deleting it is the honest version: it
+   * fires the same events a user's Ctrl+A and Backspace do, so framework state
+   * updates. Synthesised Ctrl+A is not always delivered to an input that was
+   * focused programmatically, though, so when the selection path leaves the
+   * field non-empty the value is written through the native setter instead —
+   * and the result says which path ran, rather than claiming a keystroke that
+   * never took effect.
+   */
+  async clearField(selector?: string, index?: number): Promise<'keys' | 'setter' | 'already-empty' | 'unresolved'> {
+    if (!selector) {
+      const chord = describeKey('Ctrl+A')
+      if (chord.ok && chord.sequence) await this.pressKeys(chord.sequence)
+      const backspace = describeKey('Backspace')
+      if (backspace.ok && backspace.sequence) await this.pressKeys(backspace.sequence)
+      return 'keys'
+    }
+
+    const before = await this.call('getValue', { selector, index })
+    const held = (before.value as { value?: string } | undefined)?.value ?? ''
+    if (held === '') return 'already-empty'
+
+    await this.call('selectAll', { selector, index })
     const backspace = describeKey('Backspace')
     if (backspace.ok && backspace.sequence) await this.pressKeys(backspace.sequence)
-    await this.cdp('Input.insertText', { text })
+
+    const after = await this.call('getValue', { selector, index })
+    if (((after.value as { value?: string } | undefined)?.value ?? '') === '') return 'keys'
+
+    await this.call('setValue', { selector, value: '', index })
+    const settled = await this.call('getValue', { selector, index })
+    return ((settled.value as { value?: string } | undefined)?.value ?? '') === '' ? 'setter' : 'unresolved'
+  }
+
+  /** Move the pointer over an element without pressing, for hover-reveal UI. */
+  async hoverAt(point: { x: number; y: number }): Promise<void> {
+    this.focus()
+    await this.cdp('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: point.x,
+      y: point.y,
+      button: 'none',
+      buttons: 0
+    })
+  }
+
+  /**
+   * Drag from one point to another.
+   *
+   * Several intermediate moves, not one. Chromium starts a native drag only
+   * after the pointer has travelled past its threshold, so a single jump from
+   * source to target drops on nothing while still reporting success.
+   */
+  async dragFromTo(from: { x: number; y: number }, to: { x: number; y: number }, steps = 12): Promise<void> {
+    this.focus()
+    await this.hoverAt(from)
+    await this.cdp('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: from.x,
+      y: from.y,
+      button: 'left',
+      buttons: 1,
+      clickCount: 1
+    })
+    for (let step = 1; step <= steps; step += 1) {
+      const ratio = step / steps
+      await this.cdp('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: from.x + (to.x - from.x) * ratio,
+        y: from.y + (to.y - from.y) * ratio,
+        button: 'left',
+        buttons: 1
+      })
+      await sleep(12)
+    }
+    await this.cdp('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: to.x,
+      y: to.y,
+      button: 'left',
+      buttons: 0,
+      clickCount: 1
+    })
+    await this.settle(2)
+  }
+
+  /**
+   * Attach files to an `<input type="file">`.
+   *
+   * Uses `DOM.setFileInputFiles` rather than synthesising a drop: it reaches the
+   * browser's own file-selection plumbing, so a page reading `FileList` sees
+   * exactly what a real selection would produce.
+   */
+  /**
+   * Drag one element onto another, measuring and pressing as close together as
+   * the protocol allows.
+   *
+   * The gesture lives here rather than in the tool because it is a race: the
+   * coordinates come from `getBoundingClientRect`, and anything that scrolls the
+   * page between reading them and pressing the mouse — another reveal, a focus
+   * change, a settling frame — leaves the pointer aimed at empty space or, worse,
+   * at a different element that has since moved under it. So the whole sequence
+   * measures, verifies what is actually under the point, and presses without an
+   * await in between.
+   */
+  async dragSelector(
+    fromSelector: string,
+    toSelector: string,
+    options: { index?: number; toIndex?: number; steps?: number } = {}
+  ): Promise<{
+      ok: boolean
+      reason?: string
+      scrolled?: boolean
+      steps?: number
+      from?: { rect: { centerX: number; centerY: number }; descriptor: unknown }
+      to?: { rect: { centerX: number; centerY: number }; descriptor: unknown }
+    }> {
+    const index = options.index
+    const toIndex = options.toIndex
+    const steps = options.steps ?? 12
+
+    // Aiming puts the pointer on the source and leaves it there, which also
+    // settles any hover-reveal the page has; only then is the destination
+    // measured, because the destination's position can depend on that reveal.
+    const aimed = await this.aim(fromSelector, index)
+    if (!aimed.ok) return { ok: false, reason: aimed.reason }
+
+    const revealedTo = await this.call('reveal', { selector: toSelector, index: toIndex })
+    if (!revealedTo.ok) return { ok: false, reason: String(revealedTo.reason ?? 'The drop target was not found.') }
+
+    await this.settle(2)
+    const to = await this.call('reveal', { selector: toSelector, index: toIndex, scroll: false })
+    if (!to.ok) return { ok: false, reason: String(to.reason ?? 'The drop target was not found.') }
+    const target = to.rect as { centerX: number; centerY: number }
+    const source = aimed.point
+
+    await this.cdp('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: source.x,
+      y: source.y,
+      button: 'left',
+      buttons: 1,
+      clickCount: 1
+    })
+    for (let step = 1; step <= steps; step += 1) {
+      const ratio = step / steps
+      await this.cdp('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: source.x + (target.centerX - source.x) * ratio,
+        y: source.y + (target.centerY - source.y) * ratio,
+        button: 'left',
+        buttons: 1
+      })
+      await sleep(12)
+    }
+    await this.cdp('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: target.centerX,
+      y: target.centerY,
+      button: 'left',
+      buttons: 0,
+      clickCount: 1
+    })
+    await this.settle(3)
+
+    return {
+      ok: true,
+      scrolled: aimed.scrolled,
+      steps,
+      from: { rect: { centerX: source.x, centerY: source.y }, descriptor: aimed.descriptor },
+      to: { rect: target, descriptor: to.descriptor }
+    }
+  }
+
+  /**
+   * Move the pointer onto an element and confirm it is really under it.
+   *
+   * Measuring and pressing are two separate round trips to the page, and the
+   * layout can change in between: hovering a control often reveals a panel, and
+   * moving the pointer away collapses it again, so coordinates read before the
+   * move point at one element and at another after it. Aiming in a loop — move,
+   * re-measure, check what is actually at the point, repeat until it agrees —
+   * is what a person does, and it converges in one or two passes in practice.
+   */
+  private async aim(
+    selector: string,
+    index?: number
+  ): Promise<
+    | { ok: true; point: { x: number; y: number }; descriptor: unknown; scrolled: boolean }
+    | { ok: false; reason: string; underPointer: unknown }
+  > {
+    const revealed = await this.call('reveal', { selector, index })
+    if (!revealed.ok) return { ok: false, reason: String(revealed.reason ?? 'The element was not found.'), underPointer: null }
+    const scrolled = revealed.scrolled === true
+
+    this.focus()
+    await this.settle(2)
+
+    let measured = await this.call('reveal', { selector, index, scroll: false })
+    if (!measured.ok) return { ok: false, reason: String(measured.reason ?? 'The element was not found.'), underPointer: null }
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const rect = measured.rect as { centerX: number; centerY: number }
+      const point = { x: rect.centerX, y: rect.centerY }
+      await this.cdp('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: point.x,
+        y: point.y,
+        button: 'none',
+        buttons: 0
+      })
+      await this.settle(2)
+
+      // The move may have revealed or collapsed something, so the position is
+      // read again rather than trusted.
+      const again = await this.call('reveal', { selector, index, scroll: false })
+      if (!again.ok) return { ok: false, reason: String(again.reason ?? 'The element vanished.'), underPointer: null }
+      measured = again
+
+      const current = again.rect as { centerX: number; centerY: number }
+      const under = await this.call('elementAt', { x: current.centerX, y: current.centerY })
+      const landed = (under.ok ? under.element : null) as { id?: string; tag?: string } | null
+      const wanted = again.descriptor as { id?: string; tag?: string } | undefined
+      const matches = Boolean(
+        landed && (wanted?.id ? landed.id === wanted.id : landed.tag === wanted?.tag)
+      )
+      if (matches) {
+        return { ok: true, point: { x: current.centerX, y: current.centerY }, descriptor: again.descriptor, scrolled }
+      }
+      if (attempt === 3) {
+        return {
+          ok: false,
+          reason:
+            `At (${Math.round(current.centerX)}, ${Math.round(current.centerY)}) the page has ` +
+            `<${landed?.tag ?? 'nothing'}${landed?.id ? `#${landed.id}` : ''}>, not ${selector}. ` +
+            'The page keeps reflowing under the pointer.',
+          underPointer: landed
+        }
+      }
+    }
+    return { ok: false, reason: `Could not aim at ${selector}.`, underPointer: null }
+  }
+
+  /** Click an element by selector, with the aiming and verification above. */
+  async clickSelector(
+    selector: string,
+    options: { index?: number; clickCount?: number } = {}
+  ): Promise<{ ok: boolean; reason?: string; point?: { x: number; y: number }; descriptor?: unknown; scrolled?: boolean }> {
+    const aimed = await this.aim(selector, options.index)
+    if (!aimed.ok) return { ok: false, reason: aimed.reason }
+    const clickCount = options.clickCount ?? 1
+    await this.dispatchOrDialog('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: aimed.point.x,
+      y: aimed.point.y,
+      button: 'left',
+      buttons: 1,
+      clickCount
+    })
+    if (!this.dialogOpen) {
+      await this.dispatchOrDialog('Input.dispatchMouseEvent', {
+        type: 'mouseReleased',
+        x: aimed.point.x,
+        y: aimed.point.y,
+        button: 'left',
+        buttons: 0,
+        clickCount
+      })
+    }
+    await this.settle(3)
+    return { ok: true, point: aimed.point, descriptor: aimed.descriptor, scrolled: aimed.scrolled }
+  }
+
+  /** Move the pointer onto an element without pressing it. */
+  async hoverSelector(
+    selector: string,
+    index?: number
+  ): Promise<{ ok: boolean; reason?: string; point?: { x: number; y: number }; descriptor?: unknown; scrolled?: boolean }> {
+    const aimed = await this.aim(selector, index)
+    if (!aimed.ok) return { ok: false, reason: aimed.reason }
+    return { ok: true, point: aimed.point, descriptor: aimed.descriptor, scrolled: aimed.scrolled }
+  }
+
+  async setFiles(selector: string, paths: string[]): Promise<{ nodeId: number }> {
+    const document = await this.send<{ root: { nodeId: number } }>('DOM.getDocument', { depth: 1 })
+    const rootId = document?.root?.nodeId
+    if (typeof rootId !== 'number') throw new Error('Could not reach the page document.')
+    const found = await this.send<{ nodeId: number }>('DOM.querySelector', { nodeId: rootId, selector })
+    if (!found?.nodeId) throw new Error(`No file input matches ${selector}.`)
+    await this.send('DOM.setFileInputFiles', { nodeId: found.nodeId, files: paths })
+    return { nodeId: found.nodeId }
+  }
+
+  /** Drop files onto an element, for components that only accept a real drop. */
+  async dropFiles(point: { x: number; y: number }, paths: string[]): Promise<void> {
+    const names = paths.map((p) => p.split(/[\/]/).pop() ?? p)
+    const payload = {
+      items: names.map((name, index) => ({
+        mimeType: 'application/octet-stream',
+        data: paths[index] ?? '',
+        title: name
+      })),
+      files: paths,
+      dragOperationsMask: 1
+    }
+    await this.cdp('Input.dispatchDragEvent', { type: 'dragEnter', x: point.x, y: point.y, data: payload })
+    await this.cdp('Input.dispatchDragEvent', { type: 'dragOver', x: point.x, y: point.y, data: payload })
+    await this.cdp('Input.dispatchDragEvent', { type: 'drop', x: point.x, y: point.y, data: payload })
+    await this.settle(3)
   }
 
   /**
@@ -486,9 +943,12 @@ private async sendKey(
       base.text = descriptor.text
       base.unmodifiedText = descriptor.text
     }
-    await this.cdp('Input.dispatchKeyEvent', base)
-    if (kind !== 'keyUp') {
-      await this.cdp('Input.dispatchKeyEvent', { ...base, type: 'keyUp', modifiers })
+    // A keydown handler is as likely to open a dialog as a click handler is, so
+    // this races too: otherwise the first Enter in a form that confirms before
+    // submitting blocks the very call meant to answer it.
+    await this.dispatchOrDialog('Input.dispatchKeyEvent', base)
+    if (kind !== 'keyUp' && !this.dialogOpen) {
+      await this.dispatchOrDialog('Input.dispatchKeyEvent', { ...base, type: 'keyUp', modifiers })
     }
   }
 
@@ -642,6 +1102,19 @@ private async sendKey(
   }
 
   dispose(): void {
+    if (this.dialogHold) {
+      clearTimeout(this.dialogHold)
+      this.dialogHold = null
+    }
+    this.dialogOpen = false
+    if (this.dialogWatcher && !this.destroyed) {
+      try {
+        this.wc.debugger.removeListener('message', this.dialogWatcher as (...args: unknown[]) => void)
+      } catch {
+        // The debug session may already be gone.
+      }
+      this.dialogWatcher = null
+    }
     if (this.debuggerAttached && !this.destroyed) {
       try {
         this.wc.debugger.detach()

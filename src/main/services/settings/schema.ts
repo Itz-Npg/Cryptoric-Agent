@@ -210,9 +210,9 @@ export const UsageSettingsSchema = z.object({
    * account service; this is the cached ceiling used for the offline view and
    * must never be treated as a grant.
    */
-  dailyAllowanceCoins: z.number().int().min(0).max(1_000_000).default(500),
+  dailyAllowanceCoins: z.number().int().min(0).max(1_000_000).default(25),
   streakEnabled: z.boolean().default(false),
-  lowBalanceWarningAt: z.number().int().min(0).default(50)
+  lowBalanceWarningAt: z.number().int().min(0).default(5)
 })
 
 export const AdvancedSettingsSchema = z.object({

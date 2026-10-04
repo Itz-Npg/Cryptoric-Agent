@@ -39,7 +39,7 @@ describe('settings defaults and validation', () => {
     expect(settings.privacy.redactSecrets).toBe(true)
     expect(settings.notifications.agentCompleted).toBe(true)
     expect(settings.updates.channel).toBe('stable')
-    expect(settings.usage.dailyAllowanceCoins).toBe(500)
+    expect(settings.usage.dailyAllowanceCoins).toBe(25)
     expect(settings.advanced.logLevel).toBe('warn')
     expect(settings.sessions.resumeTasks).toBe(true)
     expect(settings.environment.autoInstallRuntimes).toBe(true)
@@ -176,6 +176,7 @@ describe('migration', () => {
     expect(migrated.appearance?.reducedMotion).toBe(true)
     expect(migrated.updates?.channel).toBe('beta')
     expect(migrated.usage?.dailyAllowanceCoins).toBe(500)
+    expect(migrated.providers?.[0]?.kind).toBe('openai-compatible')
     expect(migrated.permissions?.domains).toEqual({ 'fs.delete': 'deny' })
     expect(migrated.agent?.defaultModel).toBe('qwen2.5-coder:14b')
     expect(migrated.providers?.[0]?.baseUrl).toBe('http://127.0.0.1:11434/v1')
@@ -210,7 +211,7 @@ describe('migration', () => {
     // Legacy contributes whole sections; the rest of each section must survive.
     expect(settings.appearance.scale).toBe(1)
     expect(settings.appearance.accentColor).toBe('#22d3ee')
-    expect(settings.usage.lowBalanceWarningAt).toBe(50)
+    expect(settings.usage.lowBalanceWarningAt).toBe(5)
   })
 
   it('leaves no undefined field after a legacy seed', async () => {

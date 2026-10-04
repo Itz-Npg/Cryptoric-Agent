@@ -11,3 +11,10 @@ node_modules/.tmp/
 
 # Local design-review screenshots (CRYPTORIC_SHOT output)
 .review/
+
+# Local secrets. The model gateway reads provider keys from here at boot and
+# copies them into the OS-encrypted credential store; they must never be
+# committed.
+.env
+.env.*
+!.env.example

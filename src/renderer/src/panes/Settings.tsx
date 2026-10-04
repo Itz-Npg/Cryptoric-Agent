@@ -15,6 +15,99 @@ import type { AppStateShape } from '../state/useAppState'
 
 // ----------------------------------------------------------------- settings
 
+/**
+ * Provider credential row.
+ *
+ * Exists because a hosted model is only as real as its key: the user has to be
+ * able to add one, and — more importantly — to ask the provider whether it
+ * works instead of trusting that the field is filled in. Verification is a
+ * live call; the key is stored encrypted and never sent back to the renderer.
+ */
+function ProviderKeyRow(): React.ReactElement {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [report, setReport] = useState<{
+    ok: boolean
+    tone: 'ok' | 'warn' | 'error' | 'idle'
+    text: string
+  } | null>(null)
+
+  const run = async (fn: () => Promise<import('../../../preload').ModelKeyReportDto>): Promise<void> => {
+    setBusy(true)
+    try {
+      const r = await fn()
+      if (!r.configured) {
+        setReport({ ok: false, tone: 'warn', text: r.error ?? 'No key is stored for this provider.' })
+      } else if (!r.ok) {
+        setReport({ ok: false, tone: 'error', text: r.error ?? 'The provider rejected the key.' })
+      } else {
+        const bits = ['Key accepted by the provider']
+        if (r.label) bits.push(r.label)
+        if (r.isFreeTier) bits.push('free tier')
+        if (r.limitRemaining !== null) bits.push(`${r.limitRemaining} of ${r.limit ?? '—'} remaining`)
+        setReport({ ok: true, tone: 'ok', text: bits.join(' · ') })
+      }
+    } catch (err) {
+      setReport({ ok: false, tone: 'error', text: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="row" style={{ borderTop: '1px solid var(--line)', borderRadius: 0, alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+      <div className="row-label" style={{ display: 'grid', minWidth: 0 }}>
+        <span style={{ fontWeight: 550 }}>Provider key</span>
+        <span className="caption">
+          Stored in the OS-encrypted credential store. Verification is a live request to the provider.
+        </span>
+      </div>
+
+      {report && <Chip tone={report.tone}>{report.text}</Chip>}
+
+      {editing ? (
+        <>
+          <input
+            className="palette-input"
+            style={{ flex: '1 1 260px', minWidth: 200 }}
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="Paste the provider API key"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <Button
+            variant="primary"
+            disabled={busy || draft.trim().length < 8}
+            onClick={() => {
+              void run(() => window.cryptoric.models.setKey(draft.trim())).then(() => {
+                setDraft('')
+                setEditing(false)
+              })
+            }}
+          >
+            Save
+          </Button>
+          <Button variant="ghost" onClick={() => setEditing(false)}>
+            Cancel
+          </Button>
+        </>
+      ) : (
+        <>
+          <Button disabled={busy} onClick={() => void run(() => window.cryptoric.models.verifyKey())}>
+            Verify key
+          </Button>
+          <Button variant="ghost" onClick={() => setEditing(true)}>
+            Add key
+          </Button>
+        </>
+      )}
+    </div>
+  )
+}
+
 export function SettingsSurface({
   state,
   models,
@@ -85,6 +178,7 @@ export function SettingsSurface({
                 {model.kind === 'local' && <Chip tone="ok">local · free</Chip>}
               </button>
             ))}
+            <ProviderKeyRow />
           </div>
         </section>
 

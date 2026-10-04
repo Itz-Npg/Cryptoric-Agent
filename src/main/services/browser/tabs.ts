@@ -90,12 +90,63 @@ export interface PermissionDenial {
   at: string
 }
 
+/**
+ * Permissions Cryptoric can grant for a tab on request.
+ *
+ * Deliberately narrow. A test browser that can be told to allow geolocation on
+ * demand can be told to allow it against a page the user did not intend to visit,
+ * so the grantable set stays a superset of the default-allow set only where the
+ * capability is non-destructive.
+ */
+const GRANTABLE_PERMISSIONS = new Set([
+  'clipboard-read',
+  'clipboard-sanitized-write',
+  'fullscreen',
+  'pointerLock'
+])
+
+export interface PendingDialog {
+  id: string
+  type: 'alert' | 'confirm' | 'prompt' | 'beforeunload'
+  message: string
+  defaultValue: string
+  url: string
+  at: string
+}
+
+export interface DownloadRecord {
+  id: string
+  url: string
+  filename: string
+  mimeType: string
+  /** Bytes written so far; `total` is -1 while the size is still unknown. */
+  received: number
+  total: number
+  state: 'progressing' | 'completed' | 'cancelled' | 'interrupted'
+  savePath: string
+  at: string
+}
+
+export interface CookieReport {
+  name: string
+  domain: string
+  path: string
+  secure: boolean
+  httpOnly: boolean
+  sameSite: string
+  session: boolean
+  /** Length only. The value itself never leaves the browser process. */
+  valueLength: number
+  expirationDate: string | null
+}
+
 export interface StorageReport {
   origin: string
   storagePath: string | null
   cookieCount: number
   cookieNames: string[]
   localStorage: Record<string, string>
+  sessionStorage: Record<string, string>
   sessionStorageKeys: string[]
 }
 
@@ -154,10 +205,15 @@ export class BrowserTabManager {
   /** Browser profile/cache root. Outside the repository, and configurable. */
   readonly cacheDir: string
 
+  /** Where downloads are written. Never inside the user's project. */
+  readonly downloadDir: string
+
   constructor(private readonly options: BrowserTabManagerOptions) {
     this.maxTabs = options.maxTabs ?? 8
     this.cacheDir = join(options.userDataDir, 'browser')
+    this.downloadDir = join(options.userDataDir, 'downloads')
     mkdirSync(this.cacheDir, { recursive: true })
+    mkdirSync(this.downloadDir, { recursive: true })
   }
 
   /**
@@ -290,11 +346,28 @@ export class BrowserTabManager {
       network: [],
       failures: [],
       permissions: [],
+      grants: new Map<string, boolean>(),
+      dialogs: [],
+      downloads: [],
       starts: new Map<number, { at: number; tab: TabState }>()
     }
 
     this.wire(state)
     this.tabs.set(id, state)
+
+    // Intercepted dialogs are queued for `browser_handle_dialog` rather than
+    // left to block the renderer until a tool times out.
+    state.page.onDialog = (dialog) => {
+      state.dialogs.push({
+        id: `dialog-${Date.now()}-${state.dialogs.length}`,
+        type: dialog.type,
+        message: dialog.message,
+        defaultValue: dialog.defaultValue,
+        url: dialog.url,
+        at: new Date().toISOString()
+      })
+      if (state.dialogs.length > 20) state.dialogs.shift()
+    }
 
     // Attach the protocol before the first navigation. Doing it later leaves
     // input routed through the previous document, which silently swallows every
@@ -513,6 +586,166 @@ export class BrowserTabManager {
     state.starts.clear()
   }
 
+  // ------------------------------------------------------------- downloads
+
+  downloads(tabId?: TabId): DownloadRecord[] {
+    const state = this.resolve(tabId)
+    return state ? [...state.downloads] : []
+  }
+
+  /**
+   * Resolve once a download reaches a terminal state.
+   *
+   * Polled rather than event-driven because the caller may attach after the
+   * download already finished — which is the common case for a file the page
+   * served from cache.
+   */
+  async waitForDownload(
+    options: { tabId?: TabId; timeoutMs: number; filename?: string; signal?: AbortSignal }
+  ): Promise<DownloadRecord | null> {
+    const state = this.resolve(options.tabId)
+    if (!state) return null
+    const deadline = Date.now() + options.timeoutMs
+    for (;;) {
+      const match = state.downloads.find(
+        (d) =>
+          (d.state === 'completed' || d.state === 'cancelled' || d.state === 'interrupted') &&
+          (!options.filename || d.filename === options.filename)
+      )
+      if (match) return match
+      if (options.signal?.aborted || Date.now() >= deadline) return null
+      await new Promise((resolve) => setTimeout(resolve, 120))
+    }
+  }
+
+  // --------------------------------------------------------------- dialogs
+
+  pendingDialogs(tabId?: TabId): PendingDialog[] {
+    const state = this.resolve(tabId)
+    return state ? [...state.dialogs] : []
+  }
+
+  /**
+   * Answer one queued dialog.
+   *
+   * The queue holds every dialog the page opened that has not been answered
+   * yet. The page controller keeps the most recent one blocking for a bounded
+   * moment, so this call has something real to answer — and dismisses it anyway
+   * if nobody gets there first, so an unattended page never hangs.
+   */
+  async answerDialog(
+    tabId: TabId,
+    dialogId: string,
+    action: 'accept' | 'dismiss',
+    response?: string
+  ): Promise<{ ok: boolean; message?: string }> {
+    const state = this.tabs.get(tabId)
+    if (!state) return { ok: false, message: `No browser tab with id ${tabId}` }
+    const index = state.dialogs.findIndex((d) => d.id === dialogId)
+    if (index < 0) return { ok: false, message: `No pending dialog with id ${dialogId}` }
+    state.dialogs.splice(index, 1)
+    try {
+      // The DevTools protocol is the only dialog channel available on a
+      // `WebContentsView` that may be re-parented between windows, and it is
+      // also the mechanism that lets a dialog be answered asynchronously.
+      await state.page.answerDialog(action === 'accept', action === 'accept' ? response : undefined)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  // ----------------------------------------------------------- permissions
+
+  /**
+   * Grant or deny one permission for a tab, from now on.
+   *
+   * The handler is re-installed rather than mutated, so the decision applies to
+   * every subsequent request from the same session instead of only the next one.
+   */
+  setPermission(tabId: TabId, permission: string, allow: boolean): { ok: boolean; message?: string } {
+    const state = this.tabs.get(tabId)
+    if (!state) return { ok: false, message: `No browser tab with id ${tabId}` }
+    if (allow && !GRANTABLE_PERMISSIONS.has(permission)) {
+      return {
+        ok: false,
+        message: `Cryptoric will not grant "${permission}". Grantable: ${[...GRANTABLE_PERMISSIONS].join(', ')}.`
+      }
+    }
+    state.grants.set(permission, allow)
+    this.hardenSession(state.session)
+    return { ok: true }
+  }
+
+  permissions(tabId?: TabId): { granted: Record<string, boolean>; denied: PermissionDenial[] } {
+    const state = this.resolve(tabId)
+    if (!state) return { granted: {}, denied: [] }
+    return { granted: Object.fromEntries(state.grants), denied: [...state.permissions] }
+  }
+
+  // ---------------------------------------------------------------- cookies
+
+  /**
+   * Cookie metadata for a tab, with no values.
+   *
+   * The names, flags and lifetimes are what an auth-flow test actually needs,
+   * and they are safe to put in a transcript. Values are session secrets: they
+   * are measured and dropped here rather than relying on a later redaction pass
+   * that might not be on the path that produced them.
+   */
+  async cookies(tabId?: TabId): Promise<CookieReport[]> {
+    const state = this.resolve(tabId)
+    if (!state) return []
+    let raw: Awaited<ReturnType<Session['cookies']['get']>> = []
+    try {
+      raw = await state.session.cookies.get({})
+    } catch {
+      return []
+    }
+    const seen = new Set<string>()
+    const out: CookieReport[] = []
+    for (const cookie of raw) {
+      const key = `${cookie.name} ${cookie.domain ?? ''} ${cookie.path ?? ''}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push({
+        name: cookie.name ?? '',
+        domain: cookie.domain ?? '',
+        path: cookie.path ?? '',
+        secure: Boolean(cookie.secure),
+        httpOnly: Boolean(cookie.httpOnly),
+        sameSite: cookie.sameSite ?? 'unspecified',
+        session: typeof cookie.expirationDate !== 'number',
+        valueLength: (cookie.value ?? '').length,
+        expirationDate:
+          typeof cookie.expirationDate === 'number'
+            ? new Date(cookie.expirationDate * 1000).toISOString()
+            : null
+      })
+    }
+    return out
+  }
+
+  /**
+   * Remove cookies from a tab's session.
+   *
+   * With no `url` every cookie goes, which is what "log out and start over"
+   * needs. With one, only the cookies of that origin go, so a test can reset
+   * authentication without discarding state it still depends on.
+   */
+  async clearCookies(tabId?: TabId, url?: string): Promise<{ ok: boolean; cleared: number; message?: string }> {
+    const state = this.resolve(tabId)
+    if (!state) return { ok: false, cleared: 0, message: 'No browser tab to clear cookies for.' }
+    const before = await this.cookies(state.id)
+    try {
+      await state.session.clearStorageData({ storages: ['cookies'], ...(url ? { origin: url } : {}) })
+      const after = await this.cookies(state.id)
+      return { ok: true, cleared: Math.max(0, before.length - after.length) }
+    } catch (err) {
+      return { ok: false, cleared: 0, message: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
   /** Cookies and web storage for a tab, read from its own session. */
   async storage(tabId?: TabId): Promise<StorageReport | null> {
     const state = this.resolve(tabId)
@@ -529,14 +762,32 @@ export class BrowserTabManager {
     }
 
     let localStorage: Record<string, string> = {}
+    let sessionStorage: Record<string, string> = {}
     let sessionStorageKeys: string[] = []
     let origin = ''
     try {
-      const probe = await state.page.call<{ origin: string; localStorage: Record<string, string>; sessionStorageKeys: string[] }>('storage')
-      if (probe.ok && probe.value) {
-        origin = probe.value.origin ?? ''
-        localStorage = probe.value.localStorage ?? {}
-        sessionStorageKeys = probe.value.sessionStorageKeys ?? []
+      // The bridge returns its fields at the top level of the reply, not under
+      // a `value` wrapper, so reading them the wrong way silently yields an
+      // empty jar and a storage report that looks like a page with no state.
+      const probe = await state.page.call<{
+        ok: boolean
+        reason?: string
+        origin: string
+        localStorage: Record<string, string>
+        sessionStorage: Record<string, string>
+        sessionStorageKeys: string[]
+      }>('storage')
+      if (probe.ok) {
+        const fields = probe as unknown as {
+          origin?: string
+          localStorage?: Record<string, string>
+          sessionStorage?: Record<string, string>
+          sessionStorageKeys?: string[]
+        }
+        origin = fields.origin ?? ''
+        localStorage = fields.localStorage ?? {}
+        sessionStorage = fields.sessionStorage ?? {}
+        sessionStorageKeys = fields.sessionStorageKeys ?? []
       }
     } catch {
       // A tab on about:blank has no origin to read.
@@ -548,6 +799,7 @@ export class BrowserTabManager {
       cookieCount,
       cookieNames,
       localStorage,
+      sessionStorage,
       sessionStorageKeys
     }
   }
@@ -585,9 +837,10 @@ export class BrowserTabManager {
     const owner = (): TabState | undefined => [...this.tabs.values()].find((t) => t.session === ses)
 
     ses.setPermissionRequestHandler((_wc, permission, callback, details) => {
-      const allowed = ALLOWED_PERMISSIONS.has(permission)
+      const state = owner()
+      const allowed = Boolean(state?.grants.get(permission)) || ALLOWED_PERMISSIONS.has(permission)
       if (!allowed) {
-        owner()?.permissions.push({
+        state?.permissions.push({
           permission,
           details: typeof details === 'string' ? details : safeStringify(details),
           at: new Date().toISOString()
@@ -595,9 +848,58 @@ export class BrowserTabManager {
       }
       callback(allowed)
     })
-    ses.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission))
+    ses.setPermissionCheckHandler((_wc, permission) => {
+      const state = owner()
+      return Boolean(state?.grants.get(permission)) || ALLOWED_PERMISSIONS.has(permission)
+    })
 
     this.wireNetwork(ses, owner)
+    this.wireDownloads(ses, owner)
+  }
+
+  /**
+   * Give every download a deterministic path inside the app cache.
+   *
+   * Without this Chromium writes to the system download folder, which is both
+   * outside Cryptoric's control and, worse, inside the user's project if they
+   * have "ask where to save" disabled.
+   */
+  private wireDownloads(ses: Session, owner: () => TabState | undefined): void {
+    ses.on('will-download', (_event, item) => {
+      const state = owner()
+      const id = item.getStartTime().toString() + '-' + (state?.downloads.length ?? 0)
+      const name = sanitizeFilename(item.getFilename())
+      const savePath = join(this.downloadDir, name)
+
+      const record: DownloadRecord = {
+        id,
+        url: item.getURL(),
+        filename: name,
+        mimeType: item.getMimeType(),
+        received: 0,
+        total: -1,
+        state: 'progressing',
+        savePath,
+        at: new Date().toISOString()
+      }
+      state?.downloads.push(record)
+      try {
+        item.setSavePath(savePath)
+      } catch {
+        // A path the OS refuses is reported through the record's state below.
+      }
+
+      item.on('updated', (_e, stateName) => {
+        record.received = item.getReceivedBytes()
+        record.total = item.getTotalBytes()
+        if (stateName === 'interrupted') record.state = 'interrupted'
+      })
+      item.on('done', (_e, stateName) => {
+        record.received = item.getReceivedBytes()
+        record.total = item.getTotalBytes()
+        record.state = stateName === 'completed' ? 'completed' : stateName === 'cancelled' ? 'cancelled' : 'interrupted'
+      })
+    })
   }
 
   /**
@@ -711,6 +1013,7 @@ export class BrowserTabManager {
       return { action: 'deny' }
     })
 
+
     wc.on('render-process-gone', (_e, details) => {
       state.loading = false
       state.failures.push({
@@ -767,8 +1070,25 @@ interface TabState {
   network: NetworkRequest[]
   failures: NetworkFailure[]
   permissions: PermissionDenial[]
+  /** Permission decisions this session has been told to honour. */
+  grants: Map<string, boolean>
+  dialogs: PendingDialog[]
+  downloads: DownloadRecord[]
   /** In-flight request ids, for turning a request into a duration. */
   starts: Map<number, { at: number; tab: TabState }>
+}
+
+/**
+ * Strip directory components and characters Windows will not accept in a path.
+ *
+ * `Content-Disposition` is attacker-controlled in the general case, so a name
+ * like `..\..\startup\evil.exe` must not be able to steer the write outside the
+ * download directory.
+ */
+function sanitizeFilename(name: string): string {
+  const base = String(name || 'download').split(/[\\/]/).pop() ?? 'download'
+  const cleaned = base.replace(/[<>:"|?* -]/g, '_').trim()
+  return cleaned.length > 0 && cleaned !== '.' && cleaned !== '..' ? cleaned.slice(0, 180) : 'download'
 }
 
 function toRecord(state: TabState): TabRecord {
