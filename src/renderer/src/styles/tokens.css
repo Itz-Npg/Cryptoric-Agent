@@ -1,0 +1,166 @@
+/*
+ * Cryptoric Agent — design tokens.
+ *
+ * Machine-readable source of truth for the visual system described in DESIGN.md.
+ * Colour, typography, spacing, radius, motion and elevation live here; no
+ * component hard-codes a hex value or a duration.
+ *
+ * Direction: "Instrument Console" — graphite & sulfur, ledger rows, measured
+ * scale, motion bound to system state. Explicitly NOT: purple/indigo AI palette,
+ * gradient hero text, glassmorphism, glow, or 16px-radius cards.
+ */
+
+:root {
+  /* ---------------------------------------------------------------- colour */
+  --surface-void: #0a0b0d;
+  --surface-sunken: #070809;
+  --surface-base: #0f1114;
+  --surface-raised: #15181c;
+  --surface-overlay: #1b1f24;
+  --surface-selected: #1f2429;
+
+  --hairline: rgba(233, 231, 224, 0.075);
+  --hairline-strong: rgba(233, 231, 224, 0.14);
+  --hairline-focus: rgba(216, 161, 58, 0.55);
+
+  --ink-primary: #e6e4dd;
+  --ink-secondary: #9b9e9f;
+  --ink-tertiary: #63676a;
+  --ink-disabled: #43474a;
+
+  --accent-sulfur: #d8a13a;
+  --accent-sulfur-dim: rgba(216, 161, 58, 0.16);
+  --accent-sulfur-edge: rgba(216, 161, 58, 0.42);
+
+  --signal-verdigris: #4fa795;
+  --signal-verdigris-dim: rgba(79, 167, 149, 0.14);
+  --alert-ember: #d0563f;
+  --alert-ember-dim: rgba(208, 86, 63, 0.14);
+  --info-coldsteel: #7194ac;
+  --info-coldsteel-dim: rgba(113, 148, 172, 0.14);
+
+  --diff-add: #3f8f63;
+  --diff-del: #a8503f;
+  --diff-add-bg: rgba(63, 143, 99, 0.12);
+  --diff-del-bg: rgba(168, 80, 63, 0.12);
+
+  /* ----------------------------------------------------------- typography */
+  --font-sans: 'Instrument Sans Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'Cascadia Mono', monospace;
+
+  --text-micro: 10px;
+  --text-data: 12px;
+  --text-body: 12.5px;
+  --text-title: 15px;
+  --text-emphasis: 19px;
+
+  --tracking-micro: 0.09em;
+  --leading-prose: 1.45;
+  --leading-data: 1.5;
+
+  /* -------------------------------------------------------------- spacing */
+  --space-0: 0;
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 20px;
+  --space-7: 24px;
+  --space-8: 32px;
+
+  /* --------------------------------------------------------------- radius */
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+
+  /* ------------------------------------------------------------ elevation */
+  --elevation-overlay: 0 12px 32px rgba(0, 0, 0, 0.55);
+  --elevation-popover: 0 6px 18px rgba(0, 0, 0, 0.45);
+
+  /* -------------------------------------------------------------- density */
+  --row-height: 28px;
+  --pane-header-height: 30px;
+  --spine-width: 28px;
+  --nav-width: 224px;
+  --rail-width: 132px;
+  --chat-width: 340px;
+  --topbar-height: 40px;
+  --dock-height: 232px;
+  --dock-tab-height: 28px;
+
+  /* --------------------------------------------------------------- motion */
+  --motion-instant: 90ms;
+  --motion-panel: 160ms;
+  --motion-overlay: 120ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --pulse-duration: 1600ms;
+
+  /* --------------------------------------------------------------- z-index */
+  --z-dock: 10;
+  --z-splitter: 20;
+  --z-palette: 40;
+  --z-overlay: 50;
+}
+
+/* Density modes — a real preference, not a cosmetic one for a dense tool. */
+:root[data-density='compact'] {
+  --row-height: 24px;
+  --pane-header-height: 26px;
+}
+:root[data-density='relaxed'] {
+  --row-height: 34px;
+  --pane-header-height: 34px;
+}
+
+/* Bone Ledger — the light theme. Same system, archival palette. */
+:root[data-theme='bone'] {
+  --surface-void: #efebe2;
+  --surface-sunken: #e6e1d6;
+  --surface-base: #f6f3ec;
+  --surface-raised: #fffdf8;
+  --surface-overlay: #fffefa;
+  --surface-selected: #e8e2d5;
+
+  --hairline: rgba(26, 26, 24, 0.14);
+  --hairline-strong: rgba(26, 26, 24, 0.26);
+
+  --ink-primary: #1a1a18;
+  --ink-secondary: #4d4a44;
+  --ink-tertiary: #7a756c;
+  --ink-disabled: #a8a39a;
+
+  --accent-sulfur: #8a6412;
+  --accent-sulfur-dim: rgba(138, 100, 18, 0.13);
+  --accent-sulfur-edge: rgba(138, 100, 18, 0.45);
+
+  --signal-verdigris: #2f6f60;
+  --signal-verdigris-dim: rgba(47, 111, 96, 0.12);
+  --alert-ember: #a63a24;
+  --alert-ember-dim: rgba(166, 58, 36, 0.12);
+  --info-coldsteel: #40627a;
+  --info-coldsteel-dim: rgba(64, 98, 122, 0.12);
+
+  --diff-add: #2f7a51;
+  --diff-del: #9c3f30;
+  --diff-add-bg: rgba(47, 122, 81, 0.1);
+  --diff-del-bg: rgba(156, 63, 48, 0.1);
+
+  --elevation-overlay: 0 12px 32px rgba(60, 54, 44, 0.2);
+  --elevation-popover: 0 6px 18px rgba(60, 54, 44, 0.16);
+}
+
+/* Reduced motion. State colours still change; nothing travels. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-instant: 0.01ms;
+    --motion-panel: 0.01ms;
+    --motion-overlay: 0.01ms;
+  }
+}
+:root[data-motion='reduced'] {
+  --motion-instant: 0.01ms;
+  --motion-panel: 0.01ms;
+  --motion-overlay: 0.01ms;
+  --pulse-duration: 1ms;
+}

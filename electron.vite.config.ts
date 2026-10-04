@@ -16,9 +16,16 @@ export default defineConfig({
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
+    resolve: {
+      alias: { '@shared': resolve('src/shared') }
+    },
     build: {
       rollupOptions: {
-        input: { index: resolve('src/preload/index.ts') }
+        input: { index: resolve('src/preload/index.ts') },
+        // A sandboxed preload script runs inside the renderer process, where
+        // Electron only evaluates CommonJS. Emitting ESM here silently produces
+        // an empty bridge, so the format is pinned to CJS.
+        output: { format: 'cjs', entryFileNames: '[name].cjs' }
       }
     }
   },

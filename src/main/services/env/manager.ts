@@ -40,7 +40,7 @@ import type {
   ToolStatus
 } from '@shared/types'
 import { ToolDetector, indexManagedBin, type DetectOptions, type ProbeRunner } from './detect'
-import { installTool, type CommandRunner, type Downloader } from './installer'
+import { installTool, spawnCommand, httpDownload, type CommandRunner, type Downloader } from './installer'
 import {
   envGet,
   platformSpec,
@@ -312,7 +312,6 @@ export class EnvironmentManager {
     this.installsInFlight.set(toolId, controller)
 
     try {
-      const { spawnCommand, httpDownload } = await import('./installer')
       const command = this.deps.command ?? spawnCommand
       const download = this.deps.download ?? httpDownload
 

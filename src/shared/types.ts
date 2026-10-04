@@ -190,6 +190,22 @@ export type WorkspaceState =
   | 'ERROR'
   | 'OFFLINE'
 
+/** A runtime the open project needs but the environment cannot currently satisfy. */
+export interface EnvironmentGap {
+  toolId: string
+  label: string
+  /** `missing` when absent, `mismatched` when present but too old. */
+  kind: 'missing' | 'mismatched'
+  /** Manifests that imply this requirement. */
+  requiredBy: string[]
+  constraint: string | null
+  /** Ids of trusted installers usable on this platform. */
+  installerIds: string[]
+  /** Permission tier the default route requires. */
+  requiredTier: string
+  detail: string
+}
+
 // ---------------------------------------------------------------------------
 // Terminals & processes
 // ---------------------------------------------------------------------------
@@ -443,6 +459,72 @@ export interface FileChange {
   binary: boolean
   /** Unified diff; empty for binary or untracked-binary files. */
   patch: string
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem
+// ---------------------------------------------------------------------------
+
+export interface FileNode {
+  name: string
+  path: string
+  kind: 'file' | 'dir'
+  /** Size in bytes; 0 for directories. */
+  size: number
+  /** Children for directories; omitted for files. */
+  children?: FileNode[]
+}
+
+export interface FileContents {
+  path: string
+  content: string
+  binary: boolean
+}
+
+export interface FileWriteResult {
+  path: string
+  bytes: number
+}
+
+export interface FileSearchHit {
+  path: string
+  name: string
+  matches: number
+}
+
+// ---------------------------------------------------------------------------
+// Git
+// ---------------------------------------------------------------------------
+
+export interface GitStatusEntry {
+  path: string
+  /** Porcelain index status letter. */
+  index: string
+  /** Porcelain worktree status letter. */
+  worktree: string
+  staged: boolean
+}
+
+export interface GitStatus {
+  isRepo: boolean
+  branch: string | null
+  upstream: string | null
+  ahead: number
+  behind: number
+  entries: GitStatusEntry[]
+  clean: boolean
+}
+
+export interface GitDiffResult {
+  files: FileChange[]
+  raw: string
+}
+
+export interface GitCheckpointResult {
+  created: boolean
+  commit: string | null
+  message: string
+  error: string | null
 }
 
 // ---------------------------------------------------------------------------

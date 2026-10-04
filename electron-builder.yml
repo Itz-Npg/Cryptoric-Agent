@@ -4,6 +4,7 @@ copyright: Copyright © 2026 Cryptoric
 directories:
   buildResources: build
   output: release
+icon: build/cryptoric-icon.png
 files:
   - out/**/*
   - package.json
@@ -14,6 +15,7 @@ win:
   target:
     - target: nsis
       arch: [x64]
+  icon: build/cryptoric-icon.png
   artifactName: ${productName}-${version}-${arch}.${ext}
 nsis:
   oneClick: false
@@ -33,10 +35,12 @@ mac:
   target:
     - target: dmg
       arch: [x64, arm64]
+  icon: build/cryptoric-icon.png
   category: public.app-category.developer-tools
 linux:
   target:
     - AppImage
     - deb
+  icon: build/cryptoric-icon.png
   category: Development
 npmRebuild: false

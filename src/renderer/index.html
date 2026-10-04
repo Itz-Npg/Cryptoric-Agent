@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en" data-theme="graphite" data-density="default" data-motion="full">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      Strict CSP. No remote origins, no inline script, no eval. The renderer
+      loads only bundled assets and talks exclusively over the preload bridge,
+      so nothing here needs relaxing.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:*; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cryptoric Agent</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
