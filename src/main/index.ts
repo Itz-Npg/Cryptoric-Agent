@@ -825,7 +825,11 @@ function createWindow(): BrowserWindow {
     minHeight: 680,
     show: false,
     backgroundColor: '#0A0B0D',
-    title: 'CryptoricAgent',
+    // Kept in step with `<title>` in src/renderer/index.html. The document title
+// wins the moment the page loads, so setting it here alone is dead code — that
+// is why the packaged app's title bar read "Cryptoric Agent" long after this
+// option said otherwise.
+title: 'CryptoricAgent',
     ...(iconPath ? { icon: nativeImage.createFromPath(iconPath) } : {}),
     autoHideMenuBar: true,
     webPreferences: {

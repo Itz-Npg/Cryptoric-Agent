@@ -56,6 +56,18 @@ with a real key. No stubbed fetch, no canned response, no "connection successful
 | Installer | `release/CryptoricAgent-0.1.0-x64.exe`, 83,880,050 bytes |
 | Embedded icon is *your* artwork | `ExtractAssociatedIcon` vs `build/32x32.png` | **mean abs difference 0.0** — pixel identical |
 | Version resource | `ProductName=CryptoricAgent`, `CompanyName=Cryptoric` |
+| Packaged app window title | launched `cryptoricagent.exe`, read `MainWindowTitle` | `CryptoricAgent` |
+| Packaged app runs | process check after launch | PID live, window present, credential store read from the migrated userData |
+
+### Bug the packaged build exposed: a dead `title` option
+
+The packaged exe launched with a title bar reading **"Cryptoric Agent"** even
+though `BrowserWindow`'s `title` had been changed. The document title in
+`src/renderer/index.html` overrides the window option the instant the page loads,
+so the option was dead code — green typecheck, green build, wrong title.
+
+Only launching the real artifact surfaced it. Both are now set, with a comment at
+the `title:` site explaining why they have to agree.
 
 Two pre-existing blockers were found by actually building, both invisible to typecheck,
 unit tests and `electron-vite build`:
