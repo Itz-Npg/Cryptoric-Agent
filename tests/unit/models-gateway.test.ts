@@ -17,6 +17,7 @@ import {
   APINEX_CREDENTIAL,
   APINEX_ENDPOINT,
   PROVIDER_CREDENTIAL_SLOTS,
+  REJECTED_OPENROUTER_MODELS,
   estimateCostUsd,
   findModel,
   toCoins,
