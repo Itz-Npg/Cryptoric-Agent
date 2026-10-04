@@ -473,6 +473,30 @@ function useActions(dispatch: React.Dispatch<Action>) {
         }
       },
 
+      /**
+       * Stop the running task.
+       *
+       * `agent:stop` was wired through the main process, the router, the
+       * preload bridge and the schema, and then had no control anywhere in the
+       * renderer — so the one thing a user must always be able to do, halt the
+       * agent, was unreachable from the interface.
+       */
+      stopTask: async (taskId: string) => {
+        try {
+          const stopped = await window.cryptoric.agent.stop(taskId)
+          dispatch({
+            type: 'notice',
+            notice: stopped ? 'Stopped. The agent will not run anything further.' : 'That task had already finished.'
+          })
+          // The task object comes back through the event stream; asking for the
+          // list here keeps the button honest if the stop lost a race.
+          const snapshot = await window.cryptoric.agent.list()
+          for (const task of snapshot) dispatch({ type: 'task', task })
+        } catch (err) {
+          dispatch({ type: 'notice', notice: describe(err) })
+        }
+      },
+
       submitTask: async (prompt: string) => {
         try {
           const task = await window.cryptoric.agent.submit(prompt)

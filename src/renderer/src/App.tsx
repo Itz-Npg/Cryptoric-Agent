@@ -302,6 +302,7 @@ export function App() {
                 void actions.resolveApproval(id, approved, remember, toolId)
               }
               onClearConversation={() => void actions.clearConversation()}
+              onStop={(taskId) => void actions.stopTask(taskId)}
             />
           )}
 
