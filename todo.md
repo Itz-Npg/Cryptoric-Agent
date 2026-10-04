@@ -191,10 +191,62 @@ and stopped it not working, I sent a big prompt for making the website."*
 - [x] Relaunch with no new task — the whole prior conversation re-rendered from disk
 
 ### 0.6.8 Still open
-- [ ] Conversation is app-scoped, not project-scoped (blocks cleanly on PHASE A)
-- [ ] The loop offers all ~55 tools instead of a routed subset (PHASE 12)
+- [x] Conversation is app-scoped, not project-scoped — **DONE**: `ConversationStore`
+      v2 keeps a `scopes` map keyed by project root, `scopeKey()` lowercases for
+      Windows, version-1 transcripts migrate into the `none` scope
+- [x] `run_command` has no live check of its own — **DONE**: `npm run test:command`,
+      **12/12** — real `node -e` stdout, real exit code + stderr, `npm --version`
+      through `cmd.exe`, `rm -rf /` and `git push --force` refused with a sentinel
+      file proving nothing ran, cancellation kills the child, 10 invocations audited
+- [x] Coin allowance migration — **DONE**: `migrateAllowance` + `RETIRED_ALLOWANCES`,
+      `SETTINGS_VERSION = 3`, `npm run test:migration` **3/3**
+- [ ] The loop offers all ~55 tools instead of a routed subset (PHASE 12).
+      `routeTools()` exists in `src/main/services/tools/router.ts` but is **not
+      wired into `runAgentLoop`** (`LoopDeps.listTools` is the seam). Note its
+      intent chains name tool ids that do not exist yet (`analyze_project`,
+      `search_code`, `run_tests`, …). Open design question: the model must still
+      be able to reach a tool the router dropped.
 - [ ] No streaming; a long run shows nothing until the turn completes
-- [ ] `run_command` has no live check of its own
+
+## PHASE 0.7 — Hosted providers and application updates — DONE, VERIFIED
+
+- [x] APINEX as a real provider kind: `APINEX_ENDPOINT`, `APINEX_CREDENTIAL`,
+      `PROVIDER_CREDENTIAL_SLOTS`, own slot in `.env` seeding and Settings export
+- [x] Key verification implemented — `GET /v1/models`, measured 200 vs 401
+- [x] Five models shipped, each proven with a real completion **and** a real tool
+      call: `free/gpt-6-luna`, `free/glm-5.3-flash`, `free/deepseek-v4.1-flash`,
+      `free/deepseek-v4-pro-0813`, `free/mimo-v2.6-pro`
+- [x] **Two ids in APINEX's own material do not exist and are recorded as such**:
+      the Quick start snippet's `free/gpt-5.6-luna` (404) and the model card's
+      truncated `free/deepseek-v4-pro` (404). The live check asserts they stay out.
+- [x] Eleven other `free/`-prefixed ids answer HTTP 402 "subscription only" on a
+      plain key — deliberately not shipped
+- [x] OpenRouter free models: `poolside/laguna-s-2.1:free`, `inclusionai/ling-3.1-flash`
+- [x] Bounded retry with measured backoff (3s/10s/25s) for 429 and 5xx — the Ling
+      model needs ~30s, a 1/2/4s ladder failed
+- [x] Fixed a key leak: `resolveModel` preferred the configured credential slot, so
+      picking an APINEX model while configured for OpenRouter would have sent the
+      OpenRouter key to `apinex.bond`
+- [x] Updates: `UpdateService` behind an `UpdatePort`, 12 unit tests
+- [x] Checks on launch; downloads only when the user asks
+- [x] A build that cannot check reports `unsupported` with the reason — never
+      "up to date"
+- [x] Settings → Updates, built from existing `SectionHead`/`card`/`row`/`Button`
+- [x] `electron-builder.yml` publish target corrected to `Itz-Npg/Cryptoric-Agent`
+- [x] Pushed to `origin/main`; release `v0.1.0` published with exe + `latest.yml` + `.blockmap`
+- [x] Codebuff attribution stripped from all 15 prior commits; GitHub's contributor
+      graph shows `Itz-Npg` only
+- [ ] **A download and an install were never exercised** — needs a real `v0.1.1`
+      newer than the running build. Path is unit-tested against a fake port only.
+- [ ] Binaries are unsigned; SmartScreen warns. Code signing not configured.
+
+## PHASE 0.8 — Accounts / auth (owner-approved, not started)
+
+- [ ] OAuth sign-in in the system browser, Authorization Code + PKCE. No password collection.
+- [ ] Puter (`@heyputer/puter.js`) as a **user-pays** provider: `upstage/solar-mini4`
+      costs $0.05/M in + $0.20/M out on OpenRouter and is $0 developer cost through
+      Puter. Needs the sign-in flow above first — there is nothing real to wire it
+      to until then. **Not faked.**
 
 ## PHASE 0.3 — Branding — DONE, VERIFIED
 
