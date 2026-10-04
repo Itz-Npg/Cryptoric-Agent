@@ -489,11 +489,31 @@ function UpdatesSection({
             </Button>
             <Button
               disabled={update?.state !== 'available' || busy}
+              // The same state that disables it is the reason it is disabled,
+              // so the button says which one instead of leaving the user to work
+              // out why a click did nothing.
+              title={
+                update?.state === 'not-available'
+                  ? `${update.currentVersion} is already the latest version.`
+                  : update?.state === 'idle'
+                    ? 'Check for updates first.'
+                    : update?.state === 'downloaded'
+                      ? 'Already downloaded — use Restart & install.'
+                      : 'No update is ready to download yet.'
+              }
               onClick={() => void onDownload()}
             >
               Download
             </Button>
-            <Button disabled={update?.state !== 'downloaded'} onClick={() => void onInstall()}>
+            <Button
+              disabled={update?.state !== 'downloaded'}
+              title={
+                update?.state === 'downloaded'
+                  ? 'Restart and install the downloaded update.'
+                  : 'Nothing has been downloaded yet.'
+              }
+              onClick={() => void onInstall()}
+            >
               Restart &amp; install
             </Button>
           </div>

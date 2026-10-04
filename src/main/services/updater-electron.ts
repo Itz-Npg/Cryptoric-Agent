@@ -57,7 +57,12 @@ export function createElectronUpdatePort(): UpdatePort {
     async check() {
       const result = await autoUpdater.checkForUpdates()
       const info = result?.updateInfo
-      const version = info?.version ?? null
+      // `electron-updater` returns the *feed's* version even when it is the build
+      // already running, flagging that with `isUpdateAvailable: false`. Reading
+      // `updateInfo.version` alone therefore reports the installed version as an
+      // available update - a prompt to download the build you are already
+      // running. The flag is the authoritative answer, so it is honoured first.
+      const version = result?.isUpdateAvailable === false ? null : (info?.version ?? null)
 
       // `releaseNotes` arrives as an object keyed by platform from the feed.
       let notes: string | null = null
