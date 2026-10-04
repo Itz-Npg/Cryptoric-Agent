@@ -1102,8 +1102,6 @@ title: 'CryptoricAgent',
   void attachDesignReviewHooks(window)
 
   // Deny navigation and popups outright: the renderer must never navigate away.
-
-  // Deny navigation and popups outright: the renderer must never navigate away.
   window.webContents.on('will-navigate', (event) => event.preventDefault())
   window.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)

@@ -168,7 +168,7 @@ function ChanConversation({
   }, [transcript.length, approvals.length])
 
   return (
-    <div className="scroll" style={{ padding: '20px 24px' }}>
+    <div className="scroll" style={{ padding: '20px 24px', flex: '1 1 0' }}>
       {/* The history is on disk and survives restarts, so it needs a way out.
           Hidden until there is something to clear, and confirmed before it
           discards: the transcript is the only record of what the agent did. */}
@@ -318,7 +318,15 @@ function ChanTimeline({ timeline, activeTask }: { timeline: TimelineEntry[]; act
         maxHeight: '46%',
         display: 'flex',
         flexDirection: 'column',
-        minHeight: 0
+        // `flex: 0 0 auto` is load-bearing. With the default `flex-shrink: 1`
+        // the browser weights shrinkage by flex-basis, so the transcript —
+        // thousands of pixels tall — absorbed almost the entire deficit and left
+        // this panel 34px tall with its content clipped. It then does not grow
+        // or shrink, and takes its content height up to the cap.
+        flex: '0 0 auto',
+        // A floor, so a short stage list is still readable rather than reduced
+        // to a title bar.
+        minHeight: 96
       }}
     >
       <div style={{ padding: '14px 24px 10px' }}>

@@ -359,6 +359,10 @@ export type ToolCategory =
   | 'containers'
   | 'database'
   | 'observability'
+  /** Deploying and hosting providers (Vercel, Cloudflare, Netlify, Render). */
+  | 'deploy'
+  | 'payments'
+  | 'productivity'
 
 /**
  * Risk of the effect, independent of who is asking.
