@@ -12,7 +12,7 @@
  */
 
 import { app, BrowserWindow, dialog, ipcMain, nativeImage, safeStorage, screen, shell, Menu } from 'electron'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CHANNELS } from '@shared/ipc-channels'
@@ -825,7 +825,7 @@ function createWindow(): BrowserWindow {
     minHeight: 680,
     show: false,
     backgroundColor: '#0A0B0D',
-    title: 'Cryptoric Agent',
+    title: 'CryptoricAgent',
     ...(iconPath ? { icon: nativeImage.createFromPath(iconPath) } : {}),
     autoHideMenuBar: true,
     webPreferences: {
@@ -1029,6 +1029,43 @@ async function attachDesignReviewHooks(window: BrowserWindow): Promise<void> {
   app.quit()
 }
 
+/**
+ * Move the userData directory across an application rename.
+ *
+ * "Already migrated" is judged by the files this app owns, not by whether the
+ * folder is non-empty: Electron populates the new folder with `Cache`,
+ * `GPUCache`, `Preferences` and friends on its own, so emptiness is never a
+ * usable signal. If the move fails — a lock, a permission, a cross-device link —
+ * the legacy directory is pinned as userData instead. Orphaning the credential
+ * store to get a tidier folder name is a terrible trade.
+ */
+function migrateUserDataDir(legacyPath: string): void {
+  const target = app.getPath('userData')
+  if (!legacyPath || target === legacyPath) return
+  if (!existsSync(legacyPath)) return
+
+  const owned = (dir: string): boolean =>
+    ['state.json', 'settings.json', 'credentials.json'].some((f) => existsSync(join(dir, f)))
+
+  let alreadyMigrated = false
+  try {
+    alreadyMigrated = owned(target)
+  } catch {
+    alreadyMigrated = true
+  }
+  if (alreadyMigrated) return
+
+  try {
+    // rename() will not replace an existing directory on Windows. The target
+    // holds no data of ours at this point, so removing it is safe.
+    if (existsSync(target)) rmSync(target, { recursive: true, force: true })
+    renameSync(legacyPath, target)
+  } catch (err) {
+    console.warn('[userData] rename failed, keeping the previous location:', err)
+    app.setPath('userData', legacyPath)
+  }
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -1097,7 +1134,16 @@ function buildMenu(): void {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-app.setName('Cryptoric Agent')
+// The app was named "Cryptoric Agent" until the rename to `CryptoricAgent`.
+// Order matters and is not obvious: Electron fixes `userData` the first time it
+// is read, and derives it from the app name *at that moment*. Reading
+// `getPath('userData')` before `setName` therefore pins the pre-rename folder
+// and the rename silently does nothing — the credential store, the settings and
+// the project list stay behind. So set the name first and derive the legacy
+// folder from `appData`, which is a fixed path.
+app.setName('CryptoricAgent')
+migrateUserDataDir(join(app.getPath('appData'), 'Cryptoric Agent'))
+
 if (process.platform === 'win32') app.setAppUserModelId('dev.cryptoric.agent')
 
 // Show the Cryptoric mark in the taskbar / dock rather than the Electron default.

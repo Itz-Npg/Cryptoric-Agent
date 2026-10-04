@@ -37,6 +37,42 @@ with a real key. No stubbed fetch, no canned response, no "connection successful
 - with a user-supplied key installed the gateway reports `metered: false` and draws
   **0 of 25 coins**
 
+### Branding: `cryptoricagent.exe` and the supplied logo
+
+| Check | Command | Result |
+|---|---|---|
+| Icon source cropped to the opaque tile | `python scripts/make-icon.py` | 1536x1024 master → 740x740 tile, shadow removed |
+| `.ico` container well-formed | header + per-entry parse | type=1, 7 entries, all PNG payloads, 32 bpp |
+| Sizes Windows will read | entry widths | 16, 24, 32, 48, 64, 128, 256 |
+| Every icon file loads in Electron | `nativeImage.createFromPath` | `cryptoric-icon.png` 1024x1024 `isEmpty=false`; `icon.ico` 256x256 `isEmpty=false` |
+| App name after rename | `app.getName()` | `"CryptoricAgent"` |
+| userData after rename | `app.getPath('userData')` | `%APPDATA%\CryptoricAgent` |
+
+### Bug the rename caused, and fixed
+
+Renaming the app to `CryptoricAgent` silently orphaned the credential store.
+
+The cause was an ordering mistake of mine. Electron fixes `userData` the first
+time it is read and derives it from the app name **at that moment**. My first
+version read the old path *before* `setName`, which pinned userData to the
+pre-rename folder and made the rename a no-op — the app then ran against an empty
+`%APPDATA%/cryptoric-agent`, found no key, and answered every prompt with
+`Model endpoint returned 401`. The mistake was invisible in typecheck, build and
+all 305 unit tests.
+
+Fixed by setting the name first and deriving the legacy folder from `appData`,
+which is a fixed path. The "already migrated" test is now whether **this app's own
+files** (`state.json` / `settings.json` / `credentials.json`) exist in the target,
+not whether the folder is non-empty — Electron populates a fresh userData with
+`Cache`, `GPUCache` and `Preferences` on its own, so emptiness is never a signal.
+
+Verified on a real launch: `Cryptoric Agent` absent, `CryptoricAgent` holds all
+three data files, and Chan answered `Hi! What can I help you with?` — proving the
+encrypted credential store survived the move.
+
+The stray `%APPDATA%/cryptoric-agent` created by the bug was moved to
+`cryptoric-agent-orphaned-by-rename-bug`, not deleted.
+
 ### Bug found and fixed: "hi" got no reply
 
 Sending a prompt produced **silence**. The agent ran its fixed five-stage pipeline,

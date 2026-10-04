@@ -112,6 +112,17 @@ against real Chromium.**
 - [ ] Multi-turn conversation history is **not** stored — each task is stateless
 - [ ] The five-stage pipeline is still fixed; the adaptive planner is Phase 1
 
+## PHASE 0.3 — Branding — DONE, VERIFIED
+
+- [x] Packaged executable is `cryptoricagent.exe` (`executableName` in electron-builder)
+- [x] `productName: CryptoricAgent`; window title, taskbar and Start menu follow
+- [x] App logo replaced with the supplied artwork, rebuilt from source by
+      `scripts/make-icon.py` so it is reproducible, not a checked-in blob
+- [x] `build/icon.ico` carries 16/24/32/48/64/128/256, verified by parsing the container
+- [x] userData carried across the rename so the credential store is not orphaned
+- [ ] macOS `.icns` and Linux `.png` set still come from the 1024 PNG; not packaged here
+- [ ] `npm run dist` has never been run on this machine — the exe has not been produced
+
 ---
 
 ## PHASE 1 — Capability detection

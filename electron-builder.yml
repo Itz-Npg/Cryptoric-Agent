@@ -1,6 +1,10 @@
 appId: dev.cryptoric.agent
-productName: Cryptoric Agent
+productName: CryptoricAgent
 copyright: Copyright © 2026 Cryptoric
+# Windows ships `cryptoricagent.exe`. electron-builder derives the executable
+# name from productName, which would give `CryptoricAgent.exe`; naming it here
+# is what makes the file itself lowercase, as specified.
+executableName: cryptoricagent
 directories:
   buildResources: build
   output: release
@@ -15,7 +19,7 @@ win:
   target:
     - target: nsis
       arch: [x64]
-  icon: build/cryptoric-icon.png
+  icon: build/icon.ico
   artifactName: ${productName}-${version}-${arch}.${ext}
 nsis:
   oneClick: false
@@ -43,4 +47,6 @@ linux:
     - deb
   icon: build/cryptoric-icon.png
   category: Development
+  # electron-builder wants an explicit desktop entry name for .deb installs.
+  synopsis: Autonomous software engineering agent
 npmRebuild: false
