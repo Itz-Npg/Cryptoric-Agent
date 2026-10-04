@@ -54,19 +54,6 @@ export interface AgentDeps {
   events: AgentEventSink
   /** Root of the currently open project, or null. */
   getProjectRoot(): string | null
-  /**
-   * Chan's own answer to the developer.
-   *
-   * Optional on purpose: an agent that runs tools in silence reads as a hung
-   * app. When this is absent the runtime says so plainly instead of producing
-   * an empty transcript — silence is the worst error report there is.
-   */
-  respond?(input: {
-    prompt: string
-    title: string
-    projectRoot: string | null
-    signal: AbortSignal
-  }): Promise<{ ok: boolean; text: string; error: string | null }>
   /** Skill routing budget. */
   skillTokenBudget: number
   maxSkillsPerTask: number
@@ -240,8 +227,6 @@ export class AgentRuntime {
     // clamped to the stage's own grant, not the task's widest one.
     let ceiling: PermissionTier = 'safe'
 
-    await this.answer(task, controller.signal)
-
     const ctx: StageContext = {
       task,
       signal: controller.signal,
@@ -293,51 +278,19 @@ export class AgentRuntime {
   }
 
   /**
-   * Chan's answer to the developer, before any tool runs.
-   *
-   * Every failure mode reports rather than swallows: no model configured, the
-   * provider refusing the call, a cancelled task. The developer typed something
-   * and is owed words back in all three cases.
-   */
-  private async answer(task: AgentTask, signal: AbortSignal): Promise<void> {
-    const respond = this.deps.respond
-    if (!respond) {
-      this.deps.events.say(
-        'Cryptoric Chan has no model provider configured. Pick one in Settings, then add your API key.'
-      )
-      return
-    }
-    try {
-      const reply = await respond({
-        prompt: task.prompt,
-        title: task.title,
-        projectRoot: task.projectRoot,
-        signal
-      })
-      if (signal.aborted) return
-      this.deps.events.say(reply.ok && reply.text.trim() ? reply.text.trim() : reply.error ?? 'The model returned nothing.')
-    } catch (err) {
-      if (signal.aborted) return
-      this.deps.events.say(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  /**
-   * Policy-enforcing tool invocation.
-   *
-   * The tier is re-derived from the tool definition and the policy decision, then
-   * clamped by the stage ceiling. An `allow` decision is never granted to a tool
-   * whose declared tier exceeds the caller's grant.
-   */
-  /**
    * Policy-enforcing tool invocation.
    *
    * The agent's job here is narrow: name the tool, narrate the outcome, and
    * record it on the timeline. Deciding *whether it may run* is the runtime's
    * job — tier clamping, approval, timeout, cancellation and redaction all
    * happen there, in one place, so there is a single enforcement path to audit.
+   *
+   * Public because the agent loop calls it directly for every tool the model
+   * requests. Routing the loop through here rather than through
+   * `registry.get(id).execute()` is the whole point: the model is never given a
+   * path that skips policy.
    */
-  private async invoke(
+  async invoke(
     task: AgentTask,
     toolId: string,
     args: Record<string, unknown>,
@@ -377,6 +330,17 @@ export class AgentRuntime {
       result.ok ? 'ok' : 'error'
     )
     this.deps.events.toolResult(toolId, result)
+
+    // Record what actually changed. The review stage reports this list, so it
+    // has to come from real tool results rather than from anything the model
+    // said it did.
+    if (result.ok) {
+      const path = changedPathOf(toolId, result)
+      if (path && !task.changedPaths.includes(path)) {
+        task.changedPaths.push(path)
+        this.touch(task)
+      }
+    }
 
     // A failure the agent can recover from is a signal, not a dead end. These
     // are the transitions that used to require the user to intervene by hand.
@@ -473,6 +437,24 @@ export class AgentRuntime {
 
 function sepOf(root: string): string {
   return root.includes('\\') ? '\\' : '/'
+}
+
+/**
+ * The path a tool actually wrote, if it wrote one.
+ *
+ * Only the tools that genuinely mutate the workspace are consulted, and the
+ * path has to be one the tool itself reported — deriving it from the
+ * arguments instead would record a path the tool never touched, which is
+ * exactly the kind of plausible-looking wrong answer this agent must not give.
+ */
+const WRITING_TOOLS = new Set(['write_file', 'append_file', 'edit_file', 'move_file'])
+
+function changedPathOf(toolId: string, result: NormalizedToolResult): string | null {
+  if (!WRITING_TOOLS.has(toolId)) return null
+  const data = result.data as { path?: unknown; to?: unknown } | undefined
+  if (!data) return null
+  if (toolId === 'move_file' && typeof data.to === 'string') return data.to
+  return typeof data.path === 'string' ? data.path : null
 }
 
 function sameOrNested(candidate: string, claim: string): boolean {

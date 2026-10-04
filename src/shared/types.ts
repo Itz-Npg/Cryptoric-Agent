@@ -501,6 +501,25 @@ export interface UsageRecord {
   estimatedCostUsd: number
 }
 
+/**
+ * One entry in the persisted conversation.
+ *
+ * The transcript lives in the main process, on disk, so it survives a restart
+ * and can be fed back to the model as context. `tool` turns are kept alongside
+ * speech deliberately: they are the evidence that the agent ran something, and
+ * a history that shows only claims would be worse than no history.
+ */
+export interface ConversationTurn {
+  id: string
+  at: string
+  role: 'user' | 'assistant' | 'tool'
+  text: string
+  /** Tool id, present only on `tool` turns. */
+  tool?: string
+  /** Whether the tool succeeded, present only on `tool` turns. */
+  ok?: boolean
+}
+
 // ---------------------------------------------------------------------------
 // Skills
 // ---------------------------------------------------------------------------
@@ -652,6 +671,7 @@ export type MainEvent =
   | { type: 'process'; process: ProcessInfo }
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string; at: string }
   | { type: 'approval'; request: ApprovalRequest }
+  | { type: 'conversation'; turn: ConversationTurn }
   | { type: 'project'; project: ProjectProfile }
   | { type: 'browser-console'; tabId: string; entries: BrowserConsoleEntry[] }
   | { type: 'update'; state: UpdateState }

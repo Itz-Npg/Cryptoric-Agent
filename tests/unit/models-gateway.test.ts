@@ -14,6 +14,9 @@ import {
   ModelGateway,
   OPENROUTER_CREDENTIAL,
   OPENROUTER_ENDPOINT,
+  APINEX_CREDENTIAL,
+  APINEX_ENDPOINT,
+  PROVIDER_CREDENTIAL_SLOTS,
   estimateCostUsd,
   findModel,
   toCoins,
@@ -75,6 +78,67 @@ describe('model catalogue', () => {
   it('reports an unknown model as unpriced rather than free', () => {
     const usage: UsageRecord = { inputTokens: 1000, outputTokens: 1000, cachedTokens: 0, estimatedCostUsd: 0 }
     expect(estimateCostUsd('a-model-that-does-not-exist', usage)).toBeNull()
+  })
+})
+
+describe('APINEX catalogue', () => {
+  const apinex = MODEL_CATALOG.filter((m) => m.servedBy === 'apinex')
+
+  it('ships exactly the five models that answer on a plain API key', () => {
+    // Eleven other `free/`-prefixed ids on this provider answer HTTP 402
+    // "subscription only" with the same key, so they are deliberately absent.
+    expect(apinex.map((m) => m.providerModelId).sort()).toEqual([
+      'free/deepseek-v4-pro-0813',
+      'free/deepseek-v4.1-flash',
+      'free/glm-5.3-flash',
+      'free/gpt-6-luna',
+      'free/mimo-v2.6-pro'
+    ])
+  })
+
+  it('never ships an id the provider does not serve', () => {
+    // Both of these appear in APINEX's own material. The Quick start snippet
+    // uses the first and a truncated model card suggests the second; both 404.
+    const wireIds = new Set(apinex.map((m) => m.providerModelId))
+    expect(wireIds.has('free/gpt-5.6-luna')).toBe(false)
+    expect(wireIds.has('free/deepseek-v4-pro')).toBe(false)
+  })
+
+  it('declares a context window only where the provider reports one', () => {
+    // GET /v1/models returns no context_length for these. The cards claim 1M,
+    // but an unverifiable number presented as fact is worse than null.
+    for (const model of apinex) {
+      expect(model.contextWindow).toBeNull()
+    }
+  })
+
+  it('prices the verified-free models at zero with provenance', () => {
+    for (const model of apinex) {
+      expect(model.inputPerMillion).toBe(0)
+      expect(model.outputPerMillion).toBe(0)
+      expect(model.pricingSource).toBeTruthy()
+      expect(model.pricingFetchedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    }
+  })
+})
+
+describe('provider resolution', () => {
+  it('points an APINEX model at the APINEX endpoint and credential slot', () => {
+    const { gateway: g } = gateway()
+    const resolved = g.resolveModel('apinex-gpt-6-luna')
+    expect(resolved?.provider).toBe('apinex')
+    expect(resolved?.endpoint).toBe(APINEX_ENDPOINT)
+    expect(resolved?.model).toBe('free/gpt-6-luna')
+    expect(resolved?.credentialKey).toBe(APINEX_CREDENTIAL)
+  })
+
+  it('keeps each provider on its own credential slot', () => {
+    // Moving providers must move the key with it, or one provider's key would
+    // be sent to another provider's endpoint.
+    expect(PROVIDER_CREDENTIAL_SLOTS.openrouter).toBe(OPENROUTER_CREDENTIAL)
+    expect(PROVIDER_CREDENTIAL_SLOTS.apinex).toBe(APINEX_CREDENTIAL)
+    expect(PROVIDER_CREDENTIAL_SLOTS.ollama).toBeUndefined()
+    expect(PROVIDER_CREDENTIAL_SLOTS['openai-compatible']).toBeUndefined()
   })
 })
 

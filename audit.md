@@ -3,7 +3,8 @@
 Every claim below is backed by a command that was actually run. Anything not verified
 is marked **NOT VERIFIED**. Nothing here is inferred from reading code.
 
-Last audit: browser subsystem + hosted model gateway, uncommitted working tree over `bc4ba54`.
+Last audit: the agent loop, persistent conversation, and `run_command` — uncommitted
+working tree over `a57f4d3`.
 
 ---
 
@@ -13,15 +14,111 @@ Last audit: browser subsystem + hosted model gateway, uncommitted working tree o
 |---|---|---|
 | Typecheck, main | `npx tsc -p tsconfig.node.json --noEmit` | exit 0 |
 | Typecheck, web | `npx tsc -p tsconfig.web.json --noEmit` | exit 0 |
-| Unit tests | `npx vitest run` | 305 passed, 14 files, exit 0 |
+| Unit tests | `npx vitest run` | **351 passed / 15 files**, exit 0 |
 | Production build | `npx electron-vite build` | exit 0 |
-| Lint, files touched this change | `npx eslint <changed paths>` | 0 errors (6 pre-existing `no-console` warnings in `src/main/index.ts`) |
-| Lint, whole repo | `npm run lint` | **exit 1 — 350 pre-existing errors**, none in the files changed here |
+| Lint, whole repo | `npm run lint` | **exit 1 — ~350 pre-existing errors**, none in the files changed here |
 | Browser, live, http target | `npm run test:browser` | **59 pass / 0 fail** |
-| Browser, live, file target | `CRYPTORIC_BROWSER_TARGET=file npm run test:browser` | **50 pass / 0 fail** (9 http-only checks report as skipped, not passed) |
+| Browser, live, file target | `CRYPTORIC_BROWSER_TARGET=file npm run test:browser` | **50 pass / 0 fail** |
 | Model gateway, live provider | `npm run test:model` | **6 pass / 0 fail** against `api.openrouter.ai` |
-| Toast appears and leaves | `CRYPTORIC_SHOT_TOAST=1 npx electron .` | `CRYPTORIC_TOAST_SHOWN "Environment refreshed to snapshot 2…"` then `CRYPTORIC_TOAST_AFTER_TIMEOUT dismissed` |
-| Chan answers a prompt | `CRYPTORIC_SHOT_TASK="hi" npx electron .` | real window DOM text: `Cryptoric Chan / Hi! How can I help? / No project is open.` |
+| **Agent loop, live provider + real filesystem** | `npm run test:agent` | **13 pass / 0 fail** — a real website prompt produced a real `index.html` on disk |
+| **Agent loop, real Electron app** | `CRYPTORIC_SHOT_TASK="Build me a simple one-page website…" npx electron .` | task `COMPLETED`, `changedPaths` holds the real file, 711-byte `index.html` written |
+| **Conversation survives restart** | relaunch with no new task | agent pane re-rendered the whole prior conversation from disk |
+| **Session grant stops repeat prompts** | `CRYPTORIC_SHOT_APPROVE=1` + a two-file prompt | exactly **1** `CRYPTORIC_AUTOAPPROVE` for **2** `write_file` calls |
+| **Denial is respected** | same run without auto-approval | `changedPaths: []`, no file written, denial reported |
+
+### The complaint that started this pass
+
+> *"the chat history are not saving when i give it prompt it told it just did this and
+> stopped it not working i sent a big prompt for making the website"*
+
+The screenshot showed five stage names scrolling past and the line
+`No file edits were made: no language model is configured for this session` —
+while `%APPDATA%\CryptoricAgent\credentials.json` held a valid OpenRouter key and
+`state.json` said `modelProvider: "openrouter"`. Five distinct causes, all confirmed
+against the running app:
+
+| # | Cause | Evidence | Fix |
+|---|---|---|---|
+| 1 | `implementStage` printed "no language model is configured" **unconditionally** — a hardcoded string with no relation to gateway state. | [stages.ts](src/main/services/agent/stages.ts) line 166, read directly | Replaced with the real agent loop; the no-provider message now only prints when `gateway.isEnabled()` is false |
+| 2 | The model was never asked to act. `pipeline.tools.call` was a stub returning `{ ok: false, summary: 'unavailable', error: 'not wired' }`. | [index.ts](src/main/index.ts), read directly | New `agent/loop.ts`; the stub is gone and the stage tool surface is wired to the registry |
+| 3 | The transcript was renderer-only state. Restarting lost it and the model had no memory. | [useAppState.ts](src/renderer/src/state/useAppState.ts), `transcript` with no backing store | New main-owned `ConversationStore`, written atomically to `userData/conversation.json` |
+| 4 | Main-process `log` pushes were rendered as chat messages, so the transcript filled with machine chatter instead of conversation. | Renderer `case 'log'` dispatching `say` | Removed; the transcript is now built only from `conversation` events |
+| 5 | The task title was `prompt.slice(0, 60)`, which is why the list showed `id="qv7k3r" ================…`. | [index.ts](src/main/index.ts) `agentSubmit` handler | `deriveTitle()` strips fences, HTML, attribute soup and separator runs |
+
+### What the live agent check actually proves
+
+`npm run test:agent` drives the **same `runAgentLoop`**, the **same `ModelGateway`** and
+the **same `write_file` from the real registry**, through the **same `ToolRuntime`**, over
+real HTTPS against the real provider, into a temp directory. No mocked model — a run in
+which the model does not call a tool is reported as a failure.
+
+```
+Steps: 3  tool calls: 3  -> list_directory, file_exists, write_file
+[PASS] The model called a tool: list_directory, file_exists, write_file
+[PASS] index.html exists on disk after the run
+[PASS] index.html is 3677 bytes
+[PASS] index.html contains a <title> / <h1> / <p>
+[PASS] No extra files were created beyond what was asked for
+[PASS] Conversation survived a reload (2 turns)
+[PASS] Model context contains no orphan tool messages
+[PASS] Pasted-prompt title is clean: "Build me a portfolio website"
+--- 13 passed, 0 failed ---
+```
+
+And in the **real Electron app**, against a real empty project directory:
+
+```
+CRYPTORIC_AUTOAPPROVE write_file
+CRYPTORIC_TASK_DONE {"status":"COMPLETED",
+  "changedPaths":["…\\site-demo\\index.html"],"error":null}
+```
+
+`index.html` was 711 bytes on disk with a `<title>`, an `<h1>`, a `<p>` and an embedded
+stylesheet. The agent pane showed `You` → `Cryptoric Chan` → tool results → final answer.
+
+### Bugs the live run found that no unit test could have
+
+These were found by **running the agent against a real model**, not by reading code.
+
+1. **Every relative path was rejected.** `checkPath` called `resolve(candidate)`, which
+   anchors to `process.cwd()` — the app's install directory, not the open project. The
+   model asked for `index.html` and `.`; both came back `Path escapes the allowed
+   workspace roots`. Fixed by resolving relative paths against the first workspace
+   root. Without this the agent could not have created a single file, ever.
+
+2. **`write_file` hung the run instead of failing.** With no human to click, the approval
+   promise never settled and Node exited **13** on an unsettled top-level await — no
+   error, no stack trace. That is what made the first live run look like a mystery.
+
+3. **"Allow for this session" granted nothing.** The button called
+   `policy.grantSession(domain, 'allow')`, but the runtime only skipped the prompt when
+   `declaredTier === 'safe'`. `write_file` declares `ask`, so an agent writing eight files
+   prompted eight times — exactly the behaviour the button was added to remove.
+
+4. **A session grant could override an explicit `deny`.** `PermissionPolicy.decide()`
+   consulted session grants *before* the configured rules, so one button press lifted a
+   denial the user had set. Now a configured `deny` is absolute and outranks any grant.
+
+5. **The review harness captured the agent mid-run.** `CRYPTORIC_SHOT_TASK` waited a
+   fixed 4 s, so the screenshots showed empty stages. It now polls for a terminal task
+   state. The half-finished picture is what made the agent look broken when it was merely
+   early.
+
+6. **`App.tsx` dropped the approval arguments.** `onResolveApproval={(id, approved) => …}`
+   discarded `remember` and `toolId`, so "Allow for this session" was visually present
+   and behaved exactly like "Approve once". Found by checking that every new control was
+   actually reachable, not by reading the button.
+
+7. **`clearConversation` was an unreachable capability.** The action, the IPC route and
+   the preload method all existed; nothing in the UI called them. An empty registration is
+   worse than a missing one, so the pane now has a "Clear history" control.
+
+### Verification of the approval model in the real app
+
+A two-file prompt (`index.html` + `style.css`) with auto-approval raised **exactly one**
+approval, not two — proving the session grant persists across tool calls rather than
+re-prompting per file. A run **without** auto-approval wrote nothing and ended with
+`changedPaths: []`: the denial was reported, not worked around.
 
 ### What the live model check actually proves
 
@@ -221,13 +318,20 @@ inside a **real Electron process**, against a **real local HTTP server**:
 | L2 | A temporary profile directory can survive tab close on Windows. | Async cleanup with 12 retries still hits `EPERM`. | Cosmetic. Tab is verifiably closed; the leftover is reported, never asserted away. |
 | L3 | No performance benchmark exists. | Never run. | Tool timeouts are reasoned bounds, not measured. |
 | L4 | Settings persist and validate but most values are not yet consumed by engine consumers. | By inspection. | Real gap. |
-| L5 | Router exists and is tested but the pipeline still runs a fixed stage list. | By inspection. | Real gap. |
+| L5 | Router exists and is tested but the pipeline still runs a fixed stage list around the model. | By inspection. The **implement** stage is now model-driven with real tools; `analyze`/`verify`/`review` remain deterministic. | Real gap, much reduced. |
+| L6 | A project-scoped conversation: one transcript for the whole app, not per project. | By inspection. | Real gap. Switching projects keeps the history, which is wrong once PHASE A lands. |
+| L7 | The agent loop offers the model every registered tool (~55) rather than a routed subset. | By inspection. | PHASE 12 router. The context window is 1M so this is a precision problem, not a capacity one. |
+| L8 | `run_command` has no live check of its own. | `npm run test:agent` exercises the loop and the filesystem tools; `run_command` itself is not driven by a live run. | Gap. It is registered and typechecked; its argv refusal is unit-tested. |
 
 ---
 
 ## NOT IMPLEMENTED (stated plainly, never dressed up)
 
-- `run_command` — `exec.ts` is written and unused
+- `run_command` — **DONE.** Built on the existing `exec.ts`; cwd containment, managed-env
+  resolution, argv-derived permission tier, timeout, cancellation, bounded output.
+  On Windows a `.cmd`/`.bat` is exec'd through `cmd.exe`, and arguments containing
+  `& | < > ^ % ! "` are **refused** rather than quoted — quoting is not sufficient
+  because cmd expands those inside double quotes too.
 - Build runner, test runner, diff engine, Git toolset
 - Code intelligence / symbol index
 - Project capability detection, test applicability engine

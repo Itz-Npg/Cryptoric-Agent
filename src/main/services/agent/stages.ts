@@ -24,6 +24,18 @@ export interface PipelineDeps {
   getProject(): ProjectProfile | null
   /** Probe a runtime by id; returns a `ToolResult`. */
   probeRuntime(toolId: string): Promise<{ state: string; version: string | null; detail: string }>
+  /**
+   * The model-driven part of the pipeline.
+   *
+   * Absent only when no provider is configured. A stage that needs it reports
+   * that fact and does the deterministic work it still can — it does not print
+   * a fixed sentence about a language model, which is what made this pipeline
+   * look like it had done something when it had done nothing.
+   */
+  model?(
+    ctx: StageContext,
+    phase: 'plan' | 'implement'
+  ): Promise<{ ok: boolean; text: string; error: string | null; tools: string[] }>
 }
 
 const TERMINAL_MISSING_RE =
@@ -106,39 +118,67 @@ function analyzeStage(deps: PipelineDeps): Stage {
 // 2. PLANNER
 // ---------------------------------------------------------------------------
 
-function planStage(_deps: PipelineDeps): Stage {
+function planStage(deps: PipelineDeps): Stage {
   return {
     role: 'PLANNER',
     name: 'plan',
     maxTier: 'safe',
     async run(ctx: StageContext): Promise<StageOutcome> {
-      const steps = derivePlan(ctx)
-      ctx.note(`Plan: ${steps.length} step(s) — ${steps.map((s) => s.label).join(' → ')}`, 'info')
       if (ctx.selectedSkills.length > 0) {
         ctx.note(`Loaded ${ctx.selectedSkills.length} skill(s) for this task type`, 'info')
       }
-      return { continue: true, summary: steps.map((s, i) => `${i + 1}. ${s.label}`).join('\n') }
+
+      if (deps.model) {
+        const plan = await deps.model(ctx, 'plan')
+        if (!plan.ok) {
+          // A plan that could not be produced is reported, and the pipeline
+          // continues to implementation — the model may still be able to act
+          // even if it could not summarise the plan first.
+          ctx.note(`Planning step unavailable: ${plan.error ?? 'no reason given'}`, 'error')
+          return { continue: true, summary: plan.error ?? 'Could not produce a plan.' }
+        }
+        ctx.note(`Plan: ${plan.text.split('\n').filter(Boolean).length} line(s)`, 'info')
+        return { continue: true, summary: plan.text }
+      }
+
+      // No model: the deterministic plan is a keyword match over the prompt. It
+      // is labelled as such, because a keyword match is not a plan.
+      const steps = derivePlan(ctx)
+      ctx.note(`No model configured — falling back to a keyword plan: ${steps.map((s) => s.label).join(' → ')}`, 'info')
+      return {
+        continue: true,
+        summary: `No model provider is configured, so this is a keyword-derived outline rather than a plan:\n${steps
+          .map((s, i) => `${i + 1}. ${s.label}`)
+          .join('\n')}`
+      }
     }
   }
 }
 
 interface PlanStep {
   label: string
-  tool?: string
-  args?: Record<string, unknown>
 }
 
-/** Deterministic plan derivation from the project profile. */
+/**
+ * Keyword outline, used only when no model is available.
+ *
+ * This is a fallback, not a planner: it matches a few verbs in the prompt and
+ * cannot tell "make me a website" from anything else. It is retained because
+ * the deterministic stages still do real work without a model, and a label
+ * beats a shrug.
+ */
 function derivePlan(ctx: StageContext): PlanStep[] {
   const pm = ctx.task.prompt.toLowerCase()
   const steps: PlanStep[] = []
-  const scripts = (ctx.task as unknown as { projectScripts?: Record<string, string> }).projectScripts ?? {}
 
+  if (/\b(website|web ?site|web ?app|page|landing)\b/.test(pm)) {
+    steps.push({ label: 'Create the entry document and its assets' })
+  }
   if (/install|dependenc/.test(pm)) {
     steps.push({ label: 'Install dependencies with the project package manager' })
   }
   if (/build|compile/.test(pm)) {
-    steps.push({ label: 'Run the project build', tool: 'run_command', args: { command: scripts.build ?? 'build' } })
+    steps.push({ label: 'Run the project build' })
   }
   if (/test/.test(pm)) {
     steps.push({ label: 'Run the test suite' })
@@ -152,7 +192,7 @@ function derivePlan(ctx: StageContext): PlanStep[] {
 // 3. IMPLEMENTER
 // ---------------------------------------------------------------------------
 
-function implementStage(_deps: PipelineDeps): Stage {
+function implementStage(deps: PipelineDeps): Stage {
   return {
     role: 'IMPLEMENTER',
     name: 'implement',
@@ -161,14 +201,36 @@ function implementStage(_deps: PipelineDeps): Stage {
       if (ctx.signal.aborted) {
         return { continue: false, status: 'CANCELLED', summary: 'Stopped before implementation.' }
       }
-      // No model gateway is wired in this build, so the stage performs the
-      // deterministic work it can and states plainly what it did not do.
-      ctx.note('No file edits were made: no language model is configured for this session.', 'info')
-      return {
-        continue: true,
-        summary:
-          'Environment and project analysis complete. Configure a model provider in Settings → Models to let Cryptoric Chan author file changes; all deterministic tooling above is fully operational.'
+
+      if (!deps.model) {
+        // Said because it is true, and only when it is true. The previous
+        // version of this branch printed the same sentence unconditionally,
+        // which is how a configured model ended up reported as absent.
+        ctx.note('No model provider is configured, so no file changes were attempted.', 'error')
+        return {
+          continue: true,
+          summary:
+            'I could not make changes: no model provider is configured for this session. Set one in Settings, then add your API key.'
+        }
       }
+
+      const outcome = await deps.model(ctx, 'implement')
+      const used = outcome.tools.length
+
+      if (!outcome.ok) {
+        return {
+          continue: false,
+          status: 'FAILED',
+          summary: outcome.text || outcome.error || 'The run did not complete.'
+        }
+      }
+
+      if (used === 0) {
+        ctx.note('The model answered without calling a tool, so nothing was changed.', 'info')
+      } else {
+        ctx.note(`${used} tool call(s) executed`, 'ok')
+      }
+      return { continue: true, summary: outcome.text || 'Done.' }
     }
   }
 }
@@ -209,8 +271,26 @@ function reviewStage(_deps: PipelineDeps): Stage {
     name: 'review',
     maxTier: 'safe',
     async run(ctx: StageContext): Promise<StageOutcome> {
-      ctx.note('No files were modified, so there is nothing to review.', 'info')
-      return { continue: false, status: 'COMPLETED', summary: 'Task complete.' }
+      const changed = ctx.task.changedPaths
+      if (changed.length === 0) {
+        ctx.note('No files were modified, so there is nothing to review.', 'info')
+        return { continue: false, status: 'COMPLETED', summary: 'Task complete — no files were changed.' }
+      }
+
+      const shown = changed.slice(0, 20)
+      ctx.note(`${changed.length} file(s) changed`, 'ok')
+      for (const path of shown) ctx.note(`  ${path}`, 'info')
+      if (changed.length > shown.length) {
+        ctx.note(`  … and ${changed.length - shown.length} more`, 'info')
+      }
+
+      return {
+        continue: false,
+        status: 'COMPLETED',
+        summary: `Task complete. ${changed.length} file(s) changed:\n${shown.map((p) => `- ${p}`).join('\n')}${
+          changed.length > shown.length ? `\n… and ${changed.length - shown.length} more` : ''
+        }`
+      }
     }
   }
 }

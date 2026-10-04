@@ -155,7 +155,7 @@ export interface AppState {
   theme: 'graphite' | 'bone'
   density: 'compact' | 'default' | 'relaxed'
   motion: 'full' | 'reduced'
-  modelProvider: 'none' | 'ollama' | 'openai-compatible' | 'openrouter'
+  modelProvider: 'none' | 'ollama' | 'openai-compatible' | 'openrouter' | 'apinex'
   modelEndpoint: string
   modelName: string
   /**

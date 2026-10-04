@@ -25,7 +25,12 @@ export interface TranscriptEntry {
   id: string
   at: string
   kind: 'say' | 'note' | 'error'
-  role: string
+  /**
+   * Who spoke. `YOU` is the developer's prompt, `CHAN` the agent's reply, and
+   * `TOOL` a record of something the agent actually ran — kept separate from
+   * speech so a short answer is not padded out by its own mechanics.
+   */
+  role: 'CHAN' | 'YOU' | 'TOOL'
   text: string
 }
 

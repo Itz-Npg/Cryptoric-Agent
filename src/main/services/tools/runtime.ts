@@ -218,7 +218,20 @@ export class ToolRuntime {
     }
 
     // 7. Approval.
-    let approved = decision === 'allow' && declaredTier === 'safe'
+    //
+    // Two ways to run without stopping to ask:
+    //
+    //  - the domain allows *and* the tool is `safe`, so there is nothing to
+    //    confirm; or
+    //  - the user pressed "Allow for this session", which is a human granting
+    //    exactly this. A default rule saying `allow` must never authorise a tool
+    //    above `safe` unattended, but a session grant is precisely that
+    //    authority — without this second clause the button would grant nothing
+    //    and the agent would re-prompt on every file for the whole session.
+    let approved =
+      (decision === 'allow' && declaredTier === 'safe') ||
+      // `deny` already returned above, and a session grant cannot lift one.
+      this.deps.policy.hasSessionGrant(tool.domain)
     if (!approved) {
       const request = this.deps.approvals.request({
         toolId,

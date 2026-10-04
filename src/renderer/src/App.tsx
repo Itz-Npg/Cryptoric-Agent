@@ -294,7 +294,14 @@ export function App() {
                 setSection('agent')
                 void actions.submitTask(p)
               }}
-              onResolveApproval={(id, approved) => void actions.resolveApproval(id, approved)}
+              onResolveApproval={(id, approved, remember, toolId) =>
+                // The `remember` and `toolId` arguments must be forwarded. This
+                // handler used to drop them, which silently turned "Allow for
+                // this session" into "Approve once" — the button appeared to
+                // work and the agent prompted again on the very next file.
+                void actions.resolveApproval(id, approved, remember, toolId)
+              }
+              onClearConversation={() => void actions.clearConversation()}
             />
           )}
 
@@ -323,6 +330,9 @@ export function App() {
               onSelectModel={(id) => void actions.selectModel(id)}
               onSetTheme={setTheme}
               onRefresh={() => void actions.refreshEnvironment()}
+              onCheckForUpdates={(force) => actions.checkForUpdates(force)}
+              onDownloadUpdate={() => actions.downloadUpdate()}
+              onInstallUpdate={() => actions.installUpdate()}
             />
           )}
         </div>

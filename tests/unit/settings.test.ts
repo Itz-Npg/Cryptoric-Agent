@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { SettingsStore, migrateLegacyState, applyOverride, stripSecrets } from '../../src/main/services/settings/store'
+import { SettingsStore, migrateLegacyState, migrateAllowance, applyOverride, stripSecrets } from '../../src/main/services/settings/store'
 import { defaultSettings, SETTINGS_VERSION, SettingsSchema } from '../../src/main/services/settings/schema'
 
 let dir = ''
@@ -443,5 +443,76 @@ describe('helpers', () => {
 
   it('exposes a default object that satisfies the schema', () => {
     expect(SettingsSchema.safeParse(defaultSettings()).success).toBe(true)
+  })
+})
+
+describe('coin allowance migration', () => {
+  // The allowance dropped 500 -> 25. A fresh install picks the new default up
+  // because nothing is persisted, but an install that predates the change has
+  // `500` on disk and a persisted value always beats a schema default — so the
+  // user was stuck looking at `0 / 500` indefinitely.
+  const legacyFile = (usage: Record<string, unknown>): string =>
+    JSON.stringify({
+      version: 2,
+      updatedAt: '2026-10-04T00:00:00.000Z',
+      data: { usage }
+    })
+
+  it('replaces the retired 500-coin default with the current one', () => {
+    const store = new SettingsStore({ userDataDir: dir })
+    writeFileSync(join(dir, 'settings.json'), legacyFile({ dailyAllowanceCoins: 500, lowBalanceWarningAt: 50 }))
+    return store.load().then(() => {
+      expect(store.get().usage.dailyAllowanceCoins).toBe(25)
+      expect(store.get().usage.lowBalanceWarningAt).toBe(5)
+    })
+  })
+
+  it('leaves an allowance the user chose themselves alone', () => {
+    const store = new SettingsStore({ userDataDir: dir })
+    writeFileSync(join(dir, 'settings.json'), legacyFile({ dailyAllowanceCoins: 120, lowBalanceWarningAt: 20 }))
+    return store.load().then(() => {
+      // Migrating by "is it large?" would quietly discard a real choice.
+      expect(store.get().usage.dailyAllowanceCoins).toBe(120)
+      expect(store.get().usage.lowBalanceWarningAt).toBe(20)
+    })
+  })
+
+  it('leaves a deliberately lowered warning threshold alone', () => {
+    const store = new SettingsStore({ userDataDir: dir })
+    writeFileSync(join(dir, 'settings.json'), legacyFile({ dailyAllowanceCoins: 500, lowBalanceWarningAt: 3 }))
+    return store.load().then(() => {
+      expect(store.get().usage.dailyAllowanceCoins).toBe(25)
+      expect(store.get().usage.lowBalanceWarningAt).toBe(3)
+    })
+  })
+
+  it('rewrites the file on disk so the change lands once', () => {
+    const store = new SettingsStore({ userDataDir: dir })
+    writeFileSync(join(dir, 'settings.json'), legacyFile({ dailyAllowanceCoins: 500, lowBalanceWarningAt: 50 }))
+    return store.load().then(() => {
+      const persisted = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')) as {
+        version: number
+        data: { usage: { dailyAllowanceCoins: number } }
+      }
+      expect(persisted.version).toBe(SETTINGS_VERSION)
+      expect(persisted.data.usage.dailyAllowanceCoins).toBe(25)
+    })
+  })
+
+  it('is a no-op for a file already at the current version', () => {
+    const current = { usage: { dailyAllowanceCoins: 500, lowBalanceWarningAt: 50 } }
+    const out = migrateAllowance(SETTINGS_VERSION, current) as typeof current
+    expect(out.usage.dailyAllowanceCoins).toBe(500)
+  })
+
+  it('does not mutate the object it was given', () => {
+    const input = { usage: { dailyAllowanceCoins: 500, lowBalanceWarningAt: 50 } }
+    migrateAllowance(2, input)
+    expect(input.usage.dailyAllowanceCoins).toBe(500)
+  })
+
+  it('tolerates a file with no usage section', () => {
+    const input = { appearance: { theme: 'dark' } }
+    expect(migrateAllowance(2, input)).toBe(input)
   })
 })

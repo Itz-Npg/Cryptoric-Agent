@@ -211,3 +211,45 @@ describe('ApprovalQueue', () => {
     expect(await pb).toBe(false)
   })
 })
+
+describe('relative paths resolve against the workspace, not the app', () => {
+  // Found by the live agent check: the model asked for "index.html" and ".",
+  // and every call came back "Path escapes the allowed workspace roots",
+  // because `resolve()` was anchoring to the app's own working directory
+  // rather than to the open project.
+  const roots = ['C:\\projects\\site']
+
+  it('accepts a bare relative path inside the workspace', () => {
+    const verdict = checkPath('index.html', roots)
+    expect(verdict.allowed).toBe(true)
+    if (verdict.allowed) expect(verdict.absolute).toBe('C:\\projects\\site\\index.html')
+  })
+
+  it('accepts the current-directory shorthand', () => {
+    expect(checkPath('.', roots).allowed).toBe(true)
+  })
+
+  it('accepts a nested relative path', () => {
+    const verdict = checkPath('src/app.ts', roots)
+    expect(verdict.allowed).toBe(true)
+    if (verdict.allowed) expect(verdict.absolute).toBe('C:\\projects\\site\\src\\app.ts')
+  })
+
+  it('still refuses a relative path that climbs out', () => {
+    expect(checkPath('../secrets.txt', roots).allowed).toBe(false)
+    expect(checkPath('a/../../b', roots).allowed).toBe(false)
+  })
+
+  it('still refuses an absolute path outside the workspace', () => {
+    expect(checkPath('C:\\Windows\\System32\\config', roots).allowed).toBe(false)
+  })
+
+  it('still refuses device paths and null bytes', () => {
+    expect(checkPath(String.raw`\\?\C:\x`, roots).allowed).toBe(false)
+    expect(checkPath('a\0b', roots).allowed).toBe(false)
+  })
+
+  it('still refuses everything when no root is open', () => {
+    expect(checkPath('index.html', []).allowed).toBe(false)
+  })
+})

@@ -39,6 +39,30 @@ interface Persisted {
   data: unknown
 }
 
+/**
+ * Schema version 1 — the original flat `state.json` shape.
+ *
+ * Anything below this predates the grouped schema and is routed through
+ * `migrateLegacyState` instead of the allowance migration.
+ */
+const LEGACY_FLAT_VERSION = 2
+
+/**
+ * Coin allowances that were **defaults**, not choices.
+ *
+ * The allowance dropped from 500 to 25 coins. A fresh install picks the new
+ * default up automatically, but an install that has been running since before
+ * the change has `500` persisted — and a persisted value always wins over a
+ * schema default, so the user kept seeing `0 / 500` forever.
+ *
+ * Only the *old default* is rewritten. A user who deliberately set some other
+ * number keeps it: migrating by "is it large?" would quietly discard a choice,
+ * which is worse than leaving a stale value alone.
+ */
+const RETIRED_ALLOWANCES: { coins: number; warning: number }[] = [
+  { coins: 500, warning: 50 }
+]
+
 export interface SettingsStoreOptions {
   userDataDir: string
   /** Legacy flat state, used to seed settings on first run after the upgrade. */
@@ -288,10 +312,13 @@ export class SettingsStore {
 
   /** Upgrade a persisted payload to the current schema version. */
   private migrate(persisted: Persisted): unknown {
-    if (persisted.version === SETTINGS_VERSION) return persisted.data
-    if (persisted.version < SETTINGS_VERSION) return migrateLegacyState(persisted.data)
     // A file from a newer build: keep what we understand rather than discard it.
-    return persisted.data
+    if (persisted.version > SETTINGS_VERSION) return persisted.data
+
+    const base =
+      persisted.version < LEGACY_FLAT_VERSION ? migrateLegacyState(persisted.data) : (persisted.data as object)
+
+    return migrateAllowance(persisted.version, base)
   }
 
   private seedFromLegacy(): Record<string, unknown> {
@@ -364,19 +391,27 @@ export function migrateLegacyState(legacy: unknown): Partial<Settings> {
 
   // A configured endpoint becomes a provider entry, minus any secret.
   if (typeof source['modelEndpoint'] === 'string' && source['modelEndpoint']) {
-    const provider = source['modelProvider']
+    const provider = typeof source['modelProvider'] === 'string' ? source['modelProvider'] : ''
     // OpenRouter is OpenAI-compatible on the wire, which is what the `kind`
     // describes; `id`/`label` keep the specific provider visible.
     const kind = 'openai-compatible'
-    const named = provider === 'ollama' || provider === 'openrouter'
+    const named = provider === 'ollama' || provider === 'openrouter' || provider === 'apinex'
+    const PROVIDER_LABELS: Record<string, string> = {
+      ollama: 'Ollama',
+      openrouter: 'OpenRouter',
+      apinex: 'APINEX'
+    }
+    const PROVIDER_CREDENTIALS: Record<string, string> = {
+      openrouter: 'openrouter-api-key',
+      apinex: 'apinex-api-key'
+    }
     out['providers'] = [
       {
         id: named ? provider : 'custom',
-        label:
-          provider === 'ollama' ? 'Ollama' : provider === 'openrouter' ? 'OpenRouter' : 'Custom endpoint',
+        label: PROVIDER_LABELS[provider] ?? 'Custom endpoint',
         kind,
         baseUrl: source['modelEndpoint'],
-        credentialKey: provider === 'openrouter' ? 'openrouter-api-key' : null,
+        credentialKey: PROVIDER_CREDENTIALS[provider] ?? null,
         models: typeof source['modelName'] === 'string' ? [source['modelName']] : [],
         byok: true,
         enabled: provider !== 'none'
@@ -388,6 +423,37 @@ export function migrateLegacyState(legacy: unknown): Partial<Settings> {
   if (typeof source['onboardingComplete'] === 'boolean') out['onboardingComplete'] = source['onboardingComplete']
 
   return out as Partial<Settings>
+}
+
+/**
+ * Replace a coin allowance that was an old **default** with the current one.
+ *
+ * No-op for a file already at the current version, and no-op for a value the
+ * user chose themselves. Returns a new object; the input is never mutated,
+ * because a failed schema parse downstream must not have already corrupted
+ * what was on disk.
+ */
+export function migrateAllowance(fromVersion: number, data: object): object {
+  if (fromVersion >= SETTINGS_VERSION || !data || typeof data !== 'object') return data
+  const source = data as Record<string, unknown>
+  const usage = source['usage']
+  if (!usage || typeof usage !== 'object') return data
+
+  const current = (usage as Record<string, unknown>)['dailyAllowanceCoins']
+  const retired = RETIRED_ALLOWANCES.find((r) => r.coins === current)
+  if (!retired) return data
+
+  const defaults = defaultSettings().usage
+  const out = { ...source, usage: { ...(usage as Record<string, unknown>) } }
+  const target = out['usage'] as Record<string, unknown>
+
+  target['dailyAllowanceCoins'] = defaults.dailyAllowanceCoins
+  // Only move the warning threshold if it is still the one that shipped with
+  // the old allowance; a user who lowered it on purpose keeps their value.
+  if (target['lowBalanceWarningAt'] === retired.warning) {
+    target['lowBalanceWarningAt'] = defaults.lowBalanceWarningAt
+  }
+  return out
 }
 
 // ---------------------------------------------------------------- helpers

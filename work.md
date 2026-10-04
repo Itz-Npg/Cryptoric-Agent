@@ -1,6 +1,7 @@
 # Cryptoric Agent — Working State
 
-**Last updated:** Phase 5 (browser subsystem, all 43 tools) + Phase 6 (hosted model gateway) verified
+**Last updated:** Phase 0.6 — the agent loop, persistent conversation and `run_command`,
+all verified against the live provider and the real Electron app.
 
 ---
 
@@ -9,12 +10,13 @@
 ```bash
 npx tsc -p tsconfig.node.json --noEmit   # exit 0
 npx tsc -p tsconfig.web.json --noEmit    # exit 0
-npx vitest run                           # 305 passed / 14 files
+npx vitest run                           # 351 passed / 15 files
 npx electron-vite build                  # exit 0
 npx electron-vite dev                    # run the app
 npm run test:browser                     # 59 checks in real Electron, http target
 CRYPTORIC_BROWSER_TARGET=file npm run test:browser   # 50 checks, file target
 npm run test:model                       # 6 checks against the live OpenRouter API
+npm run test:agent                       # 13 checks: real model + real tools -> real files
 ```
 
 The live runs exceed the synchronous command timeout. Log to a file and read it back:
@@ -54,24 +56,44 @@ A global `allow` in policy does **not** auto-approve above `safe`; approval is s
 required. Timeout **wins a race** (`Promise.race`), so a non-cooperative tool cannot
 hang the agent.
 
-### Tool surface (46 registered)
+### Tool surface (55 registered)
 
 - 12 filesystem — `read_file` `write_file` `append_file` `edit_file` `list_directory`
   `create_directory` `delete_file` `move_file` `file_exists` `file_metadata`
   `search_content` `search_files`
+- 1 command — `run_command` (**new**; built on `exec.ts`, no second executor)
 - 11 environment/process — `detect_runtime` `detect_package_manager` `install_runtime`
   `install_package_manager` `verify_runtime` `refresh_environment` `inspect_environment`
   `create_terminal_session` `list_running_processes` `stop_process` `restart_process`
-- 23 browser — see below
+- 43 browser — see below
 
-`ToolContext` now carries `recordArtifact()` so a tool can point at a real file path.
+`ToolContext` carries `recordArtifact()` so a tool can point at a real file path.
+
+### Agent loop — `src/main/services/agent/` (NEW)
+
+| File | Role |
+|---|---|
+| `loop.ts` | `runAgentLoop()` — model asks for a tool → `AgentRuntime.invoke` runs it → real result goes back → repeat. `buildToolSpecs()` offers the registry as OpenAI function definitions. |
+| `conversation.ts` | `ConversationStore` — main-owned, atomic writes, bounded at 1000 turns, survives a corrupt file. `deriveTitle()` replaces `prompt.slice(0, 60)`. |
+| `stages.ts` | The fixed pipeline around it. `model` is a `PipelineDeps` hook — present only when a provider is really configured. |
+| `core.ts` | `AgentRuntime`. `invoke()` is **public**: the loop calls it, so the model never gets a path that skips policy. Tracks `changedPaths` from real tool results. |
+
+**Rules the loop obeys.** Every tool call is answered, including malformed arguments and
+unknown names. A failure is reported to the model as a failure. Bounded at 12 steps; a
+provider failure ends the run instead of retrying it.
 
 ### Execution infrastructure
 
 `src/main/services/tools/exec.ts` — `runCaptured(command, args, {cwd, env, timeoutMs,
 signal, onStdout, onStderr, maxOutputChars})` → `{code, stdout, stderr, truncated,
-timedOut, cancelled}`. `shell: false`. **Not yet exposed as a tool.** Do not write a
-second command executor; build `run_command` on this.
+timedOut, cancelled}`. `shell: false`. **Now exposed as `run_command`**
+(`tools/builtin/command.ts`) — do not write a second command executor.
+
+`run_command` notes: cwd is contained in the workspace; the permission tier is re-derived
+from the real argv by `classifyCommand`; the executable is resolved on the managed PATH
+first so "not installed" is a real `dependency-missing`. On Windows a `.cmd`/`.bat` is
+exec'd through `cmd.exe`, and arguments containing `& | < > ^ % ! "` are **refused** —
+cmd expands those inside double quotes, so quoting is not enough.
 
 ### Browser subsystem — `src/main/services/browser/`
 
@@ -111,8 +133,18 @@ Only add UI when a genuinely new capability requires a control or result view.
 ### Debug hooks (`attachDesignReviewHooks`)
 
 `CRYPTORIC_SHOT=<dir>` · `CRYPTORIC_SHOT_SIZE=WxH` · `CRYPTORIC_SHOT_PROJECT=<path>`
-· `CRYPTORIC_SHOT_TASK=<prompt>` · `CRYPTORIC_DEBUG_DUMP=1`. Prints `CRYPTORIC_DUMP`
-and `CRYPTORIC_STAGE_TEXT`, then quits. `.review/` is gitignored.
+· `CRYPTORIC_SHOT_TASK=<prompt>` · `CRYPTORIC_SHOT_APPROVE=1` · `CRYPTORIC_DEBUG_DUMP=1`.
+Prints `CRYPTORIC_DUMP`, `CRYPTORIC_STAGE_TEXT` and `CRYPTORIC_TASK_DONE`, then quits.
+`.review/` is gitignored.
+
+`CRYPTORIC_SHOT_TASK` **polls for a terminal task state** (up to 180 s) rather than
+waiting a fixed delay — a fixed wait captured the agent mid-run and made a working agent
+look broken.
+
+`CRYPTORIC_SHOT_APPROVE=1` answers approval prompts for the duration of a review run and
+is gated on `CRYPTORIC_SHOT` as well, so it cannot be reached by setting one variable in
+a normal launch. It grants nothing persistent; the grant is the same session-scoped one
+the "Allow for this session" button makes, and it dies with the process.
 
 ### Live browser check
 
@@ -136,12 +168,22 @@ Env switches exist so the check stays honest on any machine:
 - `write_file` needs `{path, instructions, content}` — omitting `instructions` throws.
 - `str_replace` needs `replacements: [{oldString, newString}]`.
 - `read_files` needs `paths: string[]`.
+- **Node exits 13 on an unsettled top-level await**, with no error and no stack trace.
+  A hung approval promise looks exactly like a crash. Always pump `ApprovalQueue` in a
+  headless harness.
+- `process.exit()` truncates buffered stdout on Windows when stdout is redirected to a
+  file. Set `process.exitCode` instead, so the last lines of a failing run survive.
 
 ---
 
 ## Commit history
 
 ```
+a57f4d3 Set the title where it actually wins
+90c9864 Make packaging actually run
+4b568ef Rename the packaged app to cryptoricagent and ship the supplied logo
+a53a8a7 Give Chan a voice, and stop printing a lie about the model
+87b1cb1 Give the agent a real browser built on Electron's own Chromium
 bc4ba54 Remove browser helpers nothing reaches
 e29093f Give background tabs a render surface so screenshots are not blank
 b01546d Give the agent a real browser built on Electron's own Chromium

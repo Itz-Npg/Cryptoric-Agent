@@ -44,15 +44,17 @@ export function ChanPanel({
   approvals,
   workspaceState,
   onSubmit,
-  onResolveApproval
+  onResolveApproval,
+  onClearConversation
 }: {
   transcript: TranscriptEntry[]
   timeline: TimelineEntry[]
   tasks: AgentTask[]
-  approvals: { id: string; title: string; detail: string; risk: string }[]
+  approvals: { id: string; toolId: string; title: string; detail: string; risk: string }[]
   workspaceState: WorkspaceState
   onSubmit: (prompt: string) => void
-  onResolveApproval: (id: string, approved: boolean) => void
+  onResolveApproval: (id: string, approved: boolean, remember?: boolean, toolId?: string) => void
+  onClearConversation: () => void
 }) {
   const activeTask = tasks.find((t) => !['COMPLETED', 'FAILED', 'CANCELLED'].includes(t.status)) ?? null
   const idle = !activeTask && transcript.length === 0 && approvals.length === 0
@@ -63,7 +65,12 @@ export function ChanPanel({
         <ChanIdle onSubmit={onSubmit} workspaceState={workspaceState} />
       ) : (
         <>
-          <ChanConversation transcript={transcript} approvals={approvals} onResolveApproval={onResolveApproval} />
+          <ChanConversation
+            transcript={transcript}
+            approvals={approvals}
+            onResolveApproval={onResolveApproval}
+            onClear={onClearConversation}
+          />
           <ChanTimeline timeline={timeline} activeTask={activeTask} />
         </>
       )}
@@ -147,11 +154,13 @@ const CAPABILITIES: { icon: IconName; label: string; detail: string }[] = [
 function ChanConversation({
   transcript,
   approvals,
-  onResolveApproval
+  onResolveApproval,
+  onClear
 }: {
   transcript: TranscriptEntry[]
-  approvals: { id: string; title: string; detail: string; risk: string }[]
-  onResolveApproval: (id: string, approved: boolean) => void
+  approvals: { id: string; toolId: string; title: string; detail: string; risk: string }[]
+  onResolveApproval: (id: string, approved: boolean, remember?: boolean, toolId?: string) => void
+  onClear: () => void
 }) {
   const endRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -160,36 +169,25 @@ function ChanConversation({
 
   return (
     <div className="scroll" style={{ padding: '20px 24px' }}>
-      {transcript.map((entry) => (
-        <div
-          key={entry.id}
-          style={{
-            display: 'grid',
-            gap: 6,
-            padding: '14px 0',
-            borderTop: '1px solid var(--line)'
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Dot tone={entry.kind === 'error' ? 'error' : 'accent'} />
-            <span className="caption">Cryptoric Chan</span>
-            <div style={{ flex: 1 }} />
-            <span className="caption mono" style={{ fontSize: 'var(--t-xs)' }}>
-              {entry.at.slice(11, 16)}
-            </span>
-          </div>
-          <p
-            className="selectable"
-            style={{
-              margin: 0,
-              whiteSpace: 'pre-wrap',
-              color: entry.kind === 'error' ? 'var(--err)' : 'var(--text-1)',
-              lineHeight: 1.6
+      {/* The history is on disk and survives restarts, so it needs a way out.
+          Hidden until there is something to clear, and confirmed before it
+          discards: the transcript is the only record of what the agent did. */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4 }}>
+        {transcript.length > 0 && (
+          <Button
+            onClick={() => {
+              if (typeof window !== 'undefined' && window.confirm('Clear this conversation history? This cannot be undone.')) {
+                onClear()
+              }
             }}
           >
-            {entry.text}
-          </p>
-        </div>
+            Clear history
+          </Button>
+        )}
+      </div>
+
+      {transcript.map((entry) => (
+        <ConversationRow key={entry.id} entry={entry} />
       ))}
 
       {approvals.map((request) => (
@@ -223,6 +221,11 @@ function ChanConversation({
               <Button variant="primary" onClick={() => onResolveApproval(request.id, true)}>
                 Approve once
               </Button>
+              {/* Granting for the session is the difference between one prompt
+                  and one prompt per file when the agent is doing a real job. */}
+              <Button onClick={() => onResolveApproval(request.id, true, true, request.toolId)}>
+                Allow for this session
+              </Button>
               <Button onClick={() => onResolveApproval(request.id, false)}>Deny</Button>
             </div>
           </div>
@@ -230,6 +233,73 @@ function ChanConversation({
       ))}
 
       <div ref={endRef} />
+    </div>
+  )
+}
+
+/**
+ * One transcript row.
+ *
+ * Three weights, matching the three things that actually happened: the
+ * developer asked, the agent did something, the agent said what it did. Tool
+ * rows are deliberately small — the execution timeline below carries the detail,
+ * and duplicating it here would bury the reply.
+ */
+function ConversationRow({ entry }: { entry: TranscriptEntry }) {
+  const time = (
+    <span className="caption mono" style={{ fontSize: 'var(--t-xs)' }}>
+      {entry.at.slice(11, 16)}
+    </span>
+  )
+
+  if (entry.role === 'TOOL') {
+    return (
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'auto auto minmax(0, 1fr) auto',
+          gap: 8,
+          alignItems: 'baseline',
+          padding: '5px 0'
+        }}
+      >
+        <Dot tone={entry.kind === 'error' ? 'error' : 'ok'} pulse={false} />
+        <span className="caption mono" style={{ fontSize: 'var(--t-xs)' }}>
+          {entry.text.split('\n')[0]}
+        </span>
+        <span style={{ minWidth: 0 }} />
+        {time}
+      </div>
+    )
+  }
+
+  const mine = entry.role === 'YOU'
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gap: 6,
+        padding: '14px 0',
+        borderTop: '1px solid var(--line)'
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Dot tone={entry.kind === 'error' ? 'error' : mine ? 'idle' : 'accent'} pulse={false} />
+        <span className="caption">{mine ? 'You' : 'Cryptoric Chan'}</span>
+        <div style={{ flex: 1 }} />
+        {time}
+      </div>
+      <p
+        className="selectable"
+        style={{
+          margin: 0,
+          whiteSpace: 'pre-wrap',
+          color: entry.kind === 'error' ? 'var(--err)' : mine ? 'var(--text-2)' : 'var(--text-1)',
+          lineHeight: 1.6
+        }}
+      >
+        {entry.text}
+      </p>
     </div>
   )
 }

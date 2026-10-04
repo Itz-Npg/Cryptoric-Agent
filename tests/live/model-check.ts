@@ -15,6 +15,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   MODEL_BY_ID,
+  MODEL_CATALOG,
   ModelGateway,
   OPENROUTER_CREDENTIAL,
   OPENROUTER_ENDPOINT,
@@ -76,6 +77,11 @@ if (!declared) {
   pass(`catalogue entry is wired to ${declared.providerModelId} via ${declared.servedBy}`)
 }
 
+// Every other OpenRouter entry we ship, verified the same way. A catalogue is
+// only worth anything if each row works, and these ids came from the provider's
+// catalogue rather than from a guess, so they still have to answer.
+const otherOpenRouter = MODEL_CATALOG.filter((m) => m.servedBy === 'openrouter' && m.id !== 'space-bunny-alpha')
+
 // ------------------------------------------------------------- key check
 
 const described = await gateway.describeKey()
@@ -122,6 +128,54 @@ if (result.usage.inputTokens > 0 && result.usage.outputTokens > 0) {
   pass(`usage came back from the provider — ${result.usage.inputTokens} in / ${result.usage.outputTokens} out`)
 } else {
   fail(`the provider reported no token usage (${JSON.stringify(result.usage)})`)
+}
+
+// ------------------------------------------ every shipped OpenRouter entry
+
+for (const model of otherOpenRouter) {
+  const wireId = model.providerModelId ?? model.id
+  const listed = available.ok && available.models.some((m) => m.id === wireId)
+  if (!listed) {
+    fail(`the provider does not offer ${wireId}`)
+    continue
+  }
+
+  const entryGateway = new ModelGateway({
+    config: { ...config, model: wireId },
+    getApiKey: (slot) => (slot === OPENROUTER_CREDENTIAL ? key : null),
+    onUsage: () => undefined
+  })
+
+  let answered = false
+  let lastNote = ''
+  // `inclusionai/ling-3.1-flash` is burst rate-limited upstream, so a single
+  // small sample is not evidence about the model. Escalate before judging it.
+  for (const budget of [512, 4096]) {
+    const result = await entryGateway.complete({
+      messages: [{ role: 'user', content: 'What is 17 * 23? Reply with just the number.' }],
+      temperature: 0,
+      maxTokens: budget
+    })
+    if (!result.ok) {
+      lastNote = result.error ?? 'no completion'
+      continue
+    }
+    if (result.text.trim().length === 0) {
+      lastNote = `empty content at ${budget} tokens`
+      continue
+    }
+    const cost = result.usage.estimatedCostUsd
+    if (cost !== 0) {
+      fail(`${wireId} is catalogued as free but a completion cost $${cost}`)
+    } else {
+      pass(`${wireId} answered ${JSON.stringify(result.text.trim().slice(0, 30))} at cost $0`)
+    }
+    answered = true
+    break
+  }
+  if (!answered) {
+    fail(`${wireId} produced no text - ${lastNote}`)
+  }
 }
 
 // -------------------------------------------------------------- accounting

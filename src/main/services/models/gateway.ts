@@ -21,7 +21,7 @@
 
 import type { UsageRecord } from '@shared/types'
 
-export type ProviderKind = 'none' | 'ollama' | 'openai-compatible' | 'openrouter'
+export type ProviderKind = 'none' | 'ollama' | 'openai-compatible' | 'openrouter' | 'apinex'
 
 export interface ModelDescriptor {
   id: string
@@ -52,10 +52,36 @@ export interface ModelDescriptor {
   pricingFetchedAt?: string
 }
 
+export const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1'
+
+/** Credential-store slot for the user's own OpenRouter key (BYOK). */
+export const OPENROUTER_CREDENTIAL = 'openrouter-api-key'
+
+/** APINEX base URL, version prefix included. OpenAI-compatible on the wire. */
+export const APINEX_ENDPOINT = 'https://api.apinex.bond/v1'
+
+/** Credential-store slot for the user's own APINEX key (BYOK). */
+export const APINEX_CREDENTIAL = 'apinex-api-key'
+
+/**
+ * Which credential slot belongs to which provider.
+ *
+ * The slot has to move with the provider: sending a previous provider's key to
+ * a new endpoint would leak it. Providers absent from this map use the generic
+ * `model-api-key` slot when they need one at all.
+ */
+export const PROVIDER_CREDENTIAL_SLOTS: Partial<Record<ProviderKind, string>> = {
+  openrouter: OPENROUTER_CREDENTIAL,
+  apinex: APINEX_CREDENTIAL
+}
+
 /**
  * Catalogue. Local models are discovered at runtime from the endpoint; this
  * list is what the UI offers when no endpoint is reachable, and what provides
  * pricing for hosted models.
+ *
+ * Declared after the endpoint constants above because entries reference them:
+ * a `const` read before its declaration throws at import time.
  */
 export const MODEL_CATALOG: ModelDescriptor[] = [
   {
@@ -83,6 +109,121 @@ export const MODEL_CATALOG: ModelDescriptor[] = [
     servedBy: 'openrouter',
     endpoint: 'https://openrouter.ai/api/v1',
     pricingSource: 'openrouter.ai /api/v1/models',
+    pricingFetchedAt: '2026-10-04'
+  },
+  {
+    id: 'laguna-s-2.1-free',
+    label: 'Laguna S 2.1 (free)',
+    provider: 'OpenRouter',
+    kind: 'hosted',
+    // OpenRouter reports prompt "0" and completion "0", and a real completion
+    // came back with usage.cost 0 on 2026-10-04.
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: 262_144,
+    providerModelId: 'poolside/laguna-s-2.1:free',
+    servedBy: 'openrouter',
+    endpoint: OPENROUTER_ENDPOINT,
+    pricingSource: 'openrouter.ai /api/v1/models + live completion',
+    pricingFetchedAt: '2026-10-04'
+  },
+  {
+    id: 'ling-3.1-flash',
+    label: 'Ling 3.1 Flash (free)',
+    provider: 'OpenRouter',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: 262_144,
+    // Not suffixed `:free`, but OpenRouter prices it 0/0 and a real completion
+    // came back with usage.cost 0. It is burst rate-limited upstream: four
+    // consecutive calls returned HTTP 429 "temporarily rate-limited" and a
+    // fifth, 30s later, succeeded. The gateway retries those rather than
+    // dropping the run, which is what makes this entry usable.
+    providerModelId: 'inclusionai/ling-3.1-flash',
+    servedBy: 'openrouter',
+    endpoint: OPENROUTER_ENDPOINT,
+    pricingSource: 'openrouter.ai /api/v1/models + live completion',
+    pricingFetchedAt: '2026-10-04'
+  },
+  {
+    id: 'apinex-gpt-6-luna',
+    label: 'GPT 6 Luna (APINEX, free)',
+    provider: 'APINEX',
+    kind: 'hosted',
+    // Price 0 is measured, not assumed: on a plain API key these five returned
+    // real completions while eleven other `free/`-prefixed ids answered HTTP 402
+    // "subscription only". Verified 2026-10-04.
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    // The provider's model cards claim a 1M window, but GET /v1/models returns
+    // no context_length and there is no other API to check against, so this
+    // stays null rather than repeating an unverifiable number as fact.
+    contextWindow: null,
+    providerModelId: 'free/gpt-6-luna',
+    servedBy: 'apinex',
+    endpoint: APINEX_ENDPOINT,
+    pricingSource: 'apinex.bond/v1/models + live completion',
+    pricingFetchedAt: '2026-10-04'
+  },
+  {
+    id: 'apinex-glm-5.3-flash',
+    label: 'GLM 5.3 Flash (APINEX, free)',
+    provider: 'APINEX',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: null,
+    providerModelId: 'free/glm-5.3-flash',
+    servedBy: 'apinex',
+    endpoint: APINEX_ENDPOINT,
+    pricingSource: 'apinex.bond/v1/models + live completion',
+    pricingFetchedAt: '2026-10-04'
+  },
+  {
+    id: 'apinex-deepseek-v4.1-flash',
+    label: 'DeepSeek V4.1 Flash (APINEX, free)',
+    provider: 'APINEX',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: null,
+    providerModelId: 'free/deepseek-v4.1-flash',
+    servedBy: 'apinex',
+    endpoint: APINEX_ENDPOINT,
+    pricingSource: 'apinex.bond/v1/models + live completion',
+    pricingFetchedAt: '2026-10-04'
+  },
+  {
+    id: 'apinex-deepseek-v4-pro',
+    label: 'DeepSeek V4 Pro (APINEX, free)',
+    provider: 'APINEX',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: null,
+    // The real id carries a date suffix. The bare `free/deepseek-v4-pro` that
+    // the provider's own model card shows in truncated form answers HTTP 404
+    // "Model not found", so shipping the card's text verbatim would have put a
+    // 400-on-first-use entry in the picker.
+    providerModelId: 'free/deepseek-v4-pro-0813',
+    servedBy: 'apinex',
+    endpoint: APINEX_ENDPOINT,
+    pricingSource: 'apinex.bond/v1/models + live completion',
+    pricingFetchedAt: '2026-10-04'
+  },
+  {
+    id: 'apinex-mimo-v2.6-pro',
+    label: 'Mimo V2.6 Pro (APINEX, free)',
+    provider: 'APINEX',
+    kind: 'hosted',
+    inputPerMillion: 0,
+    outputPerMillion: 0,
+    contextWindow: null,
+    providerModelId: 'free/mimo-v2.6-pro',
+    servedBy: 'apinex',
+    endpoint: APINEX_ENDPOINT,
+    pricingSource: 'apinex.bond/v1/models + live completion',
     pricingFetchedAt: '2026-10-04'
   },
   {
@@ -117,11 +258,6 @@ export function findModel(idOrWireId: string): ModelDescriptor | undefined {
 /** One coin = one cent of modelled cost. Keeps the balance legible. */
 export const USD_PER_COIN = 0.01
 
-export const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1'
-
-/** Credential-store slot for the user's own OpenRouter key (BYOK). */
-export const OPENROUTER_CREDENTIAL = 'openrouter-api-key'
-
 export interface ModelConfig {
   /** `none` disables the gateway entirely; the agent stays deterministic-only. */
   provider: ProviderKind
@@ -151,9 +287,48 @@ export interface BudgetState {
   spendUsd: number
 }
 
+/**
+ * A tool the model may call, in the OpenAI function-calling shape.
+ *
+ * `parameters` is JSON Schema. Passing a loose schema is how a model invents
+ * arguments the tool then rejects, so these are built from the tool's real zod
+ * schema rather than hand-written prose.
+ */
+export interface ToolSpec {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }
+}
+
+/** A tool call the model asked for. `arguments` is parsed, never a raw string. */
+export interface ToolCall {
+  id: string
+  name: string
+  arguments: Record<string, unknown>
+  /** True when the model's `arguments` was not valid JSON. */
+  malformed: boolean
+}
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  /**
+   * Tool calls the assistant requested. Must be echoed back verbatim alongside
+   * the matching `tool` messages, or providers reject the turn as inconsistent.
+   */
+  tool_calls?: RawToolCall[]
+  /** Links a `tool` message to the call it answers. */
+  tool_call_id?: string
+}
+
+/** Wire shape of a tool call, as it must be sent back to the provider. */
+export interface RawToolCall {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: string }
 }
 
 export interface CompletionRequest {
@@ -161,6 +336,11 @@ export interface CompletionRequest {
   temperature?: number
   maxTokens?: number
   signal?: AbortSignal
+  /**
+   * Advertised tools. Omitted for a plain chat turn; the agent loop passes the
+   * registry so the model can act rather than only talk.
+   */
+  tools?: ToolSpec[]
 }
 
 export interface CompletionResult {
@@ -170,6 +350,13 @@ export interface CompletionResult {
   /** Model the gateway actually called. */
   model: string
   error: string | null
+  /** Tool calls the model requested. Empty for a plain chat turn. */
+  toolCalls: ToolCall[]
+  /**
+   * The assistant message to append to the conversation, carrying `tool_calls`
+   * in wire form so the next turn can answer them.
+   */
+  assistantMessage: ChatMessage | null
 }
 
 export interface ModelGatewayDeps {
@@ -182,6 +369,11 @@ export interface ModelGatewayDeps {
    */
   getApiKey(credentialKey: string | null): string | null
   onUsage: (usage: UsageRecord, costUsd: number) => void
+  /**
+   * Optional timeline note. Used to make a retry visible: a silent re-issued
+   * request is indistinguishable from a hang.
+   */
+  note?: (message: string) => void
 }
 
 /**
@@ -260,6 +452,63 @@ export class ModelGateway {
    * one — inventing a domain to fill the field would be a lie in an HTTP header
    * that gets logged.
    */
+  /**
+   * POST with a bounded retry for transient failures.
+   *
+   * Measured need: OpenRouter's free `inclusionai/ling-3.1-flash` returned HTTP
+   * 429 "temporarily rate-limited upstream" on four consecutive calls and then
+   * succeeded once ~30s of backoff had passed. Without a retry the agent loop
+   * treats a provider failure as the end of the run, so one burst of rate
+   * limiting would look to the user exactly like the model giving up mid-task.
+   *
+   * The waits are the measured ones, not a guess: a plain 1/2/4 second ladder
+   * gave up at 7 seconds total and still failed.
+   *
+   * Only 429 and 5xx are retried. A retry re-issues the request, so it is
+   * surfaced as a note rather than done silently.
+   */
+  private async fetchWithRetry(
+    url: string,
+    headers: Record<string, string>,
+    payload: Record<string, unknown>,
+    signal: AbortSignal | undefined
+  ): Promise<Response> {
+    const backoffMs = [3000, 10_000, 25_000]
+    const maxAttempts = backoffMs.length + 1
+    let last: Response | null = null
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (signal?.aborted) break
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        signal: signal ?? AbortSignal.timeout(120_000),
+        body: JSON.stringify(payload)
+      })
+
+      if (res.ok) return res
+
+      const transient = res.status === 429 || res.status >= 500
+      last = res
+      if (!transient || attempt === maxAttempts) return res
+
+      // Release the connection; an unread body holds the socket open.
+      await res.body?.cancel().catch(() => undefined)
+
+      // Honour a server-sent Retry-After when it is a sane number of seconds,
+      // otherwise the measured ladder.
+      const header = Number(res.headers.get('retry-after'))
+      const fallback = backoffMs[Math.min(attempt - 1, backoffMs.length - 1)] ?? 5000
+      const waitMs = Number.isFinite(header) && header > 0 && header <= 60 ? header * 1000 : fallback
+      this.deps.note?.(
+        `model endpoint returned ${res.status}, retrying in ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1} of ${maxAttempts})`
+      )
+      await new Promise((r) => setTimeout(r, waitMs))
+    }
+
+    return last ?? new Response('request aborted', { status: 499 })
+  }
+
   private headers(opts: { json?: boolean } = {}): Record<string, string> {
     const { provider, referer } = this.deps.config
     const headers: Record<string, string> = {}
@@ -335,13 +584,13 @@ export class ModelGateway {
   async complete(request: CompletionRequest): Promise<CompletionResult> {
     const budget = this.checkBudget()
     if (!budget.allowed) {
-      return {
-        ok: false,
-        text: '',
-        usage: this.getUsage(),
-        model: this.deps.config.model,
-        error: budget.reason
-      }
+      // `allowed: false` always carries a reason; the fallback keeps the
+      // failure report non-empty rather than handing back a bare `ok: false`.
+      return failed(
+        this.getUsage(),
+        this.deps.config.model,
+        budget.reason ?? 'The model call was refused by the gateway.'
+      )
     }
 
     const { endpoint, model, provider } = this.deps.config
@@ -350,34 +599,44 @@ export class ModelGateway {
     const headers = this.headers({ json: true })
     if (provider === 'ollama') headers['X-Return-Format'] = 'openai'
 
+    // Tools are only advertised when the caller actually wants them. Sending an
+    // empty `tools` array is rejected by several OpenAI-compatible servers.
+    const payload: Record<string, unknown> = {
+      model,
+      messages: request.messages,
+      temperature: request.temperature ?? 0.2,
+      max_tokens: request.maxTokens ?? 2048,
+      stream: false
+    }
+    if (request.tools && request.tools.length > 0) {
+      payload['tools'] = request.tools
+      payload['tool_choice'] = 'auto'
+    }
+
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers,
-        signal: request.signal ?? AbortSignal.timeout(120_000),
-        body: JSON.stringify({
-          model,
-          messages: request.messages,
-          temperature: request.temperature ?? 0.2,
-          max_tokens: request.maxTokens ?? 2048,
-          stream: false
-        })
-      })
+      const res = await this.fetchWithRetry(url, headers, payload, request.signal)
 
       if (!res.ok) {
         const detail = (await res.text().catch(() => '')).slice(0, 300)
-        return {
-          ok: false,
-          text: '',
-          usage: this.getUsage(),
-          model,
-          error: `Model endpoint returned ${res.status}. ${detail}`
-        }
+        return failed(this.getUsage(), model, `Model endpoint returned ${res.status}. ${detail}`)
       }
 
       const body = (await res.json()) as {
-        choices?: { message?: { content?: string } }[]
-        usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }
+        choices?: {
+          message?: {
+            content?: string | null
+            tool_calls?: {
+              id?: string
+              type?: string
+              function?: { name?: string; arguments?: string }
+            }[]
+          }
+        }[]
+        usage?: {
+          prompt_tokens?: number
+          completion_tokens?: number
+          prompt_tokens_details?: { cached_tokens?: number }
+        }
       }
 
       const usage: UsageRecord = {
@@ -400,21 +659,21 @@ export class ModelGateway {
       this.usedTodayUsd += cost
       this.deps.onUsage(usage, cost)
 
+      const message = body.choices?.[0]?.message
+      const rawCalls = message?.tool_calls ?? []
+      const parsed = rawCalls.map((call, index) => parseToolCall(call, index))
+
       return {
         ok: true,
-        text: body.choices?.[0]?.message?.content ?? '',
+        text: message?.content ?? '',
         usage: this.getUsage(),
         model,
-        error: null
+        error: null,
+        toolCalls: parsed,
+        assistantMessage: buildAssistantMessage(message?.content ?? '', rawCalls)
       }
     } catch (err) {
-      return {
-        ok: false,
-        text: '',
-        usage: this.getUsage(),
-        model,
-        error: err instanceof Error ? err.message : String(err)
-      }
+      return failed(this.getUsage(), model, err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -449,11 +708,14 @@ export class ModelGateway {
     if (!this.usesUserKey()) {
       return { ...empty, error: 'No API key is stored for this provider.' }
     }
+    if (this.deps.config.provider === 'apinex') {
+      return this.describeApinexKey(empty)
+    }
     if (this.deps.config.provider !== 'openrouter') {
       return {
         ...empty,
         configured: true,
-        error: 'Key verification is implemented for OpenRouter. Local and generic OpenAI-compatible endpoints are not probed.'
+        error: 'Key verification is implemented for OpenRouter and APINEX. Local and generic OpenAI-compatible endpoints are not probed.'
       }
     }
     const url = `${this.deps.config.endpoint.replace(/\/$/, '')}/key`
@@ -489,6 +751,60 @@ export class ModelGateway {
   }
 
   /**
+   * Verify an APINEX key.
+   *
+   * APINEX exposes no `/key` equivalent, but `GET /v1/models` is a real check:
+   * measured on 2026-10-04 it answers 200 for a working key and 401 with
+   * `"Invalid API key"` otherwise. What it cannot tell us is a balance or a
+   * label, so those stay null rather than being invented as zero.
+   */
+  private async describeApinexKey(
+    empty: {
+      ok: boolean
+      configured: boolean
+      label: string | null
+      usage: number | null
+      limit: number | null
+      limitRemaining: number | null
+      isFreeTier: boolean | null
+      error: string | null
+    }
+  ): Promise<{
+    ok: boolean
+    configured: boolean
+    label: string | null
+    usage: number | null
+    limit: number | null
+    limitRemaining: number | null
+    isFreeTier: boolean | null
+    error: string | null
+  }> {
+    const url = `${APINEX_ENDPOINT}/models`
+    try {
+      const res = await fetch(url, { headers: this.headers(), signal: AbortSignal.timeout(8000) })
+      if (!res.ok) {
+        const detail = (await res.text().catch(() => '')).slice(0, 200)
+        return { ...empty, configured: true, error: `Key check returned ${res.status}. ${detail}` }
+      }
+      const body = (await res.json()) as { data?: { id?: string }[] }
+      const models = Array.isArray(body.data) ? body.data.length : 0
+      return {
+        ok: true,
+        configured: true,
+        label: null,
+        usage: null,
+        limit: null,
+        limitRemaining: null,
+        isFreeTier: null,
+        error: null,
+        ...(models > 0 ? {} : { error: 'Key accepted but the provider returned no model list.' })
+      }
+    } catch (err) {
+      return { ...empty, configured: true, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /**
    * The wire identifier for a catalogue entry.
    *
    * Hosted catalogues namespace their models, so `id` is a UI key and not
@@ -510,6 +826,11 @@ export class ModelGateway {
    *
    * Returns null for a model that declares no provider (the local placeholder),
    * so selecting it leaves whatever the user configured untouched.
+   *
+   * A provider with its own credential slot takes that slot, overriding the
+   * configured one. Preferring the configured slot here would hand one
+   * provider's key to another: pick an APINEX model while configured for
+   * OpenRouter and the OpenRouter key would be sent to apinex.bond.
    */
   resolveModel(modelId: string): ModelConfig | null {
     const model = MODEL_BY_ID.get(modelId)
@@ -519,14 +840,82 @@ export class ModelGateway {
       provider: model.servedBy,
       endpoint: model.endpoint ?? this.deps.config.endpoint,
       model: model.providerModelId ?? model.id,
-      credentialKey:
-        this.deps.config.credentialKey ?? (model.servedBy === 'openrouter' ? OPENROUTER_CREDENTIAL : null)
+      credentialKey: PROVIDER_CREDENTIAL_SLOTS[model.servedBy] ?? this.deps.config.credentialKey ?? null
     }
   }
 }
 
 function todayUtc(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+function failed(usage: UsageRecord, model: string, error: string): CompletionResult {
+  return {
+    ok: false,
+    text: '',
+    usage,
+    model,
+    error,
+    toolCalls: [],
+    assistantMessage: null
+  }
+}
+
+/**
+ * Turn one wire tool call into a parsed one.
+ *
+ * A model that emits `"arguments": "{path: index.html"` is not an error to throw
+ * on — it is a recoverable turn. The call is marked `malformed` with an empty
+ * argument object so the loop can answer it with a real tool error, which the
+ * model then reads and corrects. Silently dropping it would leave the
+ * conversation with an unanswered `tool_call_id`, which providers reject.
+ */
+function parseToolCall(
+  call: { id?: string; function?: { name?: string; arguments?: string } },
+  index: number
+): ToolCall {
+  const name = call.function?.name ?? ''
+  const raw = call.function?.arguments ?? ''
+  // An id is required to answer the call, and some servers omit it.
+  const id = call.id ?? `call_${index}_${name || 'unnamed'}`
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { id, name, arguments: parsed as Record<string, unknown>, malformed: false }
+    }
+    return { id, name, arguments: {}, malformed: true }
+  } catch {
+    return { id, name, arguments: {}, malformed: true }
+  }
+}
+
+/**
+ * Echo the assistant turn back to the provider.
+ *
+ * The `tool_calls` array must be reproduced exactly — same ids, same argument
+ * strings — or the matching `tool` messages that follow are orphaned and the
+ * next request fails. Returning null when there is nothing to say and nothing
+ * to call keeps the caller from appending empty turns.
+ */
+function buildAssistantMessage(
+  content: string,
+  rawCalls: { id?: string; type?: string; function?: { name?: string; arguments?: string } }[]
+): ChatMessage | null {
+  if (rawCalls.length === 0) {
+    return content.trim().length > 0 ? { role: 'assistant', content } : null
+  }
+  return {
+    role: 'assistant',
+    content,
+    tool_calls: rawCalls.map((call, index) => ({
+      id: call.id ?? `call_${index}_${call.function?.name ?? 'unnamed'}`,
+      type: 'function' as const,
+      function: {
+        name: call.function?.name ?? '',
+        arguments: call.function?.arguments ?? '{}'
+      }
+    }))
+  }
 }
 
 /**

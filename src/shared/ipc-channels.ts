@@ -67,6 +67,8 @@ export const CHANNELS = {
   agentStop: 'agent:stop',
   agentPause: 'agent:pause',
   agentResume: 'agent:resume',
+  conversationList: 'conversation:list',
+  conversationClear: 'conversation:clear',
   approvalResolve: 'approval:resolve',
   approvalList: 'approval:list',
   toolsList: 'tools:list',
@@ -89,13 +91,20 @@ export const CHANNELS = {
   modelsVerifyKey: 'models:verify-key',
   modelsSetKey: 'models:set-key',
 
+  // --- updates
+  updatesStatus: 'updates:status',
+  updatesCheck: 'updates:check',
+  updatesDownload: 'updates:download',
+  updatesInstall: 'updates:install',
+
   // --- diagnostics
   diagnostics: 'diagnostics:run',
 
   // --- main -> renderer pushes
   push: 'push:main-event',
   pushApproval: 'push:approval',
-  pushLog: 'push:log'
+  pushLog: 'push:log',
+  pushUpdate: 'push:update'
 } as const
 
 export type ChannelId = (typeof CHANNELS)[keyof typeof CHANNELS]

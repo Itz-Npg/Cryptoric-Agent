@@ -34,9 +34,14 @@ nsis:
   differentialPackage: true
 publish:
   provider: github
-  owner: cryptoric
-  repo: cryptoric-agent
+  # The real destination. `owner`/`repo` here are also what the packaged app's
+  # updater reads at runtime to find the release feed, so a placeholder here
+  # produces an app that checks a repository that does not exist.
+  owner: Itz-Npg
+  repo: Cryptoric-Agent
   releaseType: release
+  # `latest` is the channel `electron-updater` looks at by default; naming it
+  # keeps the built `latest.yml` on the same channel the app reads.
   channel: latest
 mac:
   target:

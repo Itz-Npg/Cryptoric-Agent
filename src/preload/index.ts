@@ -12,6 +12,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { CHANNELS, type IpcResult } from '@shared/ipc-channels'
 import type {
   AgentTask,
+  ConversationTurn,
   DiagnosticEntry,
   EnvSnapshot,
   EnvironmentGap,
@@ -76,7 +77,7 @@ export interface AppStatePatch {
   theme?: 'graphite' | 'bone'
   density?: 'compact' | 'default' | 'relaxed'
   motion?: 'full' | 'reduced'
-  modelProvider?: 'none' | 'ollama' | 'openai-compatible' | 'openrouter'
+  modelProvider?: 'none' | 'ollama' | 'openai-compatible' | 'openrouter' | 'apinex'
   modelEndpoint?: string
   modelName?: string
   dailyBudgetUsd?: number
@@ -139,6 +140,44 @@ export interface BudgetSummaryDto {
 export interface ModelCatalogSnapshot {
   models: ModelSummaryDto[]
   budget: BudgetSummaryDto
+}
+
+/**
+ * Update state as the renderer sees it.
+ *
+ * Mirrors `UpdateStatus` in the main process. `state: 'unsupported'` is a real
+ * outcome, not a failure: a development build genuinely has no update feed, and
+ * reporting that as "up to date" would be a false all-clear.
+ */
+export interface UpdateStatusDto {
+  state:
+    | 'idle'
+    | 'unsupported'
+    | 'checking'
+    | 'available'
+    | 'not-available'
+    | 'downloading'
+    | 'downloaded'
+    | 'error'
+  currentVersion: string
+  availableVersion: string | null
+  releaseNotes: string | null
+  releaseDate: string | null
+  progress: { percent: number; transferred: number; total: number; bytesPerSecond: number } | null
+  unavailableReason: string | null
+  error: string | null
+  releasePageUrl: string | null
+}
+
+/**
+ * The persisted conversation, as the renderer sees it.
+ *
+ * Read once at boot and then kept live by `conversation` push events, so the
+ * chat view shows the same history the model is given.
+ */
+export interface ConversationSnapshot {
+  id: string
+  turns: ConversationTurn[]
 }
 
 export interface ModelKeyReportDto {
@@ -227,10 +266,14 @@ const api = {
     resume: (taskId: string) => invoke<boolean>(CHANNELS.agentResume, { taskId }),
     tools: () => invoke<unknown[]>(CHANNELS.toolsList, {})
   },
+  conversation: {
+    list: () => invoke<ConversationSnapshot>(CHANNELS.conversationList, {}),
+    clear: () => invoke<ConversationSnapshot>(CHANNELS.conversationClear, {})
+  },
   approval: {
     list: () => invoke<unknown[]>(CHANNELS.approvalList, {}),
-    resolve: (id: string, approved: boolean, remember?: boolean) =>
-      invoke<boolean>(CHANNELS.approvalResolve, { id, approved, remember })
+    resolve: (id: string, approved: boolean, remember?: boolean, toolId?: string) =>
+      invoke<boolean>(CHANNELS.approvalResolve, { id, approved, remember, toolId })
   },
   skill: {
     list: () => invoke<SkillDescriptor[]>(CHANNELS.skillList, {}),
@@ -248,7 +291,7 @@ const api = {
     available: () => invoke<{ ok: boolean; models: { id: string }[]; error: string | null }>(CHANNELS.modelsAvailable, {}),
     setBudget: (coins: number) => invoke<ModelCatalogSnapshot>(CHANNELS.modelsSetBudget, { coins }),
     setProvider: (input: {
-      provider: 'none' | 'ollama' | 'openai-compatible' | 'openrouter'
+      provider: 'none' | 'ollama' | 'openai-compatible' | 'openrouter' | 'apinex'
       endpoint: string
       model: string
       credentialKey: string | null
@@ -256,6 +299,24 @@ const api = {
     }) => invoke<ModelCatalogSnapshot>(CHANNELS.modelsSetProvider, input),
     verifyKey: () => invoke<ModelKeyReportDto>(CHANNELS.modelsVerifyKey, {}),
     setKey: (apiKey: string) => invoke<ModelKeyReportDto>(CHANNELS.modelsSetKey, { apiKey })
+  },
+  updates: {
+    status: () => invoke<UpdateStatusDto>(CHANNELS.updatesStatus, {}),
+    /** Ask the release feed what exists. Cheap, and safe to call often. */
+    check: (force = false) => invoke<UpdateStatusDto>(CHANNELS.updatesCheck, { force }),
+    /** Fetch the installer. Only the user should trigger this. */
+    download: () => invoke<UpdateStatusDto>(CHANNELS.updatesDownload, {}),
+    /** Swap the installed build and restart into it. */
+    install: () => invoke<UpdateStatusDto>(CHANNELS.updatesInstall, {}),
+    /**
+     * Update transitions pushed from main, so a check that starts at launch
+     * still reaches the screen even if Settings is not open.
+     */
+    onUpdate(handler: (status: UpdateStatusDto) => void): Unsubscribe {
+      const listener = (_e: Electron.IpcRendererEvent, status: UpdateStatusDto): void => handler(status)
+      ipcRenderer.on(CHANNELS.pushUpdate, listener)
+      return () => ipcRenderer.removeListener(CHANNELS.pushUpdate, listener)
+    }
   },
   diagnostics: {
     run: () => invoke<DiagnosticsReport>(CHANNELS.diagnostics, {})

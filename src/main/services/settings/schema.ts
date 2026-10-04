@@ -25,9 +25,13 @@ import { z } from 'zod'
  *
  * Version 1 is the flat `state.json` shape that shipped first. Version 2 is this
  * grouped, validated, scoped schema; `migrateLegacyState` converts one into the
- * other without deleting the original file.
+ * other without deleting the original file. Version 3 has the same shape — the
+ * bump exists so `migrateAllowance` can retire the old 500-coin default on
+ * installs that persisted it. A version bump that changes no shape is still a
+ * version bump: it is what makes an existing file go through the migration
+ * exactly once instead of never.
  */
-export const SETTINGS_VERSION = 2
+export const SETTINGS_VERSION = 3
 
 /**
  * Where a setting may be overridden.

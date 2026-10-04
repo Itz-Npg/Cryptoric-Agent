@@ -26,10 +26,14 @@ import { ToolRegistry } from './services/tools/registry'
 import { ToolRuntime } from './services/tools/runtime'
 import { buildEnvironmentTools } from './services/tools/builtin/environment'
 import { buildFilesystemTools } from './services/tools/builtin/filesystem'
+import { buildCommandTools } from './services/tools/builtin/command'
 import { BrowserTabManager } from './services/browser/tabs'
 import { buildBrowserTools } from './services/browser/tools'
 import { AgentRuntime } from './services/agent/core'
 import { buildPipeline } from './services/agent/stages'
+import { runAgentLoop } from './services/agent/loop'
+import { ConversationStore, deriveTitle } from './services/agent/conversation'
+import type { StageContext } from './services/agent/pipeline-types'
 import { IpcRouter } from './ipc/router'
 import { createStore, CredentialStore, type AppState } from './services/store'
 import { SettingsStore } from './services/settings/store'
@@ -41,15 +45,27 @@ import {
   ModelGateway,
   MODEL_CATALOG,
   OPENROUTER_CREDENTIAL,
+  APINEX_CREDENTIAL,
+  PROVIDER_CREDENTIAL_SLOTS,
   type ModelConfig,
   type ProviderKind
 } from './services/models/gateway'
 import { readEnvFile } from './services/models/dotenv'
+import { UpdateService } from './services/updater'
+import { createElectronUpdatePort } from './services/updater-electron'
 import type { ProjectProfile, ToolStatus, MainEvent } from '@shared/types'
 
 const dirname_ = fileURLToPath(new URL('.', import.meta.url))
 
 let mainWindow: BrowserWindow | null = null
+
+/**
+ * Policy, for the development review hooks only.
+ *
+ * Declared at module scope because the hooks live outside `boot()`; assigned
+ * during boot. Null until then, and every use is null-guarded.
+ */
+let policyRef: PermissionPolicy | null = null
 
 interface Services {
   env: EnvironmentManager
@@ -64,10 +80,33 @@ interface Services {
   router: IpcRouter
   store: ReturnType<typeof createStore>
   credentials: CredentialStore
+  conversation: ConversationStore
   getProject(): ProjectProfile | null
 }
 
 let services: Services | null = null
+
+/**
+ * Module-scope handle so the launch-time check can reach the update service
+ * without threading it through `boot()`'s return value.
+ */
+let updateService: UpdateService | null = null
+
+async function bootUpdateCheck(): Promise<void> {
+  if (!updateService) return
+  try {
+    await updateService.check()
+  } catch (err) {
+    // The service records its own failure; this is the belt-and-braces guard so
+    // a launch-time throw can never take the app down.
+    push({
+      type: 'log',
+      level: 'warn',
+      message: `Update check failed: ${err instanceof Error ? err.message : String(err)}`,
+      at: new Date().toISOString()
+    })
+  }
+}
 
 function push(event: MainEvent): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
@@ -88,6 +127,7 @@ async function boot(): Promise<Services> {
   await settings.load()
 
   const policy = new PermissionPolicy(DEFAULT_PERMISSION_RULES)
+  policyRef = policy
   for (const [domain, decision] of Object.entries(state.permissionOverrides ?? {})) {
     if (decision !== 'allow' && decision !== 'ask' && decision !== 'deny') continue
     policy.setRule(domain as Parameters<PermissionPolicy['setRule']>[0], decision)
@@ -164,6 +204,28 @@ async function boot(): Promise<Services> {
   // Registered after `files` exists: the filesystem tools resolve every path
   // through that service, so they cannot be constructed before it.
   tools.registerAll(buildFilesystemTools({ files, policy, getRoots }))
+  tools.registerAll(buildCommandTools({ env, getRoots }))
+
+  // The transcript is owned by the main process and written to disk. Keeping it
+  // here rather than in renderer state is what makes it survive a restart and
+  // gives the model something to remember.
+  const conversation = new ConversationStore(join(userDataDir, 'conversation.json'))
+  // Restore the scope of the project that was open last session. The project
+  // itself is not auto-opened, but without this its transcript would sit in the
+  // file while the chat pane showed the empty "no project" scope — history that
+  // exists but appears to have been lost.
+  conversation.setProject(state.lastProjectRoot ?? null)
+
+  /**
+   * Persist a turn and show it.
+   *
+   * Every append goes through here so the on-disk transcript and what is on
+   * screen can never disagree — a renderer that fabricates or reorders history
+   * is exactly the failure this design exists to prevent.
+   */
+  const recordTurn = (turn: Parameters<ConversationStore['append']>[0]): void => {
+    push({ type: 'conversation', turn: conversation.append(turn) })
+  }
 
   // Model gateway. Reads its API key from the OS-encrypted credential store;
   // the key is never written to the plain state file.
@@ -173,7 +235,7 @@ async function boot(): Promise<Services> {
       provider: state.modelProvider,
       endpoint: state.modelEndpoint,
       model: activeModelId,
-      credentialKey: state.modelProvider === 'openrouter' ? OPENROUTER_CREDENTIAL : 'model-api-key',
+      credentialKey: PROVIDER_CREDENTIAL_SLOTS[state.modelProvider] ?? 'model-api-key',
       dailyBudgetCoins: Math.round(state.dailyBudgetUsd * 100)
     },
     getApiKey: (key) => credentialsRef.get(key),
@@ -181,6 +243,37 @@ async function boot(): Promise<Services> {
   })
   // Declared after `boot` closes over `credentials`; resolved lazily.
   const credentialsRef: { get(key: string | null): string | null } = { get: () => null }
+
+  // Updates. The port is the real `electron-updater` transport; the policy
+  // (when to check, never download unasked, never fake an all-clear) lives in
+  // `UpdateService` so it is testable without a packaged build or a network.
+  // Published at module scope so the launch-time check can reach it.
+  updateService = new UpdateService({
+    port: createElectronUpdatePort(),
+    notify: (status) => {
+      mainWindow?.webContents.send(CHANNELS.pushUpdate, status)
+      // The log pane is the durable record, so an update found in the
+      // background is still visible after the toast is gone.
+      if (status.state === 'available' && status.availableVersion) {
+        push({
+          type: 'log',
+          level: 'info',
+          message: `Version ${status.availableVersion} is available (running ${status.currentVersion}).`,
+          at: new Date().toISOString()
+        })
+      }
+      if (status.state === 'error' && status.error) {
+        push({
+          type: 'log',
+          level: 'warn',
+          message: `Update check failed: ${status.error}`,
+          at: new Date().toISOString()
+        })
+      }
+    }
+  })
+  const updates = updateService
+
   const bindCredentials = (c: CredentialStore): void => {
     credentialsRef.get = (key: string | null) => (key ? c.get(key) : null)
   }
@@ -198,41 +291,96 @@ async function boot(): Promise<Services> {
       skillTokenBudget: 6000,
       maxSkillsPerTask: 4,
       getProjectRoot: () => project?.root ?? null,
-      respond: async ({ prompt, projectRoot, signal }) => {
-        if (!gateway.isEnabled()) {
-          return {
-            ok: false,
-            text: '',
-            error:
-              'No model provider is configured, so Cryptoric Chan cannot answer. Pick one in Settings, then add your API key.'
-          }
-        }
-        const result = await gateway.complete({
-          messages: [
-            { role: 'system', content: chanSystemPrompt(projectRoot) },
-            { role: 'user', content: prompt }
-          ],
-          maxTokens: 900,
-          signal
-        })
-        return { ok: result.ok, text: result.text, error: result.error }
-      },
       events: {
         timeline: (entry) => push({ type: 'timeline', entry }),
         task: (task) => push({ type: 'task', task }),
         toolResult: () => undefined,
-        say: (text) => push({ type: 'log', level: 'info', message: text, at: new Date().toISOString() })
+        // Stage summaries land in the conversation too, so they survive a
+        // restart alongside the model's own words.
+        say: (text) => recordTurn({ role: 'assistant', text })
       }
     },
     buildPipeline({
-      tools: { call: async () => ({ ok: false, summary: 'unavailable', error: 'not wired' }) },
+      // A real call surface. This used to be a stub returning "not wired",
+      // which was a capability that existed on paper and did nothing.
+      tools: {
+        call: (toolId, args) =>
+          tools
+            .get(toolId)
+            ?.execute(args as never, {
+              projectRoot: project?.root ?? null,
+              taskEnv: null,
+              signal: new AbortController().signal,
+              note: () => undefined,
+              taskId: null,
+              grantedTier: 'safe',
+              recordArtifact: () => ({}) as never
+            }) ?? Promise.resolve({ ok: false, summary: 'Unknown tool', error: `No tool registered with id "${toolId}".` })
+      },
       getProject: () => project,
       probeRuntime: async (toolId) => {
         const s = await env.probeTool(toolId)
         return { state: s.state, version: s.version, detail: s.detail }
-      }
+      },
+      // Present only when a provider really is configured. A stage that needs
+      // the model and does not get it says so; nothing here pretends.
+      model: gateway.isEnabled()
+        ? async (ctx, phase) => runModelPhase(ctx, phase)
+        : undefined
     })
   )
+
+  /**
+   * Hand a prompt to the model and let it act.
+   *
+   * For `plan` the model only writes; for `implement` it gets the tool registry
+   * and the loop runs until it answers in prose. Both share one persisted
+   * conversation, so the model remembers what it did earlier in the session.
+   */
+  async function runModelPhase(
+    ctx: StageContext,
+    phase: 'plan' | 'implement'
+  ): Promise<{ ok: boolean; text: string; error: string | null; tools: string[] }> {
+    const history = conversation.contextMessages()
+
+    if (phase === 'plan') {
+      const result = await gateway.complete({
+        messages: [
+          { role: 'system', content: planSystemPrompt() },
+          ...history.map((m) => ({ role: m.role, content: m.content })),
+          { role: 'user', content: ctx.task.prompt }
+        ],
+        maxTokens: 700,
+        signal: ctx.signal
+      })
+      if (!result.ok) return { ok: false, text: '', error: result.error, tools: [] }
+      const text = result.text.trim()
+      return {
+        ok: true,
+        text: text || 'No plan produced.',
+        error: null,
+        tools: []
+      }
+    }
+
+    const outcome = await runAgentLoop(
+      {
+        complete: (request) => gateway.complete(request),
+        listTools: () => tools.list(),
+        invoke: (toolId, args) => agent.invoke(ctx.task, toolId, args, ctx.signal, 'elevated'),
+        note: (message, status) => ctx.note(message, status ?? 'info'),
+        record: (role, text, tool, ok) => recordTurn({ role, text, tool, ok })
+      },
+      {
+        systemPrompt: chanSystemPrompt(ctx.task.projectRoot),
+        history,
+        prompt: ctx.task.prompt,
+        signal: ctx.signal
+      }
+    )
+
+    return { ok: outcome.ok, text: outcome.text, error: outcome.error, tools: outcome.called }
+  }
 
   const router = new IpcRouter({
     getTrustedWebContents: () => mainWindow?.webContents ?? null,
@@ -282,11 +430,17 @@ async function boot(): Promise<Services> {
     files,
     git,
     gateway,
+    updates,
     credentials,
+    conversation,
+    recordTurn,
     getProject: () => project,
     setProject: async (root) => {
       const detected = await detectProject(root)
       project = detected
+      // Scope the transcript to this project *before* anything can append, so a
+      // turn can never land in the previous project's history.
+      conversation.setProject(detected.root)
       env.setProjectEnv(detected.root, {})
       await skills.discover(DEFAULT_SKILL_ROOTS, detected.root)
       push({ type: 'project', project: detected })
@@ -316,6 +470,7 @@ async function boot(): Promise<Services> {
     const fromFile = readEnvFile([app.getAppPath(), process.cwd(), userDataDir])
     const wanted: { slot: string; env: string }[] = [
       { slot: OPENROUTER_CREDENTIAL, env: 'OPENROUTER_API_KEY' },
+      { slot: APINEX_CREDENTIAL, env: 'APINEX_API_KEY' },
       { slot: 'model-api-key', env: 'OPENAI_API_KEY' }
     ]
     for (const { slot, env } of wanted) {
@@ -329,6 +484,7 @@ async function boot(): Promise<Services> {
 
   return {
     env, terminals, processes, browser, tools, policy, approvals, skills, agent, router, store, credentials,
+    conversation,
     getProject: () => project
   }
 }
@@ -347,7 +503,10 @@ interface RouteDeps {
   files: FileService
   git: GitService
   gateway: ModelGateway
+  updates: UpdateService
   credentials: CredentialStore
+  conversation: ConversationStore
+  recordTurn(turn: Parameters<ConversationStore['append']>[0]): void
   getProject(): ProjectProfile | null
   setProject(root: string): Promise<ProjectProfile>
   push(event: MainEvent): void
@@ -355,8 +514,10 @@ interface RouteDeps {
 
 function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   const { env, terminals, processes, tools, policy, approvals, skills, agent, store, files, git, gateway } = deps
+  const { updates } = deps
   const settings = deps.settings
   const credentials = deps.credentials
+  const { conversation } = deps
 
   // ------------------------------------------------------------- bootstrap
   router.register(CHANNELS.appInfo, {
@@ -422,7 +583,16 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
       return deps.setProject(selected)
     }
   })
-  router.register(CHANNELS.projectClose, { handler: () => null })
+  router.register(CHANNELS.projectClose, {
+    domain: 'fs.read',
+    requiresApproval: false,
+    handler: () => {
+      // Closing returns to the unscoped conversation. Without this the transcript
+      // would keep showing the project that is no longer open.
+      conversation.setProject(null)
+      return null
+    }
+  })
   router.register(CHANNELS.projectList, { handler: () => store.get().recentProjects })
   router.register(CHANNELS.projectGaps, {
     handler: async () => {
@@ -577,17 +747,34 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   router.register(CHANNELS.agentSubmit, {
     domain: 'terminal.safe',
     requiresApproval: false,
-    handler: (args: { prompt: string; title?: string; role?: Parameters<typeof agent.submit>[0]['role'] }) =>
-      agent.submit({
-        title: args.title ?? args.prompt.slice(0, 60),
-        prompt: args.prompt,
+    handler: (args: { prompt: string; title?: string; role?: Parameters<typeof agent.submit>[0]['role'] }) => {
+      const prompt = typeof args.prompt === 'string' ? args.prompt : ''
+      if (prompt.trim().length === 0) throw new Error('The prompt was empty.')
+      // The user's own words are part of the transcript, not just the agent's
+      // reply. Recording them here means the history reads as a conversation
+      // and the model has the request in context on the next turn.
+      deps.recordTurn({ role: 'user', text: prompt })
+      return agent.submit({
+        // A pasted prompt can start with a rule of `=` or a fragment of HTML.
+        // `prompt.slice(0, 60)` put that in the task list verbatim.
+        title: args.title?.trim() || deriveTitle(prompt),
+        prompt,
         role: args.role ?? 'PROJECT_ANALYZER'
       })
+    }
   })
   router.register(CHANNELS.agentList, { handler: () => agent.listTasks() })
   router.register(CHANNELS.agentStop, { handler: (args: { taskId: string }) => agent.stop(args.taskId) })
   router.register(CHANNELS.agentPause, { handler: (args: { taskId: string }) => agent.pause(args.taskId) })
   router.register(CHANNELS.agentResume, { handler: (args: { taskId: string }) => agent.resume(args.taskId) })
+  router.register(CHANNELS.conversationList, {
+    handler: () => ({ id: conversation.conversationId, turns: conversation.all() })
+  })
+  router.register(CHANNELS.conversationClear, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: () => ({ id: conversation.conversationId, turns: conversation.clear() })
+  })
   router.register(CHANNELS.toolsList, { handler: () => tools.list() })
 
   // ------------------------------------------------------------- approvals
@@ -595,8 +782,26 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   router.register(CHANNELS.approvalResolve, {
     domain: 'terminal.safe',
     requiresApproval: false,
-    handler: (args: { id: string; approved: boolean; remember?: boolean }) =>
-      approvals.resolve(args.id, args.approved)
+    handler: (args: { id: string; approved: boolean; remember?: boolean; toolId?: string }) => {
+      // `remember` used to be accepted and thrown away, which left no way to
+      // stop being asked: an agent that writes eight files for "make me a
+      // website" prompted eight times with no option but Approve once or Deny.
+      // The grant is scoped to the tool's own permission domain and lives only
+      // for this session — it is never written to the persisted rule set.
+      if (args.approved && args.remember && args.toolId) {
+        const definition = tools.get(args.toolId)
+        if (definition) {
+          policy.grantSession(definition.domain, 'allow')
+          deps.push({
+            type: 'log',
+            level: 'info',
+            message: `${args.toolId} is allowed for the rest of this session.`,
+            at: new Date().toISOString()
+          })
+        }
+      }
+      return approvals.resolve(args.id, args.approved)
+    }
   })
 
   // ---------------------------------------------------------------- skills
@@ -708,7 +913,7 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
         model: args.model,
         // Default to the provider's own slot. Sending a previous provider's key
         // to a new endpoint would leak it, so the slot moves with the provider.
-        credentialKey: args.credentialKey ?? (args.provider === 'openrouter' ? OPENROUTER_CREDENTIAL : null),
+        credentialKey: args.credentialKey ?? PROVIDER_CREDENTIAL_SLOTS[args.provider] ?? null,
         referer: args.referer
       })
       void store.set({
@@ -743,6 +948,34 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   })
 
   // ----------------------------------------------------------- diagnostics
+  // --- updates
+
+  // Checking is a read of a public release feed; downloading is a network
+  // write the user asked for. Both go through the router so they are audited
+  // like every other action rather than slipping past the policy layer.
+  router.register(CHANNELS.updatesStatus, {
+    domain: 'env.detect',
+    requiresApproval: false,
+    handler: () => updates.getStatus()
+  })
+  router.register(CHANNELS.updatesCheck, {
+    domain: 'network.read',
+    requiresApproval: false,
+    handler: (args: { force?: boolean }) => updates.check({ force: Boolean(args?.force) })
+  })
+  router.register(CHANNELS.updatesDownload, {
+    domain: 'network.read',
+    requiresApproval: false,
+    handler: () => updates.download()
+  })
+  router.register(CHANNELS.updatesInstall, {
+    domain: 'env.modify',
+    // Swapping the running application is not something a page should be able
+    // to cause by accident, so it is the one update action that asks first.
+    requiresApproval: true,
+    handler: () => updates.install()
+  })
+
   router.register(CHANNELS.diagnostics, {
     domain: 'env.detect',
     requiresApproval: false,
@@ -901,6 +1134,26 @@ async function attachDesignReviewHooks(window: BrowserWindow): Promise<void> {
   const dump = Boolean(process.env['CRYPTORIC_DEBUG_DUMP'])
   if (!shotDir && !dump) return
 
+  // Development-only: answer approval prompts for the duration of a review run.
+  //
+  // Gated on `CRYPTORIC_SHOT_APPROVE` *and* `CRYPTORIC_SHOT`, so it cannot be
+  // reached by setting one variable in a normal launch. Without it a scripted
+  // review of the agent stalls at the first `write_file` and proves nothing about
+  // the thing the review exists to look at. It grants nothing persistent — the
+  // grant is the same session-scoped one the "Allow for this session" button
+  // makes, and it dies with the process.
+  if (process.env['CRYPTORIC_SHOT_APPROVE'] === '1' && shotDir) {
+    const pump = setInterval(() => {
+      for (const request of services?.approvals.list() ?? []) {
+        const definition = services?.tools.get(request.toolId)
+        if (definition && policyRef) policyRef.grantSession(definition.domain, 'allow')
+        services?.approvals.resolve(request.id, true)
+        console.log('CRYPTORIC_AUTOAPPROVE', request.toolId)
+      }
+    }, 40)
+    pump.unref?.()
+  }
+
   window.webContents.on('console-message', (_e, level, message) => {
     // 3 === error in Electron's console-message event.
     if (level >= 2) console.log('[renderer]', level, message)
@@ -961,7 +1214,31 @@ async function attachDesignReviewHooks(window: BrowserWindow): Promise<void> {
   const reviewTask = process.env['CRYPTORIC_SHOT_TASK']
   if (reviewTask) {
     await run(window, `window.cryptoric.agent.submit(${JSON.stringify(reviewTask)}, 'Review the project')`)
-    await delay(4000)
+    // Wait for the task to reach a terminal state rather than guessing a delay.
+    // A fixed wait captures the agent mid-run, which is exactly the half-finished
+    // picture that made this look broken when it was merely early.
+    const deadline = Date.now() + 180_000
+    let settled = 'timeout'
+    while (Date.now() < deadline) {
+      const tasks = services?.agent.listTasks() ?? []
+      const active = tasks.find((t) => !['COMPLETED', 'FAILED', 'CANCELLED'].includes(t.status))
+      if (tasks.length > 0 && !active) {
+        settled = tasks[0]?.status ?? 'unknown'
+        break
+      }
+      await delay(400)
+    }
+    const done = services?.agent.listTasks()[0]
+    console.log(
+      'CRYPTORIC_TASK_DONE',
+      JSON.stringify({
+        status: settled,
+        title: done?.title ?? null,
+        changedPaths: done?.changedPaths ?? [],
+        error: done?.error ?? null
+      })
+    )
+    await delay(800)
   }
 
   const destinations: [string, string][] = [
@@ -994,9 +1271,11 @@ async function attachDesignReviewHooks(window: BrowserWindow): Promise<void> {
     writeFileSync(join(shotDir, `${name}.png`), image.toPNG())
     console.log('CRYPTORIC_SHOT', join(shotDir, `${name}.png`))
     // Text of the stage at this destination: proves what actually rendered,
-    // which a screenshot alone cannot assert.
+    // which a screenshot alone cannot assert. The slice is generous because the
+    // window is clamped to the work area, so anything below the fold is
+    // otherwise unreachable in the captured PNG.
     const text = await window.webContents.executeJavaScript(
-      `document.querySelector('.stage')?.innerText?.slice(0, 900) ?? ''`
+      `document.querySelector('.stage')?.innerText?.slice(0, 2600) ?? ''`
     )
     console.log('CRYPTORIC_STAGE_TEXT', name, JSON.stringify(text))
   }
@@ -1075,29 +1354,57 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
- * Chan's standing instructions.
+ * Chan's standing instructions for the tool-using turn.
  *
- * The honesty clauses are load-bearing. Without them a language model in a tool
- * loop will cheerfully report having run a test suite, edited a file or checked
- * a port — none of which it can see. The pipeline runs the tools and reports
- * what actually happened; the model's job here is to talk to the developer
- * without claiming to be the thing that did the work.
+ * The honesty clauses are load-bearing, but they changed shape when the agent
+ * loop landed. Chan can now genuinely run tools — so the rule is no longer
+ * "never claim to have done anything" (which would make it lie by omission about
+ * work it really did) but "report only what the tool results told you". A tool
+ * that failed is reported as failed, and that is the whole contract.
  */
 function chanSystemPrompt(projectRoot: string | null): string {
   return [
-    'You are Cryptoric Chan, the autonomous software engineering agent inside Cryptoric Agent,',
-    'a desktop development environment for Windows.',
+    'You are Cryptoric Chan, the software engineering agent inside Cryptoric Agent,',
+    'a desktop development environment for Windows. You have tools that read and write files,',
+    'run commands, and drive a real browser. Use them.',
     '',
-    'Rules:',
-    '- Be brief and concrete. Two or three sentences unless asked for detail.',
-    '- Never claim to have run a command, edited a file, started a process or checked a result.',
-    '  A separate pipeline does that and reports the real outcome. You do not see its output.',
-    '- If you are asked to do something and cannot, say what would be needed.',
-    '- Plain text. No markdown headings, no code fences unless code is the whole answer.',
+    'How to work:',
+    '- Do the task with tools rather than describing how you would do it. If the developer asks for',
+    '  a website, create the files. If they ask for a fix, read the file, edit it, then say what changed.',
+    '- Read before you write. Use read_file or list_directory first when you have not seen the file.',
+    '- Prefer one complete write over many small edits.',
+    '- Stop calling tools once the task is done, then answer in a sentence or two describing what you',
+    '  actually did. Do not keep going "to be safe".',
+    '',
+    'Honesty:',
+    '- Report only what a tool result told you. If write_file failed, say it failed.',
+    '- Never invent a file path, a command output, or a test result.',
+    '- If you could not finish, say exactly what is missing and why.',
+    '',
+    'Style:',
+    '- Be brief. Two or three sentences unless asked for detail.',
+    '- Plain text. No markdown headings. Code fences only when code is the whole answer.',
     '',
     projectRoot
-      ? `The developer has the project at ${projectRoot} open.`
-      : 'No project is open, so nothing about the workspace is known yet.'
+      ? `The open project is at ${projectRoot}. Paths passed to tools may be absolute or relative to it.`
+      : 'No project is open, so there is no workspace to write to. Say so and ask the developer to open one.'
+  ].join('\n')
+}
+
+/**
+ * Chan's instructions for the planning turn.
+ *
+ * No tools here — this turn exists to decide *what* to do so the implementer
+ * turn can do it. Letting the planner start editing would mean two turns
+ * touching the same files.
+ */
+function planSystemPrompt(): string {
+  return [
+    'You are Cryptoric Chan, planning a task inside Cryptoric Agent.',
+    '',
+    'Write a short plan for the task you are given: at most five numbered steps, one line each,',
+    'naming the files you will create or change. No preamble, no closing remarks, no tools.',
+    'If the task needs no work at all, say so in one line.'
   ].join('\n')
 }
 
@@ -1177,6 +1484,16 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow = createWindow()
     buildMenu()
 
+    // Check the release feed once on launch, after the window exists so the
+    // result has somewhere to go. Deliberately not awaited: a slow feed must not
+    // delay the app becoming usable, and nothing is downloaded from here.
+    //
+    // `UpdateService` decides whether this build can check at all; an unpackaged
+    // one reports `unsupported` rather than a false "up to date".
+    setTimeout(() => {
+      void bootUpdateCheck()
+    }, 4000)
+
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow()
     })
@@ -1194,6 +1511,9 @@ app.on('before-quit', () => {
   services?.agent.stopAll()
   services?.processes.stopAll()
   services?.terminals.closeAll()
+  // The transcript is the one piece of state that must outlive the process, so
+  // it is flushed rather than left to whatever the queue gets around to.
+  void services?.conversation.flush()
   // Tear down tabs before the window goes away: a live WebContentsView keeps
   // its Chromium process alive, and temporary tabs delete their profile as they
   // close so nothing is left in the cache directory.

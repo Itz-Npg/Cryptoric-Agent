@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
 import type {
   AgentTask,
   ApprovalRequest,
+  ConversationTurn,
   EnvironmentGap,
   InstallProgress,
   MainEvent,
@@ -21,6 +22,7 @@ import type {
   WorkspaceState
 } from '@shared/types'
 import type { BudgetSummary, ModelSummary } from '../panes/ModelPicker'
+import type { UpdateStatusDto } from '../../../preload'
 import { describe } from './store'
 import type { TranscriptEntry } from './store'
 
@@ -38,7 +40,7 @@ export interface AppStateShape {
   transcript: TranscriptEntry[]
   terminals: TerminalSessionInfo[]
   processes: ProcessInfo[]
-  approvals: ApprovalRequest[]
+  approvals: { id: string; toolId: string; title: string; detail: string; risk: string }[]
   workspaceState: WorkspaceState
   branch: string | null
   changeCount: number
@@ -46,6 +48,7 @@ export interface AppStateShape {
   notice: string | null
   models: ModelSummary[]
   budget: BudgetSummary
+  update: UpdateStatusDto | null
 }
 
 const initial: AppStateShape = {
@@ -69,7 +72,8 @@ const initial: AppStateShape = {
   online: navigator.onLine,
   notice: null,
   models: [],
-  budget: { usedCoins: 0, budgetCoins: 0, day: '', exceeded: false, enabled: false, model: '' }
+  budget: { usedCoins: 0, budgetCoins: 0, day: '', exceeded: false, enabled: false, model: '' },
+  update: null
 }
 
 type Action =
@@ -82,7 +86,8 @@ type Action =
   | { type: 'snapshot'; id: number }
   | { type: 'task'; task: AgentTask }
   | { type: 'timeline'; entry: TimelineEntry }
-  | { type: 'say'; text: string; kind?: 'say' | 'error' }
+  | { type: 'turn'; turn: ConversationTurn }
+  | { type: 'transcript-loaded'; turns: ConversationTurn[] }
   | { type: 'terminals'; terminals: TerminalSessionInfo[] }
   | { type: 'process'; process: ProcessInfo }
   | { type: 'approval'; request: ApprovalRequest }
@@ -91,8 +96,15 @@ type Action =
   | { type: 'git'; branch: string | null; changes: number }
   | { type: 'models'; models: ModelSummary[]; budget: BudgetSummary }
   | { type: 'notice'; notice: string | null }
+  | { type: 'update'; update: UpdateStatusDto | null }
 
 const MAX_TIMELINE = 800
+/**
+ * Rendered transcript cap.
+ *
+ * Higher than the on-disk cap on purpose: the file is the record of what
+ * happened, and the view is only showing the tail of it.
+ */
 const MAX_TRANSCRIPT = 400
 
 function reducer(state: AppStateShape, action: Action): AppStateShape {
@@ -118,15 +130,23 @@ function reducer(state: AppStateShape, action: Action): AppStateShape {
     }
     case 'timeline':
       return { ...state, timeline: [...state.timeline, action.entry].slice(-MAX_TIMELINE) }
-    case 'say': {
-      const entry: TranscriptEntry = {
-        id: `${Date.now()}-${state.transcript.length}`,
-        at: new Date().toISOString(),
-        kind: action.kind ?? 'say',
-        role: 'CHAN',
-        text: action.text
+    case 'turn': {
+      const transcript = state.transcript
+      // Turns carry the main-process id, so a turn that arrives twice — a push
+      // racing the boot fetch, for instance — replaces itself rather than
+      // appearing twice.
+      const existing = transcript.findIndex((entry) => entry.id === action.turn.id)
+      const entry = toTranscriptEntry(action.turn)
+      if (existing >= 0) {
+        const next = [...transcript]
+        next[existing] = entry
+        return { ...state, transcript: next }
       }
-      return { ...state, transcript: [...state.transcript, entry].slice(-MAX_TRANSCRIPT) }
+      return { ...state, transcript: [...transcript, entry].slice(-MAX_TRANSCRIPT) }
+    }
+    case 'transcript-loaded': {
+      const transcript = action.turns.map(toTranscriptEntry).slice(-MAX_TRANSCRIPT)
+      return { ...state, transcript }
     }
     case 'terminals':
       return { ...state, terminals: action.terminals }
@@ -147,8 +167,28 @@ function reducer(state: AppStateShape, action: Action): AppStateShape {
       return { ...state, models: action.models, budget: action.budget }
     case 'notice':
       return { ...state, notice: action.notice }
+    case 'update':
+      return { ...state, update: action.update }
     default:
       return state
+  }
+}
+
+/**
+ * Project a stored turn onto the transcript row the chat view renders.
+ *
+ * `tool` turns become `note` rows: they are the evidence of work, not speech,
+ * and rendering them at the same weight as a reply would make a short answer
+ * look like a long one. Their `ok` flag drives the colour, so a failed tool is
+ * visible without opening the execution timeline.
+ */
+function toTranscriptEntry(turn: ConversationTurn): TranscriptEntry {
+  return {
+    id: turn.id,
+    at: turn.at,
+    kind: turn.role === 'tool' ? (turn.ok === false ? 'error' : 'note') : 'say',
+    role: turn.role === 'user' ? 'YOU' : turn.role === 'tool' ? 'TOOL' : 'CHAN',
+    text: turn.text
   }
 }
 
@@ -198,6 +238,9 @@ export function useAppState(): { state: AppStateShape; actions: ReturnType<typeo
         await actions.refreshModels()
         await actions.refreshGit()
         for (const task of await bridge.agent.list()) dispatch({ type: 'task', task })
+        // History first, so a restart shows the conversation that already
+        // happened rather than an empty pane the model nonetheless remembers.
+        await actions.loadConversation()
       } catch (err) {
         dispatch({ type: 'boot-failed', error: describe(err) })
       }
@@ -237,21 +280,45 @@ export function useAppState(): { state: AppStateShape; actions: ReturnType<typeo
         case 'project':
           dispatch({ type: 'project', project: event.project })
           break
+        case 'conversation':
+          dispatch({ type: 'turn', turn: event.turn })
+          break
         case 'log':
-          // Chan's narration arrives as an info log; without this the agent's
-          // messages would never reach the transcript.
-          dispatch({
-            type: 'say',
-            text: event.message,
-            kind: event.level === 'error' ? 'error' : 'say'
-          })
+          // Deliberately not a transcript entry. Main-process logs are internal
+          // progress (audit lines, credential seeding); the transcript is the
+          // conversation, and mixing the two is what made the chat read as
+          // machine chatter.
           break
         default:
           break
       }
     })
-    return unsubscribe
+
+    // Update transitions arrive on their own channel: a check that started at
+    // launch can finish long after Settings was opened.
+    const unsubscribeUpdate = window.cryptoric.updates.onUpdate((status) => {
+      dispatch({ type: 'update', update: status })
+      if (status.state === 'available' && status.availableVersion) {
+        dispatch({ type: 'notice', notice: `Version ${status.availableVersion} is available.` })
+      }
+    })
+
+    return () => {
+      unsubscribe()
+      unsubscribeUpdate()
+    }
   }, [actions])
+
+  useEffect(() => {
+    // Read the current update state at boot. Without this the panel would sit on
+    // "Checking for updates…" until a background push happened to arrive, which
+    // on a machine with no newer release never comes — an indefinite in-progress
+    // state where the truth is available immediately.
+    void window.cryptoric?.updates
+      .status()
+      .then((status) => dispatch({ type: 'update', update: status }))
+      .catch(() => undefined)
+  }, [])
 
   useEffect(() => {
     const onOnline = (): void => dispatch({ type: 'online', online: true })
@@ -268,6 +335,16 @@ export function useAppState(): { state: AppStateShape; actions: ReturnType<typeo
 }
 
 function useActions(dispatch: React.Dispatch<Action>) {
+  const loadConversation = useCallback(async () => {
+    if (!window.cryptoric) return
+    try {
+      const snapshot = await window.cryptoric.conversation.list()
+      dispatch({ type: 'transcript-loaded', turns: snapshot.turns })
+    } catch (err) {
+      dispatch({ type: 'notice', notice: describe(err) })
+    }
+  }, [dispatch])
+
   const refreshEnvironment = useCallback(async () => {
     if (!window.cryptoric) return
     try {
@@ -323,7 +400,66 @@ function useActions(dispatch: React.Dispatch<Action>) {
       refreshModels,
       refreshGit,
       syncTerminals,
+      loadConversation,
       notify: (notice: string | null) => dispatch({ type: 'notice', notice }),
+
+      /**
+       * Updates. Checking is passive and happens on its own; downloading is
+       * only ever started from here, by the user, from Settings.
+       */
+      checkForUpdates: async (force = false) => {
+        try {
+          const status = await window.cryptoric.updates.check(force)
+          dispatch({ type: 'update', update: status })
+          if (status.state === 'available') {
+            dispatch({ type: 'notice', notice: `Version ${status.availableVersion} is available.` })
+          } else if (status.state === 'error') {
+            dispatch({ type: 'notice', notice: status.error ?? 'Update check failed.' })
+          }
+          return status
+        } catch (err) {
+          dispatch({ type: 'notice', notice: describe(err) })
+          return null
+        }
+      },
+
+      downloadUpdate: async () => {
+        try {
+          const status = await window.cryptoric.updates.download()
+          dispatch({ type: 'update', update: status })
+          dispatch({
+            type: 'notice',
+            notice:
+              status.state === 'downloaded'
+                ? 'Update downloaded. Restart to install it.'
+                : (status.error ?? 'Could not download the update.')
+          })
+          return status
+        } catch (err) {
+          dispatch({ type: 'notice', notice: describe(err) })
+          return null
+        }
+      },
+
+      installUpdate: async () => {
+        try {
+          await window.cryptoric.updates.install()
+          return true
+        } catch (err) {
+          dispatch({ type: 'notice', notice: describe(err) })
+          return false
+        }
+      },
+
+      clearConversation: async () => {
+        try {
+          const snapshot = await window.cryptoric.conversation.clear()
+          dispatch({ type: 'transcript-loaded', turns: snapshot.turns })
+          dispatch({ type: 'notice', notice: 'Conversation history cleared.' })
+        } catch (err) {
+          dispatch({ type: 'notice', notice: describe(err) })
+        }
+      },
 
       openProject: async () => {
         try {
@@ -379,9 +515,9 @@ function useActions(dispatch: React.Dispatch<Action>) {
         }
       },
 
-      resolveApproval: async (id: string, approved: boolean) => {
+      resolveApproval: async (id: string, approved: boolean, remember?: boolean, toolId?: string) => {
         try {
-          await window.cryptoric.approval.resolve(id, approved)
+          await window.cryptoric.approval.resolve(id, approved, remember, toolId)
           dispatch({ type: 'approval-resolved', id })
         } catch (err) {
           dispatch({ type: 'notice', notice: describe(err) })
@@ -404,6 +540,6 @@ function useActions(dispatch: React.Dispatch<Action>) {
 
       routeSkills: async (prompt: string) => window.cryptoric.skill.route(prompt)
     }),
-    [refreshEnvironment, refreshGaps, refreshModels, refreshGit, syncTerminals, dispatch]
+    [refreshEnvironment, refreshGaps, refreshModels, refreshGit, syncTerminals, loadConversation, dispatch]
   )
 }

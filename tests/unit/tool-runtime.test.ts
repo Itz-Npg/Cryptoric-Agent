@@ -288,3 +288,60 @@ describe('riskForTier', () => {
     expect(riskForTier('destructive')).toBe('high')
   })
 })
+
+describe('session grants', () => {
+  // Found while wiring the agent loop: "Allow for this session" called
+  // `policy.grantSession`, but the runtime only skipped the prompt for a tool
+  // declared at the `safe` tier. So the button granted nothing and an agent
+  // writing eight files prompted eight times, which is the behaviour the button
+  // was added to remove.
+  const writer = (): ToolDefinition =>
+    makeTool('write_file', { tier: 'ask', domain: 'fs.write', run: async () => ({ ok: true, summary: 'wrote' }) })
+
+  it('still prompts when the domain merely defaults to allow', async () => {
+    const { runtime, approvals } = setup([writer()], { rules: [{ domain: 'fs.write', default: 'allow' }] })
+    const pending = runtime.invoke('write_file', {})
+    await new Promise((r) => setTimeout(r, 10))
+    expect(approvals.list()).toHaveLength(1)
+    approvals.resolve(approvals.list()[0]!.id, false)
+    await pending
+  })
+
+  it('stops prompting once the user grants the domain for the session', async () => {
+    const { runtime, policy, approvals } = setup([writer()], { rules: [{ domain: 'fs.write', default: 'allow' }] })
+    policy.grantSession('fs.write', 'allow')
+
+    const result = await runtime.invoke('write_file', {})
+    expect(result.ok).toBe(true)
+    expect(approvals.list()).toHaveLength(0)
+  })
+
+  it('does not let a session grant override a denial', async () => {
+    const { runtime, policy, approvals } = setup([writer()], { rules: [{ domain: 'fs.write', default: 'deny' }] })
+    policy.grantSession('fs.write', 'allow')
+
+    const result = await runtime.invoke('write_file', {})
+    expect(result.ok).toBe(false)
+    expect(result.failureKind).toBe('permission-denied')
+    expect(approvals.list()).toHaveLength(0)
+  })
+
+  it('does not let one domain\u2019s grant authorise another', async () => {
+    const { runtime, policy, approvals } = setup([writer()], { rules: [{ domain: 'fs.write', default: 'allow' }] })
+    policy.grantSession('fs.delete', 'allow')
+
+    const pending = runtime.invoke('write_file', {})
+    await new Promise((r) => setTimeout(r, 10))
+    expect(approvals.list()).toHaveLength(1)
+    approvals.resolve(approvals.list()[0]!.id, false)
+    await pending
+  })
+
+  it('reports hasSessionGrant separately from a default allow', () => {
+    const policy = new PermissionPolicy([{ domain: 'fs.write', default: 'allow' }])
+    expect(policy.hasSessionGrant('fs.write')).toBe(false)
+    policy.grantSession('fs.write', 'allow')
+    expect(policy.hasSessionGrant('fs.write')).toBe(true)
+    expect(policy.hasSessionGrant('fs.delete')).toBe(false)
+  })
+})

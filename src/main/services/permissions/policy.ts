@@ -275,6 +275,13 @@ export type PathVerdict =
 /**
  * Resolve `candidate` and confirm it stays inside one of `roots`.
  *
+ * A relative path is resolved against the **first workspace root**, not against
+ * `process.cwd()`. That distinction is the whole difference between a working
+ * agent and one that rejects every `index.html` the model asks to write: the
+ * model's natural phrasing is "index.html" or "src/app.ts", and resolving that
+ * against the app's own working directory — which is the install directory, not
+ * the user's project — escapes the roots every single time.
+ *
  * Rejects traversal via `..`, absolute paths outside the roots, and — on
  * Windows — alternate data streams and device paths (`\\?\`, `\\.\`).
  */
@@ -282,13 +289,16 @@ export function checkPath(candidate: string, roots: string[]): PathVerdict {
   if (/^\\\\[?.]/.test(candidate)) {
     return { allowed: false, reason: 'Windows device/UNC prefix is not permitted', attempted: candidate }
   }
-  const absolute = resolve(candidate)
-  if (absolute.includes('\0')) {
+  if (candidate.includes('\0')) {
     return { allowed: false, reason: 'Path contains a null byte', attempted: candidate }
   }
   if (roots.length === 0) {
-    return { allowed: false, reason: 'No workspace root is open', attempted: absolute }
+    return { allowed: false, reason: 'No workspace root is open', attempted: candidate }
   }
+
+  const base = resolve(roots[0] as string)
+  const absolute = isAbsolute(candidate) ? resolve(candidate) : resolve(base, candidate)
+
   for (const root of roots) {
     const rootAbs = resolve(root)
     const rel = relative(rootAbs, absolute)
@@ -337,13 +347,39 @@ export class PermissionPolicy {
     this.sessionGrants.set(`${domain}::${scope ?? ''}`, decision)
   }
 
+  /**
+   * True when the user explicitly allowed this domain for the session.
+   *
+   * Distinct from `evaluateDomain() === 'allow'`, which a *default rule* can also
+   * produce. The tool runtime needs the difference: a default `allow` must not
+   * let a tool above the `safe` tier run unattended, but a human pressing "Allow
+   * for this session" is exactly the authority that should stop the prompts.
+   * Without this distinction the button grants nothing and the agent asks
+   * again on every single file.
+   */
+  hasSessionGrant(domain: PermissionDomain): boolean {
+    return this.sessionGrants.get(`${domain}::`) === 'allow'
+  }
+
   clearSessionGrants(): void {
     this.sessionGrants.clear()
   }
 
   private decide(domain: PermissionDomain, scope?: string): PermissionDecision {
+    // The most specific matching rule wins; an exact scope beats a global rule.
+    const scoped = this.rules.filter((r) => r.domain === domain && r.scope && scope && matchScope(r.scope, scope))
+    const global = this.rules.find((r) => r.domain === domain && !r.scope)
+    const ruleDecision =
+      scoped.length > 0 ? highestDecision(scoped.map((r) => r.default)) : global?.default ?? 'ask'
+
+    // A configured `deny` is absolute. It outranks a session grant, because a
+    // grant is a transient convenience ("stop asking about writes") while a deny
+    // is the user saying a capability is off. Letting "Allow for this session"
+    // lift a denial would turn one button press into a way around the policy.
+    if (ruleDecision === 'deny') return 'deny'
+
     // A grant recorded for the exact path wins, then a domain-wide "always
-    // allow" for the rest of the session, then the configured rules.
+    // allow" for the rest of the session.
     if (scope) {
       const exact = this.sessionGrants.get(`${domain}::${scope}`)
       if (exact) return exact
@@ -351,11 +387,7 @@ export class PermissionPolicy {
     const domainWide = this.sessionGrants.get(`${domain}::`)
     if (domainWide) return domainWide
 
-    // The most specific matching rule wins; an exact scope beats a global rule.
-    const scoped = this.rules.filter((r) => r.domain === domain && r.scope && scope && matchScope(r.scope, scope))
-    if (scoped.length > 0) return highestDecision(scoped.map((r) => r.default))
-    const global = this.rules.find((r) => r.domain === domain && !r.scope)
-    return global?.default ?? 'ask'
+    return ruleDecision
   }
 
   /**

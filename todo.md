@@ -74,9 +74,10 @@ against real Chromium.**
       optional `HTTP-Referer` only when the user configures one
 - [x] **Space Bunny Alpha** wired to `stealth/space-bunny-alpha`, context 1,000,000,
       priced at the provider's declared `0 / 0`, with `pricingSource` + `pricingFetchedAt`
-- [ ] ~~Space Bunny Alpha **Max~~~~ — probed, does not exist. Both
+- [x] **Space Bunny Alpha "Max" — probed, does not exist.** Both
       `stealth/space-bunny-alpha-max` and `space-bunny-alpha-max` return HTTP 400
-      `is not a valid model ID`. Recorded in `audit.md`, not papered over.
+      `is not a valid model ID`. Resolved: the app ships the model the provider
+      actually serves. Recorded in `audit.md`, not papered over.
 - [x] Selecting a catalogue entry that names a provider configures provider, endpoint
       and wire id — a picker row that does not change the request is worse than none
 - [x] API key read once from gitignored `.env` → OS-encrypted credential store
@@ -108,9 +109,92 @@ against real Chromium.**
 - [x] System prompt forbids claiming tool results the model cannot see
 - [x] Boot adopts the hosted provider when the credential store holds its key
 - [x] Submitting switches to the Chan pane, where the reply already was
-- [x] Verified: `CRYPTORIC_SHOT_TASK="hi"` → real DOM text `Hi! How can I help?`
-- [ ] Multi-turn conversation history is **not** stored — each task is stateless
-- [ ] The five-stage pipeline is still fixed; the adaptive planner is Phase 1
+- [x] Verified: `CRYPTORIC_SHOT_TASK="hi"` → real DOM text `Hi! What can I help you with?`
+- [x] Multi-turn conversation history is **stored** — PHASE 0.6
+- [x] The **implement** stage is now model-driven with real tools; `analyze`/`verify`/`review`
+      remain deterministic. The adaptive planner is still Phase 1.
+
+## PHASE 0.6 — The agent actually acts, and remembers — DONE, VERIFIED
+
+The complaint this answers: *"the chat history are not saving … it told it just did this
+and stopped it not working, I sent a big prompt for making the website."*
+
+### 0.6.1 Agent loop
+- [x] `agent/loop.ts` — model requests a tool, the tool runs through `ToolRuntime`,
+      the real result goes back, repeat until the model answers in prose
+- [x] `ModelGateway` speaks tool-calling: `tools` + `tool_choice` on the wire,
+      `toolCalls` and an `assistantMessage` to echo back so `tool` messages are not orphaned
+- [x] A malformed `arguments` payload is answered with a tool error, not thrown and not
+      dropped — an unanswered `tool_call_id` fails the next request
+- [x] Bounded at 12 steps; running out says so instead of spinning
+- [x] Provider failure ends the run and reports itself rather than retrying
+- [x] Tools go through `AgentRuntime.invoke`, never `registry.get(id).execute()` — one
+      enforcement path for policy, approval, timeout, cancellation, redaction and audit
+- [x] Every tool result is persisted as a transcript turn, so the history is evidence
+      rather than claims
+
+### 0.6.2 The fabricated message
+- [x] `implementStage` no longer prints "no language model is configured" unconditionally.
+      It prints only when `gateway.isEnabled()` is false, which is the whole fix.
+- [x] `pipeline.tools.call` stub (`error: 'not wired'`) deleted; the stage tool surface
+      is wired to the registry
+- [x] The redundant pre-stage `AgentRuntime.answer()` turn is removed — one model
+      conversation per prompt, not two
+
+### 0.6.3 Persistent conversation
+- [x] `ConversationStore` — main-owned, atomic (temp + rename), bounded at 1000 turns,
+      survives a corrupt file without refusing to boot
+- [x] The user's own prompt is a turn, so the history reads as a conversation and the
+      model has the request in context next turn
+- [x] Tool outcomes fold into the assistant turn that reported them; the model never
+      receives an orphan `tool` role message
+- [x] Renderer loads history on boot and renders `You` / `Cryptoric Chan` / tool rows
+      at three weights
+- [x] Main-process `log` pushes no longer become chat messages
+- [x] IPC `conversation:list` / `conversation:clear`, gated on `env.modify` for the clear
+- [x] The clear route is reachable: "Clear history" in the chat pane, with a confirm,
+      because an empty registration is worse than a missing one
+- [x] `App.tsx` forwards `remember` / `toolId` — it was dropping them, which silently
+      turned "Allow for this session" into "Approve once"
+
+### 0.6.4 `run_command`
+- [x] Built on the existing `exec.ts` — no second executor
+- [x] cwd contained in the workspace; argv permission tier re-derived by
+      `classifyCommand`, never taken from a caller label
+- [x] Executable resolved on the managed PATH first, so "not installed" is a real
+      `dependency-missing` rather than an opaque ENOENT
+- [x] Windows batch files: cmd metacharacters in arguments are **refused**, not quoted
+- [~] No live check of its own yet — registered, typechecked, argv refusal unit-tested
+
+### 0.6.5 Bugs the live run found (none visible to unit tests)
+- [x] Relative paths resolved against `process.cwd()` instead of the project root, so
+      every `index.html` the model asked for was rejected
+- [x] `write_file` hung the run instead of failing: an unanswered approval promise makes
+      Node exit 13 with no error at all
+- [x] "Allow for this session" granted nothing — the runtime only skipped the prompt for
+      `safe` tools, so `write_file` re-prompted every single time
+- [x] A session grant could override an explicitly configured `deny`
+- [x] The review harness captured the agent mid-run (fixed 4 s wait)
+
+### 0.6.6 Task titles
+- [x] `deriveTitle()` replaces `prompt.slice(0, 60)` — strips fences, HTML, attribute
+      soup, and separator runs (which is what put `id="qv7k3r" ============` in the list)
+
+### 0.6.7 Verification
+- [x] `npx vitest run` — **351 passed / 15 files**
+- [x] `npm run test:browser` — 59/59 · `CRYPTORIC_BROWSER_TARGET=file` — 50/50
+- [x] `npm run test:model` — 6/6 against the live provider
+- [x] **`npm run test:agent`** (new) — 13/13: a real website prompt through the real
+      model and real tools produces a real `index.html` on disk
+- [x] Real Electron app — `CRYPTORIC_TASK_DONE {"status":"COMPLETED",
+      "changedPaths":["…\\index.html"]}`, 711-byte file on disk
+- [x] Relaunch with no new task — the whole prior conversation re-rendered from disk
+
+### 0.6.8 Still open
+- [ ] Conversation is app-scoped, not project-scoped (blocks cleanly on PHASE A)
+- [ ] The loop offers all ~55 tools instead of a routed subset (PHASE 12)
+- [ ] No streaming; a long run shows nothing until the turn completes
+- [ ] `run_command` has no live check of its own
 
 ## PHASE 0.3 — Branding — DONE, VERIFIED
 
@@ -126,7 +210,9 @@ against real Chromium.**
 - [x] Fixed a pre-existing config error that made `npm run dist` fail outright
       (`nsis.differentialPackageOptions`, removed from the electron-builder 25 schema)
 - [ ] macOS `.icns` and Linux builds are configured but were never produced here
-- [ ] Packaging needs elevation **once per machine** — `winCodeSign.7z` extracts symlinks
+- [x] Elevation for packaging resolved — a **second** `npm run dist` at 23:07 succeeded with
+      no elevation prompt, because the `winCodeSign` extract is cached. It is needed only on
+      the first packaging run on a fresh machine.
 - [ ] The binaries are unsigned: no certificate is configured, so SmartScreen will warn
 
 ---
@@ -147,8 +233,11 @@ against real Chromium.**
 
 ## PHASE 2 — Real command and process execution
 
-- [ ] `run_command` on the existing `exec.ts` — cwd, env, timeout, cancellation,
-      streaming, redaction, approval, audit
+- [x] `run_command` — **DONE in PHASE 0.6.4.** cwd, managed env, argv-derived tier,
+      timeout, cancellation, bounded output, approval, audit. Windows batch
+      metacharacters refused rather than quoted.
+- [ ] `run_command` live check — drive it against a real project with a real subprocess
+- [ ] Streaming command output into the terminal pane
 - [ ] Process supervisor: start, background, stop, restart, list, monitor, logs,
       crash detection, readiness/health, project + task ownership, process trees,
       graceful-before-force termination
@@ -244,7 +333,11 @@ against real Chromium.**
 
 ## PHASE B — Coin economy *(server-authoritative)*
 
-- [ ] **FREE_DAILY_COINS = 35**, configurable server-side. Never 500.
+- [ ] **FREE_DAILY_COINS = 25**, configurable server-side. Never 500.
+      *(The client default is already 25; the server authority is not built.)*
+- [ ] Existing installs still show `dailyAllowanceCoins: 500` in `settings.json`, because
+      the persisted value wins over the new default. A one-time settings migration is
+      needed so an upgraded install actually gets the new allowance.
 - [ ] Immutable ledger: id, user, request, type, amount, before, after, model, reason, timestamp
 - [ ] Atomic reserve → settle → refund. No negative balances, no race conditions
 - [ ] Sources: FREE_DAILY, PAID_PLAN, BONUS, PROMOTIONAL, ADMIN_GRANT, REFUND, ADJUSTMENT

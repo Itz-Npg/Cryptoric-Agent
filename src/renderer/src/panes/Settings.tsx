@@ -113,13 +113,19 @@ export function SettingsSurface({
   models,
   onSelectModel,
   onSetTheme,
-  onRefresh
+  onRefresh,
+  onCheckForUpdates,
+  onDownloadUpdate,
+  onInstallUpdate
 }: {
   state: AppStateShape
   models: ModelSummary[]
   onSelectModel: (id: string) => void
   onSetTheme: (t: 'graphite' | 'bone') => void
   onRefresh: () => void
+  onCheckForUpdates: (force?: boolean) => Promise<unknown>
+  onDownloadUpdate: () => Promise<unknown>
+  onInstallUpdate: () => Promise<unknown>
 }) {
   const [rules, setRules] = useState<{ domain: string; default: string }[]>([])
   const [theme, setTheme] = useState<'graphite' | 'bone'>('graphite')
@@ -245,6 +251,13 @@ export function SettingsSurface({
             <Button onClick={onRefresh}>Re-read OS environment</Button>
           </div>
         </section>
+
+        <UpdatesSection
+          state={state}
+          onCheck={onCheckForUpdates}
+          onDownload={onDownloadUpdate}
+          onInstall={onInstallUpdate}
+        />
       </div>
     </div>
   )
@@ -393,6 +406,113 @@ export function ToolsSurface({
         </section>
       </div>
     </div>
+  )
+}
+
+/**
+ * Application updates.
+ *
+ * Built from the same `SectionHead` / `card` / `row` / `Button` primitives as
+ * every other section here, so it adds a capability rather than a new visual
+ * language.
+ *
+ * The rule this screen exists to honour: the app never says it is up to date
+ * when it could not check. A development build genuinely has no update feed, so
+ * it says exactly that instead of showing a reassuring all-clear.
+ */
+function UpdatesSection({
+  state,
+  onCheck,
+  onDownload,
+  onInstall
+}: {
+  state: AppStateShape
+  onCheck: (force?: boolean) => Promise<unknown>
+  onDownload: () => Promise<unknown>
+  onInstall: () => Promise<unknown>
+}): JSX.Element {
+  const update = state.update
+  const [checking, setChecking] = useState(false)
+
+  const currentVersion = update?.currentVersion ?? ''
+
+  const line = ((): string => {
+    if (!update) return 'Not checked yet.'
+    switch (update.state) {
+      case 'unsupported':
+        return update.unavailableReason ?? 'This build cannot check for updates.'
+      case 'checking':
+        return 'Checking for updates…'
+      case 'available':
+        return `Version ${update.availableVersion} is available. You are on ${update.currentVersion}.`
+      case 'not-available':
+        return `${update.currentVersion} is the latest version.`
+      case 'downloading':
+        return `Downloading ${update.availableVersion ?? 'the update'} — ${Math.round(update.progress?.percent ?? 0)}%.`
+      case 'downloaded':
+        return `Version ${update.availableVersion ?? ''} is downloaded. Restart to install it.`
+      case 'error':
+        return update.error ?? 'The update check failed.'
+      default:
+        // `idle` means no check has run, which is not the same claim as
+        // "checking", and definitely not "you are up to date".
+        return 'Not checked yet.'
+    }
+  })()
+
+  const busy = checking || update?.state === 'checking' || update?.state === 'downloading'
+  // Enabled on `idle` too: a user who has not been told anything yet must be
+  // able to ask.
+  const canCheck = !busy && update?.state !== 'unsupported'
+
+  return (
+    <section>
+      <SectionHead>Updates</SectionHead>
+      <div className="card" style={{ overflow: 'hidden' }}>
+        <div className="row" style={{ borderRadius: 0 }}>
+          <div className="row-label" style={{ display: 'grid' }}>
+            <span style={{ fontWeight: 550 }}>Version {currentVersion || '—'}</span>
+            <span className="caption" style={{ marginTop: 3 }}>
+              {line}
+            </span>
+          </div>
+          <div style={{ display: 'inline-flex', gap: 8 }}>
+            <Button
+              variant="ghost"
+              disabled={!canCheck}
+              onClick={() => {
+                setChecking(true)
+                void Promise.resolve(onCheck(true)).finally(() => setChecking(false))
+              }}
+            >
+              Check now
+            </Button>
+            <Button
+              disabled={update?.state !== 'available' || busy}
+              onClick={() => void onDownload()}
+            >
+              Download
+            </Button>
+            <Button disabled={update?.state !== 'downloaded'} onClick={() => void onInstall()}>
+              Restart &amp; install
+            </Button>
+          </div>
+        </div>
+        {update?.releasePageUrl && (
+          <div className="row" style={{ borderTop: '1px solid var(--line)', borderRadius: 0, minHeight: 40 }}>
+            <span className="row-label caption">Release notes</span>
+            <a
+              href={update.releasePageUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: 'var(--accent)', fontSize: 'var(--t-sm)' }}
+            >
+              {update.releasePageUrl}
+            </a>
+          </div>
+        )}
+      </div>
+    </section>
   )
 }
 

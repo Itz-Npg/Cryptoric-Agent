@@ -97,10 +97,17 @@ export const SCHEMAS = {
   [CHANNELS.agentStop]: z.object({ taskId: z.string().min(1) }),
   [CHANNELS.agentPause]: z.object({ taskId: z.string().min(1) }),
   [CHANNELS.agentResume]: z.object({ taskId: z.string().min(1) }),
+  // Reading history is a read. Clearing it destroys it, so it is gated the
+  // same way any other irreversible change is.
+  [CHANNELS.conversationList]: z.object({}),
+  [CHANNELS.conversationClear]: z.object({}),
   [CHANNELS.approvalResolve]: z.object({
     id: z.string().min(1),
     approved: z.boolean(),
-    remember: z.boolean().optional()
+    remember: z.boolean().optional(),
+    // Needed to apply a session grant: the grant is per permission domain, and
+    // the domain is known from the tool, not from the id alone.
+    toolId: z.string().min(1).max(120).optional()
   }),
   [CHANNELS.approvalList]: z.object({}),
   [CHANNELS.toolsList]: z.object({}),
@@ -121,7 +128,7 @@ export const SCHEMAS = {
   [CHANNELS.modelsAvailable]: z.object({}),
   [CHANNELS.modelsSetBudget]: z.object({ coins: z.number().int().min(0).max(100_000) }),
   [CHANNELS.modelsSetProvider]: z.object({
-    provider: z.enum(['none', 'ollama', 'openai-compatible', 'openrouter']),
+    provider: z.enum(['none', 'ollama', 'openai-compatible', 'openrouter', 'apinex']),
     endpoint: z.string().max(400),
     model: z.string().max(200),
     credentialKey: z.string().max(120).nullable(),
@@ -132,6 +139,13 @@ export const SCHEMAS = {
   // An API key is a secret: the schema bounds it, and the handler stores it
   // encrypted. It is never echoed back and never written to the state file.
   [CHANNELS.modelsSetKey]: z.object({ apiKey: z.string().min(8).max(400) }),
+
+  // Checking is cheap and happens on a schedule; downloading is the user's
+  // decision, which is why it is a separate call and not an argument here.
+  [CHANNELS.updatesStatus]: z.object({}),
+  [CHANNELS.updatesCheck]: z.object({ force: z.boolean().optional() }),
+  [CHANNELS.updatesDownload]: z.object({}),
+  [CHANNELS.updatesInstall]: z.object({}),
 
   [CHANNELS.diagnostics]: z.object({})
 } as const
