@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "include": [
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "src/shared/**/*.ts",
+    "tests/**/*.ts",
+    "electron.vite.config.ts",
+    "vitest.config.ts",
+    "eslint.config.js"
+  ],
+  "compilerOptions": {
+    "composite": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "outDir": "node_modules/.tmp/tsc-node"
+  }
+}

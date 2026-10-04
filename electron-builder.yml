@@ -1,0 +1,42 @@
+appId: dev.cryptoric.agent
+productName: Cryptoric Agent
+copyright: Copyright © 2026 Cryptoric
+directories:
+  buildResources: build
+  output: release
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+asarUnpack:
+  - resources/**
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: ${productName}-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  differentialPackage: true
+  differentialPackageOptions:
+    ...
+publish:
+  provider: github
+  owner: cryptoric
+  repo: cryptoric-agent
+  releaseType: release
+  channel: latest
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  category: public.app-category.developer-tools
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Development
+npmRebuild: false
