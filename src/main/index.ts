@@ -25,6 +25,7 @@ import { SkillRegistry, DEFAULT_SKILL_ROOTS, routeSkills } from './services/skil
 import { ToolRegistry } from './services/tools/registry'
 import { ToolRuntime } from './services/tools/runtime'
 import { buildEnvironmentTools } from './services/tools/builtin/environment'
+import { buildFilesystemTools } from './services/tools/builtin/filesystem'
 import { AgentRuntime } from './services/agent/core'
 import { buildPipeline } from './services/agent/stages'
 import { IpcRouter } from './ipc/router'
@@ -133,6 +134,10 @@ async function boot(): Promise<Services> {
   }
   const files = new FileService(getRoots)
   const git = new GitService(getRoots)
+
+  // Registered after `files` exists: the filesystem tools resolve every path
+  // through that service, so they cannot be constructed before it.
+  tools.registerAll(buildFilesystemTools({ files, policy, getRoots }))
 
   // Model gateway. Reads its API key from the OS-encrypted credential store;
   // the key is never written to the plain state file.
