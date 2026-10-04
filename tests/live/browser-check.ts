@@ -74,11 +74,11 @@ async function main(): Promise<void> {
  * Two environment switches exist because the check has to stay honest on any
  * machine, including ones whose Chromium is partly broken:
  *
- *  - `CRYPTORIC_BROWSER_HOST=off` disables the offscreen host, for a machine
- *    that cannot host a Chromium window at all.
- *  - `CRYPTORIC_BROWSER_TARGET=data` loads the self-contained page instead of
- *    the HTTP one, for a machine whose Chromium refuses to deliver synthesised
- *    input to renderers of network origins.
+ *  - `CRYPTORIC_BROWSER_HOST=off` disables the background render host, for a
+ *    machine that cannot host a Chromium window at all.
+ *  - `CRYPTORIC_BROWSER_TARGET=file` loads the self-contained copy of the page
+ *    instead of the HTTP one, for a machine whose Chromium refuses to deliver
+ *    synthesised input to renderers of network origins.
  *
  * Neither switch changes what is being tested — the same tools, the same
  * runtime, the same page markup.
@@ -248,7 +248,7 @@ async function main(): Promise<void> {
         false,
         backgroundHost
           ? `no file at ${shotPath} — ${String(shot.error)}`
-          : `SKIPPED: this machine cannot host a Chromium window (CRYPTORIC_BROWSER_HOST=off), so the tab has no render surface`
+          : `SKIPPED: the background render host is disabled (CRYPTORIC_BROWSER_HOST=off), so the tab has no render surface`
       )
     }
 

@@ -161,24 +161,35 @@ export class BrowserTabManager {
   }
 
   /**
-   * A hidden window that hosts tabs the user is not currently looking at.
+   * A window that hosts tabs the user is not currently looking at.
    *
-   * A `WebContentsView` only renders when it is parented to a window. Without
-   * this, a background tab lays out nothing, screenshots come back empty, and
-   * responsive checks measure a zero-sized viewport. An offscreen window costs
-   * no GPU surface, keeps every background tab live, and — importantly — means
-   * an agent screenshotting a second tab never has to steal the developer's
-   * current one.
+   * A `WebContentsView` only renders when it is parented to a window, and
+   * Chromium only composites a window it has actually shown: a `show: false`
+   * window and an `offscreen` one both produce empty captures, which would make
+   * every screenshot of a background tab a blank image. So the host is a real
+   * window, parked far off-screen and excluded from the taskbar and focus, which
+   * renders correctly while remaining completely invisible to the developer.
+   *
+   * The alternative — attaching the tab to the Cryptoric window — would mean an
+   * agent screenshotting a second tab takes over the one they are using.
    */
   private backgroundHost(): BrowserWindow | null {
     if (this.options.backgroundHost === false) return null
     if (this.offscreen && !this.offscreen.isDestroyed()) return this.offscreen
     if (!app.isReady()) return null
     this.offscreen = new BrowserWindow({
-      show: false,
+      show: true,
+      x: -32000,
+      y: -32000,
       width: DETACHED_BOUNDS.width,
       height: DETACHED_BOUNDS.height,
-      webPreferences: { offscreen: true }
+      skipTaskbar: true,
+      focusable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      title: 'Cryptoric background browser host',
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false }
     })
     return this.offscreen
   }
