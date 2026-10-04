@@ -32,6 +32,7 @@ import { RuntimeManager, useRuntimeSummary } from './panes/RuntimeManager'
 import { Workspace, type WorkspaceView } from './panes/Workspace'
 import { ModelPicker, StatusBar, type BudgetSummary, type ModelSummary } from './panes/ModelPicker'
 import { SettingsSurface, ToolsSurface } from './panes/Settings'
+import { UpdatePrompt } from './panes/UpdatePrompt'
 import { useAppState } from './state/useAppState'
 import { describe } from './state/store'
 
@@ -352,6 +353,21 @@ export function App() {
       {state.notice && (
         <Toast message={state.notice} onDismiss={() => actions.notify(null)} />
       )}
+
+      {/* An update found in the background asks here rather than only in
+          Settings, because by the time a user opens Settings they have already
+          forgotten a dialog they never saw. */}
+      {state.update?.state === 'available' || state.update?.state === 'downloaded' ? (
+        state.updateDismissed ? null : (
+          <UpdatePrompt
+            status={state.update}
+            busy={false}
+            onDownload={() => void actions.downloadUpdate()}
+            onInstall={() => void actions.installUpdate()}
+            onDismiss={() => actions.dismissUpdate()}
+          />
+        )
+      ) : null}
 
       <CommandPalette commands={commands} open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </div>

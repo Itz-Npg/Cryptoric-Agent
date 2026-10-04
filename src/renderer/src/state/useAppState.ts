@@ -49,6 +49,8 @@ export interface AppStateShape {
   models: ModelSummary[]
   budget: BudgetSummary
   update: UpdateStatusDto | null
+  /** True once the user picks "later"; hides the prompt without forgetting it. */
+  updateDismissed: boolean
 }
 
 const initial: AppStateShape = {
@@ -73,7 +75,8 @@ const initial: AppStateShape = {
   notice: null,
   models: [],
   budget: { usedCoins: 0, budgetCoins: 0, day: '', exceeded: false, enabled: false, model: '' },
-  update: null
+  update: null,
+  updateDismissed: false
 }
 
 type Action =
@@ -97,6 +100,7 @@ type Action =
   | { type: 'models'; models: ModelSummary[]; budget: BudgetSummary }
   | { type: 'notice'; notice: string | null }
   | { type: 'update'; update: UpdateStatusDto | null }
+  | { type: 'update-dismissed'; dismissed: boolean }
 
 const MAX_TIMELINE = 800
 /**
@@ -168,7 +172,15 @@ function reducer(state: AppStateShape, action: Action): AppStateShape {
     case 'notice':
       return { ...state, notice: action.notice }
     case 'update':
+      // A different version arriving un-dismisses the prompt: a new offer is a
+      // new decision, and silently hiding it would be the app deciding for the
+      // user.
+      if (state.update?.availableVersion !== action.update?.availableVersion) {
+        return { ...state, update: action.update, updateDismissed: false }
+      }
       return { ...state, update: action.update }
+    case 'update-dismissed':
+      return { ...state, updateDismissed: action.dismissed }
     default:
       return state
   }
@@ -407,6 +419,8 @@ function useActions(dispatch: React.Dispatch<Action>) {
        * Updates. Checking is passive and happens on its own; downloading is
        * only ever started from here, by the user, from Settings.
        */
+      dismissUpdate: () => dispatch({ type: 'update-dismissed', dismissed: true }),
+
       checkForUpdates: async (force = false) => {
         try {
           const status = await window.cryptoric.updates.check(force)

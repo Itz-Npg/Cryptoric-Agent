@@ -29,7 +29,10 @@ export function createElectronUpdatePort(): UpdatePort {
   // silently rots the day the repository is renamed, so it is set from the same
   // source of truth instead.
   autoUpdater.autoDownload = false
-  autoUpdater.autoInstallOnAppQuit = false
+  // A downloaded update installs on quit unless the user restarts immediately.
+  // This is what makes "Restart later" honest: the work is already done, and
+  // closing the app finishes it rather than discarding it.
+  autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.allowDowngrade = false
 
   return {
