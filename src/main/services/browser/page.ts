@@ -49,15 +49,6 @@ async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
   }
 }
 
-export interface BridgeFailure {
-  ok: false
-  reason: string
-}
-
-function isBridgeFailure(value: unknown): value is BridgeFailure {
-  return !!value && typeof value === 'object' && (value as { ok?: unknown }).ok === false
-}
-
 /** Run a bridge method and normalise its outcome. */
 export interface BridgeResult<T = Record<string, unknown>> {
   ok: boolean
@@ -674,5 +665,3 @@ export async function writeScreenshot(path: string, data: Buffer): Promise<{ pat
   await writeFile(path, data)
   return { path, bytes: data.length }
 }
-
-export { isBridgeFailure }

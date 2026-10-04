@@ -114,11 +114,6 @@ export function isProblemEntry(entry: { level: string }): boolean {
   return entry.level === 'error' || entry.level === 'warning'
 }
 
-export function clipText(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text
-  return `${text.slice(0, maxChars)}\n… [${text.length - maxChars} more characters]`
-}
-
 export interface ClipOutcome {
   value: string
   truncated: boolean

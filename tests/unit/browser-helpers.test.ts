@@ -12,7 +12,6 @@ import { describe, expect, it } from 'vitest'
 import {
   classifyTarget,
   clip,
-  clipText,
   consoleLevel,
   isLoopbackUrl,
   isProblemEntry,
@@ -100,7 +99,6 @@ describe('consoleLevel', () => {
 
 describe('clipping', () => {
   it('leaves short text untouched', () => {
-    expect(clipText('short', 100)).toBe('short')
     expect(clip('short', 100)).toEqual({ value: 'short', truncated: false, originalLength: 5 })
   })
 
