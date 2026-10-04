@@ -26,9 +26,12 @@ nsis:
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: CryptoricAgent
+  # `differentialPackageOptions` was removed from the schema in electron-builder
+  # 25; leaving it in makes the whole config fail validation before a single
+  # file is written.
   differentialPackage: true
-  differentialPackageOptions:
-    ...
 publish:
   provider: github
   owner: cryptoric

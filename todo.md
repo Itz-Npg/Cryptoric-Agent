@@ -120,8 +120,14 @@ against real Chromium.**
       `scripts/make-icon.py` so it is reproducible, not a checked-in blob
 - [x] `build/icon.ico` carries 16/24/32/48/64/128/256, verified by parsing the container
 - [x] userData carried across the rename so the credential store is not orphaned
-- [ ] macOS `.icns` and Linux `.png` set still come from the 1024 PNG; not packaged here
-- [ ] `npm run dist` has never been run on this machine — the exe has not been produced
+- [x] `npm run dist` produces `cryptoricagent.exe` + `CryptoricAgent-0.1.0-x64.exe`
+- [x] Icon verified **inside** the binary: `ExtractAssociatedIcon` matches the artwork
+      exactly (mean difference 0.0), not just present in `build/`
+- [x] Fixed a pre-existing config error that made `npm run dist` fail outright
+      (`nsis.differentialPackageOptions`, removed from the electron-builder 25 schema)
+- [ ] macOS `.icns` and Linux builds are configured but were never produced here
+- [ ] Packaging needs elevation **once per machine** — `winCodeSign.7z` extracts symlinks
+- [ ] The binaries are unsigned: no certificate is configured, so SmartScreen will warn
 
 ---
 

@@ -48,6 +48,33 @@ with a real key. No stubbed fetch, no canned response, no "connection successful
 | App name after rename | `app.getName()` | `"CryptoricAgent"` |
 | userData after rename | `app.getPath('userData')` | `%APPDATA%\CryptoricAgent` |
 
+### Packaging — verified against a real build, not the config
+
+| Check | Result |
+|---|---|
+| `release/win-unpacked/cryptoricagent.exe` | exists, 188,869,120 bytes |
+| Installer | `release/CryptoricAgent-0.1.0-x64.exe`, 83,880,050 bytes |
+| Embedded icon is *your* artwork | `ExtractAssociatedIcon` vs `build/32x32.png` | **mean abs difference 0.0** — pixel identical |
+| Version resource | `ProductName=CryptoricAgent`, `CompanyName=Cryptoric` |
+
+Two pre-existing blockers were found by actually building, both invisible to typecheck,
+unit tests and `electron-vite build`:
+
+1. **`npm run dist` had never worked.** `nsis.differentialPackageOptions` was removed
+   from the electron-builder 25 schema, so the whole config failed validation before a
+   single file was written. Removed; `differentialPackage: true` is the live option.
+2. **The icon step needs elevation on Windows.** electron-builder extracts
+   `winCodeSign.7z`, which contains symlinks. Without
+   `SeCreateSymbolicLinkPrivilege` the extract fails and the build dies *before*
+   `rcedit`, leaving `cryptoricagent.exe` carrying Electron's stock logo and
+   `ProductName=Electron`. Confirmed by extracting the icon from that intermediate
+   binary and diffing it against the artwork (mean difference 48.5, centre pixel
+   light blue — Electron's logo). Re-run once with approval and the same extraction
+   returns a mean difference of 0.0.
+
+The elevation is only needed on the first packaging run on a machine; the extracted
+cache is reused afterwards.
+
 ### Bug the rename caused, and fixed
 
 Renaming the app to `CryptoricAgent` silently orphaned the credential store.
