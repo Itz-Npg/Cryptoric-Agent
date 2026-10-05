@@ -21,6 +21,22 @@ win:
       arch: [x64]
   icon: build/icon.ico
   artifactName: ${productName}-${version}-${arch}.${ext}
+  # Authenticode signing. There is no certificate in this repository and none is
+  # invented: the block below only takes effect when a certificate is supplied
+  # through the environment (`CSC_LINK` + `CSC_KEY_PASSWORD`, or
+  # `signtoolOptions.certificateFile`), which CI supplies once SignPath
+  # Foundation approval lands. With nothing set, electron-builder builds an
+  # unsigned installer exactly as before — no error, no silent fake signature.
+  #
+  # `rfc3161TimeStampServer` matters more than it looks. An Authenticode signature
+  # is only valid while the signing certificate is; a timestamp counter-signature
+  # pins "this was signed while the certificate was valid", so an installer keeps
+  # verifying after the certificate expires. Without it the signature silently
+  # becomes untrusted on an expiry date nobody chose.
+  signtoolOptions:
+    rfc3161TimeStampServer: http://timestamp.digicert.com
+    signingHashAlgorithms:
+      - sha256
 nsis:
   oneClick: false
   perMachine: false
@@ -57,4 +73,9 @@ linux:
   category: Development
   # electron-builder wants an explicit desktop entry name for .deb installs.
   synopsis: Autonomous software engineering agent
+  # There is deliberately no `gpgKey` here. electron-builder 25 removed built-in
+  # GPG signing (`grep -c gpg node_modules/app-builder-lib/scheme.json` returns 0),
+  # so a `gpgKey` key would fail schema validation before a single file is
+  # written. Linux artifacts are signed after packaging instead, by
+  # `scripts/sign-release.mjs` — see `docs/signing/SIGNING.md`.
 npmRebuild: false
