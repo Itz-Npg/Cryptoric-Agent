@@ -129,6 +129,9 @@ export const SCHEMAS = {
   [CHANNELS.modelsCatalog]: z.object({}),
   [CHANNELS.modelsSelect]: z.object({ modelId: z.string().min(1) }),
   [CHANNELS.modelsAvailable]: z.object({}),
+  // Takes no arguments: the URL and whether it is enabled are settings, and
+  // the token is a credential. This call just re-fetches whatever is there.
+  [CHANNELS.providerServerRefresh]: z.object({}),
   [CHANNELS.modelsSetBudget]: z.object({ coins: z.number().int().min(0).max(100_000) }),
   [CHANNELS.modelsSetProvider]: z.object({
     provider: z.enum(['none', 'ollama', 'openai-compatible', 'openrouter', 'apinex']),

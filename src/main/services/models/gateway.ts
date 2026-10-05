@@ -77,6 +77,15 @@ export const PROVIDER_CREDENTIAL_SLOTS: Partial<Record<ProviderKind, string>> = 
 }
 
 /**
+ * Credential slot for a self-hosted provider server's token.
+ *
+ * Its own slot rather than a provider slot, because it authenticates the
+ * *catalogue*, not a model request. Reusing a provider slot would put a
+ * server credential where a provider credential is expected.
+ */
+export const PROVIDER_SERVER_CREDENTIAL = 'provider-server-token'
+
+/**
  * Catalogue. Local models are discovered at runtime from the endpoint; this
  * list is what the UI offers when no endpoint is reachable, and what provides
  * pricing for hosted models.
@@ -647,7 +656,36 @@ export class ModelGateway {
   private dayStamp = todayUtc()
   private usedTodayUsd = 0
 
+  /**
+   * Models published by a self-hosted provider server.
+   *
+   * Per-instance rather than in the module-level catalogue because they come
+   * from a server that may be switched off, changed or unreachable, and a
+   * process-wide map would have no way to be emptied again.
+   */
+  private customModels = new Map<string, ModelConfig>()
+
   constructor(private deps: ModelGatewayDeps) {}
+
+  /**
+   * Replace the server-published models.
+   *
+   * Replaces rather than merges: a model removed from the server's catalogue
+   * must disappear here too, otherwise turning a model off would have no effect
+   * until the app was restarted.
+   */
+  setCustomModels(configs: readonly ModelConfig[]): void {
+    this.customModels = new Map(configs.map((c) => [c.model, c]))
+  }
+
+  /** Every model this gateway can currently resolve, built-in and server. */
+  listCustomModels(): string[] {
+    return [...this.customModels.keys()].sort()
+  }
+
+  hasCustomModels(): boolean {
+    return this.customModels.size > 0
+  }
 
   getConfig(): ModelConfig {
     return this.deps.config
@@ -1124,6 +1162,21 @@ export class ModelGateway {
    * OpenRouter and the OpenRouter key would be sent to apinex.bond.
    */
   resolveModel(modelId: string): ModelConfig | null {
+    // A model published by a self-hosted provider server wins over a built-in
+    // one of the same id: the operator's server is the authority on what it
+    // serves, and a stale built-in entry would silently send the request
+    // somewhere the operator did not choose.
+    const custom = this.customModels.get(modelId)
+    if (custom) {
+      return {
+        ...this.deps.config,
+        provider: custom.provider,
+        endpoint: custom.endpoint,
+        model: custom.model,
+        credentialKey: custom.credentialKey ?? this.deps.config.credentialKey
+      }
+    }
+
     const model = MODEL_BY_ID.get(modelId)
     if (!model?.servedBy) return null
     return {

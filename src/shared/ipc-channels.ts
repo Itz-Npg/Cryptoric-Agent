@@ -86,6 +86,8 @@ export const CHANNELS = {
   modelsCatalog: 'models:catalog',
   modelsSelect: 'models:select',
   modelsAvailable: 'models:available',
+  /** Re-fetch the model catalogue from a self-hosted provider server. */
+  providerServerRefresh: 'models:provider-server-refresh',
   modelsSetBudget: 'models:set-budget',
   modelsSetProvider: 'models:set-provider',
   modelsVerifyKey: 'models:verify-key',

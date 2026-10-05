@@ -157,7 +157,23 @@ has.
 - **The iOS app is not distributed.** It compiles and its tests pass in CI.
   App Store or TestFlight needs a paid Apple Developer account, so nothing here
   puts an app on a phone.
-- **Multi-project workspaces** — persistence scoping exists; the UI does not.
+### Your own model server
+
+Run the provider server and point installs at it; the models you publish there appear
+in the picker. Opt-in, no dependencies, and the security properties are enforced in
+code rather than documented: the token is mandatory (the server exits without one),
+compared in constant time, and **your upstream key never reaches a client**.
+
+```bash
+PROVIDER_TOKEN=$(openssl rand -hex 32) node server/index.mjs
+```
+
+Full detail in [`server/README.md`](server/README.md).
+
+- **Multi-project workspaces** — execution is genuinely parallel (separate folders
+  run at once, one folder still serialises), and each project has its own
+  `.cryptoricagent/` history. The **sidebar UI** to switch between them does not
+  exist yet.
 - **`npm run lint` exits 1** on ~350 pre-existing errors in untouched files.
 
 ---
