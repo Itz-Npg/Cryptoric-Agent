@@ -83,27 +83,18 @@ async function main(): Promise<void> {
   const userDataDir = mkdtempSync(join(tmpdir(), 'cryptoric-browser-check-'))
   let fixture: Fixture | null = null
 
-  // Chromium switches have to be appended before the app is ready, and CI needs
-  // them: under `xvfb` there is no GPU and no compositor, so `capturePage` times
-  // out and synthesised pointer events never reach the page. Software rendering
-  // restores a real surface to render into. Passed as an environment variable
-  // rather than hard-coded so a desktop run is unaffected — the flags are wrong
-  // for a machine that does have a GPU.
-  //
-  // Not a workaround for a broken product: the switches configure the *test
-  // runner's* Chromium, not the shipped browser.
-  for (const flag of (process.env.CRYPTORIC_CHECK_CHROMIUM_FLAGS ?? '').split(/\s+/).filter(Boolean)) {
-    const separator = flag.indexOf('=')
-    const name = separator === -1 ? flag : flag.slice(0, separator)
-    const value = separator === -1 ? '' : flag.slice(separator + 1)
-    if (value) app.commandLine.appendSwitch(name, value)
-    else app.commandLine.appendSwitch(name)
-  }
-
   // A watchdog, so a regression that wedges a page call fails the run loudly
-  // instead of hanging the terminal forever. Configurable because software
-  // rendering under xvfb is several times slower than a desktop GPU, and a
-  // timeout that fires on a slow-but-correct run trains people to ignore it.
+  // instead of hanging the terminal forever. Configurable because a loaded
+  // machine runs this suite several times slower, and a timeout that fires on a
+  // slow-but-correct run teaches people to ignore timeouts.
+  //
+  // There used to be a `CRYPTORIC_CHECK_CHROMIUM_FLAGS` hook here for running
+  // under `xvfb` in CI. It was removed after it proved not to work: software
+  // rendering gives Chromium a surface to draw into but does not make a
+  // `WebContentsView` accept real pointer input or answer `capturePage`, so
+  // `browser_click`, `browser_drag`, `browser_screenshot` and link navigation
+  // still failed. Leaving a switch that looks like it enables headless
+  // verification, when it does not, would be worse than having none.
   const watchdogMs = Number(process.env.CRYPTORIC_CHECK_WATCHDOG_MS ?? 180_000)
   const watchdog = setTimeout(() => {
     process.stdout.write(`[FAIL] watchdog — the run did not finish in ${watchdogMs}ms\n`)
