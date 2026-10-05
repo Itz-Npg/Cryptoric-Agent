@@ -18,3 +18,9 @@ node_modules/.tmp/
 .env
 .env.*
 !.env.example
+
+# Release-signing material: the armored private key, its passphrase and the
+# key-generation parameters. The *public* key is committed, at
+# `docs/signing/cryptoric-agent-signing-key.asc`, because that is the one users
+# verify against. A private key in git history is unrecoverable and permanent.
+.signing/

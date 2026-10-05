@@ -153,9 +153,110 @@ jobs:
             release/*.blockmap
             release/latest*.yml
 
+  # Sign the collected artifacts and publish them alongside.
+  #
+  # Signing lives in its own job rather than inside `build` because the three
+  # runners each produce artifacts for a *different* operating system, and a
+  # detached OpenPGP signature is not platform-specific: one Linux runner can
+  # sign the Windows `.exe`, the macOS `.dmg` and the Linux `.deb` alike. One
+  # signing run, one key, one place in the log to look when a signature is
+  # disputed.
+  sign:
+    name: Sign artifacts
+    needs: build
+    # Publishing is outward-facing, so signing stays with the same tag-only
+    # trigger as the release itself. A push to main still produces unsigned
+    # artifacts as build output, which is fine — they are not distributed.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # ubuntu-latest ships gpg, but pinning the major version means a runner
+      # image change cannot silently swap in a build that parses --status-fd
+      # output differently.
+      - name: Install gpg
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y gnupg
+          gpg --version
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List collected artifacts
+        run: ls -la artifacts/
+
+      # Deliberately `::error::` + exit rather than a conditional skip. A job
+      # that quietly skips when a secret is missing produces an unsigned release
+      # that looks signed in the logs, and nobody notices until a user does.
+      - name: Require the release signing key
+        env:
+          HAS_KEY: ${{ secrets.CRYPTORIC_GPG_KEY != '' }}
+        run: |
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::error::Repository secret CRYPTORIC_GPG_KEY is not set."
+            echo "Add the armored private key as a repository secret, or this"
+            echo "release will not be signed. See docs/signing/SIGNING.md."
+            exit 1
+          fi
+
+      - name: Sign
+        env:
+          CRYPTORIC_GPG_KEY: ${{ secrets.CRYPTORIC_GPG_KEY }}
+          CRYPTORIC_GPG_PASSPHRASE: ${{ secrets.CRYPTORIC_GPG_PASSPHRASE }}
+          # Pinning the fingerprint means a swapped secret is caught rather than
+          # used: signing with whatever key happens to be configured is exactly
+          # the failure this repository is trying to make detectable.
+          CRYPTORIC_GPG_FINGERPRINT: '0A0BDF9C7A1C544D22505E4BC91B55788C7458A1'
+          CRYPTORIC_SIGN_DIR: artifacts
+        run: npm run sign:release
+
+      # Signatures are only worth anything if they verify. This re-verifies each
+      # `.asc` against the committed public key before anything is published, so
+      # a signing bug fails the release instead of shipping to users.
+      - name: Verify every signature before publishing
+        env:
+          CRYPTORIC_GPG_PASSPHRASE: ${{ secrets.CRYPTORIC_GPG_PASSPHRASE }}
+        run: |
+          status=0
+          for sig in artifacts/*.asc; do
+            [ -e "$sig" ] || continue
+            artifact="${sig%.asc}"
+            if ! node scripts/verify-release.mjs "$artifact"; then
+              echo "::error::Signature does not verify: $sig"
+              status=1
+            fi
+          done
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Refusing to publish artifacts whose signatures do not verify."
+            exit 1
+          fi
+          echo "All signatures verify."
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed
+          if-no-files-found: error
+          retention-days: 14
+          path: artifacts/*
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, sign]
     # Publishing is destructive and outward-facing: only ever on an explicit
     # version tag, never on an ordinary push to main.
     if: startsWith(github.ref, 'refs/tags/v')
@@ -179,10 +280,15 @@ jobs:
             exit 1
           fi
 
+      # Only the `signed` artifact, and only by name. The earlier version used
+      # `merge-multiple: true` with no `name`, which now also pulls in the
+      # per-platform `installers-*` artifacts that `sign` already consumed —
+      # publishing the same installer twice and letting whichever copy landed
+      # last decide whether it was the signed one.
       - uses: actions/download-artifact@v4
         with:
+          name: signed
           path: artifacts
-          merge-multiple: true
 
       - name: List collected artifacts
         run: ls -la artifacts/
@@ -196,8 +302,17 @@ jobs:
         run: |
           NOTES=$(mktemp)
           {
-            echo "Unsigned builds. Windows may show a SmartScreen warning; macOS will"
-            echo "require Gatekeeper clearance on first open."
+            echo "These builds are GPG-signed. Every installer has a matching"
+            echo "\`.asc\` detached signature, verifiable with:"
+            echo
+            echo "\`\`\`"
+            echo "npm run verify:release -- <downloaded-file>"
+            echo "\`\`\`"
+            echo
+            echo "The public key is committed at docs/signing/cryptoric-agent-signing-key.asc."
+            echo
+            echo "This is not an Authenticode or Apple signature: Windows SmartScreen"
+            echo "and macOS Gatekeeper will still warn. See docs/signing/SIGNING.md."
             echo
             echo "### Installers"
             for f in artifacts/*.exe artifacts/*.dmg artifacts/*.AppImage artifacts/*.deb; do
@@ -236,12 +351,46 @@ jobs:
           VERSION="${TAG#v}"
           echo "=== release assets ==="
           gh release view "$TAG" --json assets --jq '.assets[].name'
-          echo
-          echo "=== latest.yml ==="
-          gh release download "$TAG" --pattern latest.yml --dir /tmp/feed --clobber
-          cat /tmp/feed/latest.yml
-          if ! grep -q "^version: ${VERSION}$" /tmp/feed/latest.yml; then
-            echo "::error::latest.yml does not declare version ${VERSION}."
+          echoecho "=== latest.yml ==="
+            gh release download "$TAG" --pattern latest.yml --dir /tmp/feed --clobber
+            cat /tmp/feed/latest.yml
+            if ! grep -q "^version: ${VERSION}$" /tmp/feed/latest.yml; then
+              echo "::error::latest.yml does not declare version ${VERSION}."
+              exit 1
+            fi
+            echo "latest.yml declares ${VERSION} — the updater has a feed to read."
+
+      # A release whose signatures did not make it onto the GitHub Release is not
+      # a signed release, however green the signing job was. Counting is the only
+      # check that catches a `.asc` that signed locally and was never uploaded.
+      - name: Verify the published release carries its signatures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          installers=0
+          signatures=0
+          while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            case "$name" in
+              *.exe|*.dmg|*.deb|*.AppImage|*.zip|*.rpm)
+                installers=$((installers + 1))
+                ;;
+              *.asc)
+                signatures=$((signatures + 1))
+                ;;
+            esac
+          done <<< "$assets"
+          echo "installers=$installers signatures=$signatures"
+          if [ "$installers" -eq 0 ]; then
+            echo "::error::No installers on the release at all."
             exit 1
           fi
-          echo "latest.yml declares ${VERSION} — the updater has a feed to read."
+          if [ "$signatures" -ne "$installers" ]; then
+            echo "::error::$installers installer(s) but $signatures signature(s)."
+            echo "Publishing a partially signed release is worse than publishing"
+            echo "an unsigned one, because it looks signed."
+            exit 1
+          fi
+          echo "every installer on the release has a signature."

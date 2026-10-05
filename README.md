@@ -114,7 +114,8 @@ raise a tool's tier. Permissions are visible per domain in Settings
 
 Download a release for your platform from
 [**Releases**](https://github.com/Itz-Npg/Cryptoric-Agent/releases), or build it
-yourself:
+yourself. Every published installer ships with a detached OpenPGP signature —
+**check it**, see [Verifying a download](#verifying-a-download).
 
 ```bash
 git clone https://github.com/Itz-Npg/Cryptoric-Agent.git
@@ -250,6 +251,56 @@ npm run typecheck   # 0 errors
 npm test            # 518 tests / 20 files
 npm run build
 ```
+
+---
+
+## Code signing
+
+### Verifying a download
+
+Every artifact on the Releases page has a matching `.asc` detached OpenPGP
+signature. To check that what you downloaded is what the project published:
+
+```bash
+npm run verify:release -- ~/Downloads/CryptoricAgent-0.1.4-x64-setup.exe
+```
+
+or without a checkout:
+
+```bash
+gpg --keyserver keyserver.ubuntu.com --recv-keys 0A0BDF9C7A1C544D22505E4BC91B55788C7458A1
+gpg --verify CryptoricAgent-0.1.4-x64-setup.exe.asc CryptoricAgent-0.1.4-x64-setup.exe
+```
+
+The public key is committed at
+[`docs/signing/cryptoric-agent-signing-key.asc`](docs/signing/cryptoric-agent-signing-key.asc).
+An OpenPGP signature proves provenance. It does **not** silence Windows
+SmartScreen or macOS Gatekeeper — that needs a certificate from a recognised
+authority, which is a separate process described in
+[`docs/signing/SIGNING.md`](docs/signing/SIGNING.md).
+
+Full instructions, including how to sign your own build and how the Linux and
+macOS paths work: [`docs/signing/SIGNING.md`](docs/signing/SIGNING.md).
+
+### Code signing policy
+
+**Code signing policy.** Release artifacts are signed only by the automated
+release pipeline in [`.github/workflows/release.yml`](.github/workflows/release.yml),
+on a `v*` tag whose version matches `package.json`. Signing requires the
+repository secret `CRYPTORIC_GPG_KEY`, which is readable only by repository
+administrators — the same trust boundary as being able to publish a release. The
+pipeline pins the signing key fingerprint
+`0A0BDF9C7A1C544D22505E4BC91B55788C7458A1`, so a substituted key is rejected
+before anything is signed rather than silently used.
+
+Contributors never receive access to the signing key and cannot produce a signed
+build. Forks and pull requests cannot either. Locally built artifacts are
+unsigned, and that is expected rather than a defect.
+
+This project uses an OSI-approved licence (MIT), contains no proprietary code in
+its distributed artifacts, is maintained and already released, and is not a
+hacking tool. The full policy, including key management and revocation, is at
+[`docs/signing/CODE_SIGNING_POLICY.md`](docs/signing/CODE_SIGNING_POLICY.md).
 
 ---
 

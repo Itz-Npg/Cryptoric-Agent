@@ -38,6 +38,8 @@
     "test:agent:ling": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs ling",
     "test:agent:laguna-xs": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs laguna-xs",
     "stage:keys": "node scripts/stage-keys.mjs",
+    "sign:release": "node scripts/sign-release.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
     "test:agent:pipeline": "node scripts/build-live-check.mjs tests/live/pipeline-check.ts .review/live/pipeline-check.mjs && node .review/live/pipeline-check.mjs"
   },
   "dependencies": {
