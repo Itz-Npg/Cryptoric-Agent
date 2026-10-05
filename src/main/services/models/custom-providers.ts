@@ -29,6 +29,13 @@ export function credentialSlotFor(providerId: string): string {
   return `${CUSTOM_CREDENTIAL_PREFIX}${providerId}`
 }
 
+/**
+ * Presets live in `shared` so the renderer dropdown and this validation read one
+ * list. Re-exported here so main-process code has a single import for them.
+ */
+export { PROVIDER_PRESETS, findPreset, searchPresets } from '@shared/provider-presets'
+export type { ProviderPreset } from '@shared/provider-presets'
+
 export interface CustomProviderInput {
   id?: string
   label: string

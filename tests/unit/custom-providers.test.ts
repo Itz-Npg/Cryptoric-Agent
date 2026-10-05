@@ -20,6 +20,7 @@ import {
   urlLeaksSecret
 } from '../../src/main/services/models/custom-providers'
 import { SettingsSchema } from '../../src/main/services/settings/schema'
+import { PROVIDER_PRESETS, findPreset, searchPresets } from '../../src/shared/provider-presets'
 
 const valid = {
   label: 'My provider',
@@ -262,5 +263,64 @@ describe('a key cannot reach the settings file by any route', () => {
 
     expect(JSON.stringify(parsed)).not.toContain('sk-should-never-persist')
     expect((parsed.providers[0] as Record<string, unknown>).apiKey).toBeUndefined()
+  })
+})
+
+describe('provider presets', () => {
+  it('offers a Custom entry so a hand-typed URL is never blocked', () => {
+    // Presets are a shortcut, not a whitelist: someone pointing this at their
+    // own gateway must still be able to.
+    expect(findPreset('custom')).not.toBeNull()
+    expect(findPreset('custom')?.baseUrl).toBe('')
+  })
+
+  it('gives local presets no key requirement', () => {
+    expect(findPreset('ollama')?.needsKey).toBe(false)
+    expect(findPreset('lmstudio')?.needsKey).toBe(false)
+    expect(findPreset('openrouter')?.needsKey).toBe(true)
+  })
+
+  it('every preset ships a model hint that is a real id', () => {
+    for (const preset of PROVIDER_PRESETS) {
+      if (preset.id === 'custom') continue
+      // An empty model field is the thing people get wrong most often, so a
+      // preset that cannot prefill one is not worth shipping.
+      expect(preset.modelHint.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('lists every preset when the search box is empty', () => {
+    expect(searchPresets('')).toHaveLength(PROVIDER_PRESETS.length)
+    expect(searchPresets('   ')).toHaveLength(PROVIDER_PRESETS.length)
+  })
+
+  it('ranks prefix matches above substring matches', () => {
+    const results = searchPresets('o')
+    const openRouter = results.findIndex((p) => p.id === 'openrouter')
+    expect(openRouter).toBeGreaterThanOrEqual(0)
+    // Anything merely containing "o" must come after the prefix matches.
+    for (let i = 0; i < openRouter; i += 1) {
+      expect(results[i]?.label.toLowerCase().startsWith('o') || results[i]?.id.startsWith('o')).toBe(true)
+    }
+  })
+
+  it('matches case-insensitively', () => {
+    expect(searchPresets('OPEN').map((p) => p.id)).toContain('openrouter')
+    expect(searchPresets('mistral').map((p) => p.id)).toContain('mistral')
+  })
+
+  it('returns nothing for a query that matches nothing', () => {
+    expect(searchPresets('zzzzz')).toEqual([])
+  })
+
+  it('uses http for local presets and https for remote ones', () => {
+    for (const preset of PROVIDER_PRESETS) {
+      if (preset.baseUrl.length === 0) continue
+      const url = new URL(preset.baseUrl)
+      const local = ['localhost', '127.0.0.1'].includes(url.hostname)
+      // A remote preset over plain http would send the key in the clear, which
+      // is the single thing this whole feature must not do.
+      expect(url.protocol).toBe(local ? 'http:' : 'https:')
+    }
   })
 })

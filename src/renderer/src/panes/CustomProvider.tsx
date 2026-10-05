@@ -1,24 +1,27 @@
 /**
  * Add a provider the user brought themselves.
  *
- * Three inputs, kept deliberately separate because they are three different
+ * Shape follows what people actually do: pick the provider from a list, paste
+ * the key, paste the model id. The base URL is prefilled from the choice and
+ * stays editable, because a preset is a shortcut and not a restriction —
+ * someone pointing this at their own gateway must still be able to.
+ *
+ * Three things are kept deliberately separate, because they are three different
  * kinds of thing:
  *
- *  - **Base URL** — where requests go. Validated before it is sent, so a typo
- *    is a message rather than an opaque network failure later.
- *  - **API key** — a password field. It goes to the encrypted credential store
- *    in the main process and is never sent back to the renderer, so the list of
- *    saved providers below can show "key saved" without ever holding the key.
- *  - **Models** — free text, because nobody knows their provider's model list
- *    better than they do and no built-in catalogue covers a private endpoint.
- *    One per line, because that is what every provider prints.
- *
- * Editing an existing provider reuses the same form: the id is sent back so the
- * entry is replaced rather than duplicated.
+ *  - **Base URL** — where requests go. Validated here, so a typo is a message
+ *    rather than an opaque network failure later.
+ *  - **API key** — a password field, written straight to the encrypted
+ *    credential store in the main process. It is never sent back to the
+ *    renderer, so the saved list below can say "key saved" without ever holding
+ *    the key.
+ *  - **Model id** — free text. Copy it from the provider rather than guessing;
+ *    a wrong id fails as a 404 from the provider with nothing useful in it.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, Chip } from '../components/primitives'
+import { PROVIDER_PRESETS, searchPresets } from '@shared/provider-presets'
 
 interface SavedProvider {
   id: string
@@ -35,15 +38,45 @@ function parseModels(text: string): string[] {
     .filter((m) => m.length > 0)
 }
 
+function Field(props: {
+  id: string
+  label: string
+  hint?: string
+  children: React.ReactNode
+}): React.ReactElement {
+  return (
+    <div style={{ display: 'grid', gap: 6 }}>
+      <label className="caption" htmlFor={props.id} style={{ fontWeight: 550 }}>
+        {props.label}
+      </label>
+      {props.children}
+      {props.hint && <span className="caption">{props.hint}</span>}
+    </div>
+  )
+}
+
 export function CustomProviderSection(): React.ReactElement {
   const [saved, setSaved] = useState<SavedProvider[]>([])
+  const [open, setOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [label, setLabel] = useState('')
-  const [baseUrl, setBaseUrl] = useState('')
+
+  const [presetId, setPresetId] = useState('openrouter')
+  const [query, setQuery] = useState('')
+  const [baseUrl, setBaseUrl] = useState(PROVIDER_PRESETS[0]?.baseUrl ?? '')
   const [apiKey, setApiKey] = useState('')
-  const [modelsText, setModelsText] = useState('')
+  const [revealKey, setRevealKey] = useState(false)
+  const [modelId, setModelId] = useState('')
+  const [moreModels, setMoreModels] = useState('')
+  const [name, setName] = useState('')
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
   const [busy, setBusy] = useState(false)
   const [report, setReport] = useState<{ ok: boolean; tone: 'ok' | 'warn' | 'error' | 'idle'; text: string } | null>(null)
+
+  const preset = useMemo(() => PROVIDER_PRESETS.find((p) => p.id === presetId) ?? PROVIDER_PRESETS[0], [presetId])
+  const results = useMemo(() => searchPresets(query), [query])
+  const extraModels = useMemo(() => parseModels(moreModels), [moreModels])
+  const models = useMemo(() => parseModels(modelId).concat(extraModels), [modelId, extraModels])
 
   const load = useCallback(async () => {
     try {
@@ -58,30 +91,50 @@ export function CustomProviderSection(): React.ReactElement {
     void load()
   }, [load])
 
+  const choosePreset = (id: string): void => {
+    const next = PROVIDER_PRESETS.find((p) => p.id === id)
+    setPresetId(id)
+    setOpen(false)
+    setQuery('')
+    // Prefill only. Overwriting a URL the user typed would lose their work.
+    if (next && next.baseUrl.length > 0) setBaseUrl(next.baseUrl)
+    if (next && next.modelHint.length > 0 && modelId.trim().length === 0) setModelId(next.modelHint)
+    if (next && !next.needsKey) setApiKey('')
+  }
+
   const reset = (): void => {
     setEditingId(null)
-    setLabel('')
-    setBaseUrl('')
+    setPresetId('openrouter')
+    setQuery('')
+    setBaseUrl(PROVIDER_PRESETS[0]?.baseUrl ?? '')
     setApiKey('')
-    setModelsText('')
+    setRevealKey(false)
+    setModelId('')
+    setMoreModels('')
+    setName('')
+    setShowAdvanced(false)
     setReport(null)
   }
 
   const edit = (provider: SavedProvider): void => {
     setEditingId(provider.id)
-    setLabel(provider.label)
+    setName(provider.label)
     setBaseUrl(provider.baseUrl)
-    // The stored key is deliberately not fetched: it never leaves the main
-    // process. Leaving this blank keeps the existing key.
+    // Preset is a guess: a provider saved by hand has no preset, and claiming
+    // otherwise would silently rewrite its URL on the next edit.
+    const match = PROVIDER_PRESETS.find((p) => p.baseUrl === provider.baseUrl)
+    setPresetId(match?.id ?? 'custom')
+    setModelId(provider.models[0] ?? '')
+    setMoreModels(provider.models.slice(1).join('\n'))
+    // The stored key never leaves the main process, so this stays blank and
+    // leaving it blank keeps the key.
     setApiKey('')
-    setModelsText(provider.models.join('\n'))
     setReport(null)
   }
 
   const save = async (): Promise<void> => {
-    const models = parseModels(modelsText)
     if (models.length === 0) {
-      setReport({ ok: false, tone: 'warn', text: 'Add at least one model id.' })
+      setReport({ ok: false, tone: 'warn', text: 'Enter a model id, copied from your provider.' })
       return
     }
     setBusy(true)
@@ -89,14 +142,15 @@ export function CustomProviderSection(): React.ReactElement {
     try {
       const result = await window.cryptoric.models.saveCustomProvider({
         ...(editingId ? { id: editingId } : {}),
-        label: label.trim(),
+        // A custom entry may have no name of its own; the preset's label is
+        // better than a blank row in the list.
+        label: name.trim().length > 0 ? name.trim() : (preset?.label ?? 'Custom provider'),
         baseUrl: baseUrl.trim(),
-        // An empty string while editing means "keep the key I already stored".
         ...(apiKey.trim().length > 0 ? { apiKey: apiKey.trim() } : {}),
         models
       })
       if (result.ok) {
-        setReport({ ok: true, tone: 'ok', text: `Saved "${label.trim()}". Its models are selectable now.` })
+        setReport({ ok: true, tone: 'ok', text: `Saved. Its models are selectable now.` })
         reset()
         await load()
       } else {
@@ -124,37 +178,124 @@ export function CustomProviderSection(): React.ReactElement {
     }
   }
 
-  const modelCount = parseModels(modelsText).length
+  // ---- empty state -------------------------------------------------------
+  if (saved.length === 0 && !open && editingId === null && !report) {
+    return (
+      <div
+        className="card card-pad"
+        style={{ display: 'grid', gap: 14, placeItems: 'center', textAlign: 'center', padding: '30px 20px' }}
+      >
+        <div style={{ display: 'grid', gap: 6, maxWidth: 420 }}>
+          <span style={{ fontWeight: 600, fontSize: 15 }}>Connect your first provider</span>
+          <span className="caption">
+            Bring an OpenRouter key, a gateway, or any other OpenAI-compatible service. The key is
+            stored in your OS credential store, never in a project file.
+          </span>
+        </div>
+        <Button
+          variant="primary"
+          onClick={() => {
+            setOpen(true)
+            setReport(null)
+          }}
+        >
+          Add provider
+        </Button>
+        {saved.length > 0 && <SavedList saved={saved} onEdit={edit} onRemove={remove} busy={busy} />}
+      </div>
+    )
+  }
+
+  // ---- saved list only (form closed) -------------------------------------
+  if (!open && editingId === null) {
+    return (
+      <div className="card card-pad" style={{ display: 'grid', gap: 12 }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span style={{ fontWeight: 550 }}>Your providers</span>
+          <div style={{ flex: 1 }} />
+          <Button variant="primary" onClick={() => setOpen(true)}>
+            Add provider
+          </Button>
+        </div>
+        {report && <Chip tone={report.tone}>{report.text}</Chip>}
+        <SavedList saved={saved} onEdit={edit} onRemove={remove} busy={busy} />
+      </div>
+    )
+  }
+
+  // ---- the form ----------------------------------------------------------
+  const needsKey = preset !== undefined && preset.needsKey !== false
 
   return (
-    <div className="card card-pad" style={{ display: 'grid', gap: 12 }}>
-      <div style={{ display: 'grid', gap: 4 }}>
-        <span style={{ fontWeight: 550 }}>Your own provider</span>
-        <span className="caption">
-          Any OpenAI-compatible endpoint: a hosted service, a gateway, or a local server. The key is
-          stored in the OS credential store, never in settings.
-        </span>
+    <div className="card card-pad" style={{ display: 'grid', gap: 16 }}>
+      <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+        <span style={{ fontWeight: 600, fontSize: 15 }}>{editingId ? 'Edit provider' : 'Add provider'}</span>
+        <div style={{ flex: 1 }} />
+        <Button variant="ghost" onClick={() => { reset(); setOpen(false) }}>
+          Back
+        </Button>
       </div>
 
       {report && <Chip tone={report.tone}>{report.text}</Chip>}
 
-      <div style={{ display: 'grid', gap: 6 }}>
-        <label className="caption" htmlFor="cp-label">
-          Name
-        </label>
-        <input
-          id="cp-label"
-          className="palette-input"
-          placeholder="My gateway"
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-        />
-      </div>
+      <Field id="cp-preset" label="Provider">
+        <div style={{ position: 'relative', display: 'grid' }}>
+          <button
+            id="cp-preset"
+            type="button"
+            className="palette-input"
+            style={{ textAlign: 'left', cursor: 'pointer' }}
+            onClick={() => setOpen((v) => v)}
+            aria-expanded={open}
+          >
+            {preset?.label ?? 'Select a provider'}
+          </button>
+          {open && (
+            <div
+              className="card"
+              style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 20, marginTop: 4, padding: 6, maxHeight: 260, overflowY: 'auto' }}
+            >
+              <input
+                className="palette-input"
+                autoFocus
+                placeholder="Search providers..."
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  // Escape closes without selecting, so a stray keystroke
+                  // cannot quietly rewrite the URL.
+                  if (e.key === 'Escape') {
+                    setOpen(false)
+                    setQuery('')
+                  }
+                }}
+              />
+              <div style={{ display: 'grid', gap: 2, marginTop: 6 }}>
+                {results.length === 0 && <span className="caption" style={{ padding: 8 }}>No provider matches that.</span>}
+                {results.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className="row"
+                    style={{ background: 'transparent', border: 0, padding: '8px 10px', cursor: 'pointer', textAlign: 'left', color: 'inherit', borderRadius: 6 }}
+                    onClick={() => choosePreset(p.id)}
+                  >
+                    <span style={{ fontWeight: p.id === presetId ? 600 : 450 }}>{p.label}</span>
+                    {p.baseUrl.length > 0 && <span className="caption" style={{ marginLeft: 'auto' }}>{p.needsKey ? 'key required' : 'no key'}</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+        {preset !== undefined && preset.baseUrl.length > 0 && (
+          <span className="caption">
+            Requests go to <code style={{ color: 'var(--accent)' }}>{preset.baseUrl}</code>. You can change it below.
+          </span>
+        )}
+      </Field>
 
-      <div style={{ display: 'grid', gap: 6 }}>
-        <label className="caption" htmlFor="cp-url">
-          Base URL
-        </label>
+      <Field id="cp-url" label="Base URL" hint="Edit this if you use a gateway or a self-hosted server.">
         <input
           id="cp-url"
           className="palette-input"
@@ -163,76 +304,143 @@ export function CustomProviderSection(): React.ReactElement {
           value={baseUrl}
           onChange={(e) => setBaseUrl(e.target.value)}
         />
-      </div>
+      </Field>
 
-      <div style={{ display: 'grid', gap: 6 }}>
-        <label className="caption" htmlFor="cp-key">
-          API key {editingId ? '(leave blank to keep the stored key)' : '(a local server needs none)'}
-        </label>
+      <Field
+        id="cp-key"
+        label="API key"
+        hint={
+          needsKey
+            ? 'Saved in your OS credential store. It is never written to a project file, and never sent back to this screen.'
+            : 'This is a local server, so it does not need a key.'
+        }
+      >
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            id="cp-key"
+            className="palette-input"
+            style={{ flex: 1 }}
+            type={revealKey ? 'text' : 'password'}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={needsKey ? 'Paste your API key' : 'Not required'}
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+          {needsKey && (
+            <Button variant="ghost" onClick={() => setRevealKey((v) => !v)}>
+              {revealKey ? 'Hide' : 'Show'}
+            </Button>
+          )}
+        </div>
+        {editingId && apiKey.trim().length === 0 && (
+          <span className="caption">Leave blank to keep the key already stored for this provider.</span>
+        )}
+      </Field>
+
+      <Field id="cp-model" label="Model ID" hint="Copy the exact ID from your provider. A wrong id fails as a 404 with nothing useful in it.">
         <input
-          id="cp-key"
+          id="cp-model"
           className="palette-input"
-          type="password"
-          autoComplete="off"
+          placeholder="provider/model-name"
           spellCheck={false}
-          placeholder="sk-..."
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
+          value={modelId}
+          onChange={(e) => setModelId(e.target.value)}
         />
-      </div>
+      </Field>
 
-      <div style={{ display: 'grid', gap: 6 }}>
-        <label className="caption" htmlFor="cp-models">
-          Models — one per line, exactly as your provider spells them
-          {modelCount > 0 && ` (${modelCount})`}
-        </label>
-        <textarea
-          id="cp-models"
-          className="palette-input"
-          rows={4}
-          spellCheck={false}
-          placeholder={'my-model-1\nmy-model-2'}
-          value={modelsText}
-          onChange={(e) => setModelsText(e.target.value)}
-        />
-      </div>
-
-      <div className="row" style={{ gap: 8 }}>
-        <Button
-          variant="primary"
-          disabled={busy || label.trim().length === 0 || baseUrl.trim().length === 0 || modelCount === 0}
-          onClick={() => void save()}
+      <div>
+        <button
+          type="button"
+          className="row"
+          style={{ background: 'transparent', border: 0, padding: 0, cursor: 'pointer', color: 'inherit', gap: 8 }}
+          onClick={() => setShowAdvanced((v) => !v)}
+          aria-expanded={showAdvanced}
         >
-          {editingId ? 'Update provider' : 'Add provider'}
-        </Button>
-        {editingId && (
-          <Button variant="ghost" onClick={reset}>
-            Cancel
-          </Button>
+          <span style={{ transform: showAdvanced ? 'rotate(90deg)' : 'none', transition: 'transform 120ms' }}>▶</span>
+          <span style={{ fontWeight: 550 }}>Advanced settings</span>
+          <span className="caption">Name and extra models</span>
+        </button>
+
+        {showAdvanced && (
+          <div style={{ display: 'grid', gap: 14, paddingTop: 12 }}>
+            <Field id="cp-name" label="Name" hint="Shown in the provider list. Defaults to the provider you picked.">
+              <input
+                id="cp-name"
+                className="palette-input"
+                placeholder={preset?.label ?? 'My provider'}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </Field>
+
+            <Field id="cp-more" label="Extra models" hint={`One per line. ${extraModels.length} added.`}>
+              <textarea
+                id="cp-more"
+                className="palette-input"
+                rows={3}
+                spellCheck={false}
+                placeholder={'my-model-2\nmy-model-3'}
+                value={moreModels}
+                onChange={(e) => setMoreModels(e.target.value)}
+              />
+            </Field>
+          </div>
         )}
       </div>
 
-      {saved.length > 0 && (
-        <div style={{ display: 'grid', gap: 6, borderTop: '1px solid var(--line)', paddingTop: 10 }}>
-          <span className="caption">Saved providers</span>
-          {saved.map((provider) => (
-            <div key={provider.id} className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <div className="row-label" style={{ display: 'grid', minWidth: 0 }}>
-                <span style={{ fontWeight: 550 }}>{provider.label}</span>
-                <span className="caption">
-                  {provider.baseUrl} · {provider.models.length} model(s)
-                </span>
-              </div>
-              <Button variant="ghost" disabled={busy} onClick={() => edit(provider)}>
-                Edit
-              </Button>
-              <Button variant="ghost" disabled={busy} onClick={() => void remove(provider.id)}>
-                Remove
-              </Button>
-            </div>
-          ))}
+      <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+        <span className="caption">
+          {models.length === 0 ? 'Enter a model id to save.' : `${models.length} model${models.length === 1 ? '' : 's'} will be added.`}
+        </span>
+        <div style={{ flex: 1 }} />
+        <Button
+          variant="ghost"
+          onClick={() => {
+            reset()
+            setOpen(false)
+          }}
+        >
+          Cancel
+        </Button>
+        <Button
+          variant="primary"
+          disabled={busy || baseUrl.trim().length === 0 || models.length === 0}
+          onClick={() => void save()}
+        >
+          {editingId ? 'Update provider' : 'Save provider'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function SavedList(props: {
+  saved: SavedProvider[]
+  onEdit: (p: SavedProvider) => void
+  onRemove: (id: string) => void
+  busy: boolean
+}): React.ReactElement | null {
+  if (props.saved.length === 0) return null
+  return (
+    <div style={{ display: 'grid', gap: 6, width: '100%', marginTop: 8 }}>
+      {props.saved.map((provider) => (
+        <div key={provider.id} className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div className="row-label" style={{ display: 'grid', minWidth: 0 }}>
+            <span style={{ fontWeight: 550 }}>{provider.label}</span>
+            <span className="caption">
+              {provider.baseUrl} · {provider.models.length} model{provider.models.length === 1 ? '' : 's'}
+            </span>
+          </div>
+          <Chip tone="ok">key saved</Chip>
+          <Button variant="ghost" disabled={props.busy} onClick={() => props.onEdit(provider)}>
+            Edit
+          </Button>
+          <Button variant="ghost" disabled={props.busy} onClick={() => void props.onRemove(provider.id)}>
+            Remove
+          </Button>
         </div>
-      )}
+      ))}
     </div>
   )
 }

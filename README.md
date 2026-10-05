@@ -159,15 +159,24 @@ has.
   puts an app on a phone.
 ### Bring your own API
 
-Settings → Models → **Your own provider**. Three separate fields, because they
-are three different things: a **base URL** (where requests go), an **API key**
-(written straight to the OS credential store, never to settings and never back
-to the renderer), and the **model ids** the endpoint serves, one per line.
+Settings → Models → **Add provider**. Pick the provider from a searchable list
+(OpenRouter, OpenAI, Ollama, LM Studio, Groq, Together, Mistral, DeepSeek, or
+Custom) and the base URL and a real model id are filled in for you.
 
-Any OpenAI-compatible endpoint works — a hosted service, a gateway, or a local
-Ollama. A local server is not asked for a key, editing a provider does not make
-you retype the stored one, and saving the same name again updates it rather than
-creating a duplicate.
+Three things stay deliberately separate, because they are three different kinds
+of thing:
+
+- **Base URL** — prefilled from your choice, and still editable. A preset is a
+  shortcut, not a restriction, so your own gateway is always allowed.
+- **API key** — written straight to the OS credential store. Never in settings,
+  never in a project file, never sent back to the renderer. Local servers are
+  not asked for one.
+- **Model ID** — copy it from the provider rather than guessing; a wrong id
+  fails as a 404 with nothing useful in it.
+
+Extra models and a custom name sit under **Advanced settings**. Editing a
+provider never makes you retype its stored key, and saving the same name again
+updates it rather than creating a duplicate.
 
 ### Your own model server
 
