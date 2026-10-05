@@ -547,15 +547,25 @@ describe('end to end through the real write_file tool', () => {
     const { stage, ctx, task } = pipeline({
       prompt: 'Create a file named CRYPTORIC_AGENT_TEST.md containing execution test',
       model: async () => {
-        const result = (await runtime.invoke(
+        const result = await runtime.invoke(
           'write_file',
           { path: 'CRYPTORIC_AGENT_TEST.md', content: 'execution test' },
           { projectRoot: root, grantedTier: 'destructive' }
-        )) as { ok: boolean; data?: { path?: string } }
+        )
+
+        // §5: the tool result is structured, so the model and the engine reason
+        // over the same facts rather than over a prose summary.
+        expect(result.operation).toBe('write')
+        expect(result.filesCreated).toHaveLength(1)
+        expect(result.filesChanged).toHaveLength(1)
+        expect(result.filesDeleted).toEqual([])
+        expect(result.filesRenamed).toEqual([])
+        expect(result.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+        expect(typeof result.durationMs).toBe('number')
 
         return {
           ok: result.ok,
-          text: `Wrote ${String(result.data?.path)}`,
+          text: `Wrote CRYPTORIC_AGENT_TEST.md`,
           error: null,
           tools: ['write_file'],
           toolCalls: 1,
@@ -583,5 +593,103 @@ describe('end to end through the real write_file tool', () => {
   it('reports a writable project as writable', () => {
     expect(isProjectWritable(root)).toBe(true)
     expect(isProjectWritable(join(root, 'does-not-exist'))).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// §5 — tool results are structured and authoritative
+// ---------------------------------------------------------------------------
+
+describe('tool results are structured', () => {
+  const build = () => {
+    const policy = new PermissionPolicy()
+    const approvals = new ApprovalQueue()
+    const registry = new ToolRegistry()
+    for (const tool of buildFilesystemTools({
+      files: new FileService(() => [root]),
+      policy,
+      getRoots: () => [root]
+    })) {
+      registry.register(tool)
+    }
+    const runtime = new ToolRuntime({ registry, policy, approvals })
+    const answer = setInterval(() => {
+      for (const request of approvals.list()) approvals.resolve(request.id, true)
+    }, 2)
+    return { runtime, stop: () => clearInterval(answer) }
+  }
+
+  it('reports a created file as created, not merely changed', async () => {
+    const { runtime, stop } = build()
+    try {
+      const result = await runtime.invoke(
+        'write_file',
+        { path: 'made.txt', content: 'x' },
+        { projectRoot: root, grantedTier: 'destructive' }
+      )
+      expect(result.filesCreated).toHaveLength(1)
+      expect(result.filesChanged).toEqual(result.filesCreated)
+    } finally {
+      stop()
+    }
+  })
+
+  it('reports an overwrite as changed but not created', async () => {
+    const { runtime, stop } = build()
+    try {
+      await runtime.invoke('write_file', { path: 'twice.txt', content: 'a' }, { projectRoot: root, grantedTier: 'destructive' })
+      const second = await runtime.invoke(
+        'write_file',
+        { path: 'twice.txt', content: 'b' },
+        { projectRoot: root, grantedTier: 'destructive' }
+      )
+      expect(second.filesCreated).toEqual([])
+      expect(second.filesChanged).toHaveLength(1)
+    } finally {
+      stop()
+    }
+  })
+
+  it('reports a deleted file as deleted', async () => {
+    const { runtime, stop } = build()
+    try {
+      await runtime.invoke('write_file', { path: 'temp.txt', content: 'x' }, { projectRoot: root, grantedTier: 'destructive' })
+      const removed = await runtime.invoke(
+        'delete_file',
+        { path: 'temp.txt' },
+        { projectRoot: root, grantedTier: 'destructive' }
+      )
+      expect(removed.filesDeleted).toHaveLength(1)
+      expect(removed.filesCreated).toEqual([])
+    } finally {
+      stop()
+    }
+  })
+
+  it('classifies a read as an operation that changes nothing', async () => {
+    const { runtime, stop } = build()
+    try {
+      await runtime.invoke('write_file', { path: 'r.txt', content: 'hello' }, { projectRoot: root, grantedTier: 'destructive' })
+      const read = await runtime.invoke('read_file', { path: 'r.txt' }, { projectRoot: root, grantedTier: 'safe' })
+      expect(read.operation).toBe('read')
+      expect(read.filesChanged).toEqual([])
+    } finally {
+      stop()
+    }
+  })
+
+  it('never claims a change from a tool that reported no effect', async () => {
+    const { runtime, stop } = build()
+    try {
+      const missing = await runtime.invoke(
+        'read_file',
+        { path: 'absent.txt' },
+        { projectRoot: root, grantedTier: 'safe' }
+      )
+      expect(missing.ok).toBe(false)
+      expect(missing.filesChanged).toEqual([])
+    } finally {
+      stop()
+    }
   })
 })

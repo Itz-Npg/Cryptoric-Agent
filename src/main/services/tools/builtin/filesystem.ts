@@ -495,7 +495,14 @@ export function buildFilesystemTools(deps: FilesystemToolDeps): ToolDefinition[]
         }
 
         await rm(checked.absolute, { recursive: input.recursive === true, force: false })
-        return ok(`Deleted ${checked.absolute}`, { path: checked.absolute, wasDirectory: info.isDirectory() })
+        // `deleted: true` is what lets the runtime report this as a deletion
+        // rather than as an ambiguous "this path was involved". Without it the
+        // engine cannot tell a delete from a read.
+        return ok(`Deleted ${checked.absolute}`, {
+          path: checked.absolute,
+          deleted: true,
+          wasDirectory: info.isDirectory()
+        })
       }
     ),
 
