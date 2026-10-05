@@ -94,8 +94,15 @@ definitions through the same `ToolRuntime` that enforces tiers, approvals,
 redaction and audit — the `verify` and `redact` guards below are proved there,
 not asserted.
 
-That check now runs in CI under `xvfb`, so a regression in the largest
-subsystem in this project cannot reach `main` unnoticed.
+That check needs a real desktop session and **does not run in CI**. It was
+attempted there under `xvfb` and failed for a specific reason, written up in the
+workflow file: a `WebContentsView` with nothing composited behind it accepts no
+real pointer input and does not answer `capturePage`, so every read-only tool
+passed while `browser_click`, `browser_drag`, `browser_screenshot` and link
+navigation did not. Software-rendering switches did not change that. Marking the
+job `continue-on-error` would put a green tick over a red run, so it was removed
+rather than dressed up. **Until this is solved, a browser regression can reach
+`main` undetected.**
 
 The verify stage uses it too. When a task changes web files, the stage opens the
 page for real and fails the task on console errors or failed requests. It
@@ -114,7 +121,7 @@ has.
 - Agent loop with real tools — `npm run test:agent` → **13/13**
 - Full stage pipeline incl. the evidence gate — `npm run test:agent:pipeline` → **8/8**
 - **Integrated browser** — `npm run test:browser` → **59/59 against real Chromium**,
-  43 tools, now running in CI under `xvfb`
+  43 tools. Desktop only; see the limitation below.
 - Release signing — sign and verify round trip on the real 188 MB installer;
   public key in [`docs/signing/`](docs/signing/SIGNING.md)
 - Coin allowance rules — 14 tests in `tests/unit/coins.test.ts`
@@ -128,10 +135,11 @@ has.
 
 **Not done — stated rather than implied:**
 
-- **The browser check needs a display.** It passes in CI under `xvfb` and on a
-  desktop, but it cannot run under `vitest` — `WebContentsView`, the DevTools
-  protocol and the permission handlers do not exist in Node. There is no
-  headless variant, and inventing one would mean testing a fake.
+- **The browser check does not run in CI.** It passes 59/59 on a desktop, but
+  under `xvfb` the five tools that need a real pointer path or a composited
+  surface fail. Tried and rejected: software-rendering switches. There is no
+  headless variant, and inventing one would mean testing a fake. Until it runs,
+  browser regressions are not caught before `main`.
 - **Runtime installation is Windows-only.** Every installer id is `-winget`;
   there is no apt or brew route. On macOS/Linux the product correctly refuses.
 - **Binaries carry no Authenticode signature.** They are GPG-signed, which
