@@ -71,6 +71,7 @@ const TOOL_META: Record<
   browser_get_title: { category: 'browser', risk: 'safe', timeoutMs: 15_000, mutates: false },
   browser_get_text: { category: 'browser', risk: 'safe', timeoutMs: 30_000, mutates: false },
   browser_get_dom: { category: 'browser', risk: 'safe', timeoutMs: 30_000, mutates: false },
+  browser_inspect_element: { category: 'browser', risk: 'safe', timeoutMs: 45_000, mutates: false },
   browser_query_selector: { category: 'browser', risk: 'safe', timeoutMs: 30_000, mutates: false },
   browser_console_logs: { category: 'browser', risk: 'safe', timeoutMs: 15_000, mutates: false },
   browser_network_requests: { category: 'browser', risk: 'safe', timeoutMs: 15_000, mutates: false },
@@ -817,6 +818,112 @@ export function buildBrowserTools(deps: BrowserToolDeps): ToolDefinition[] {
           truncated: trimmed.truncated,
           originalLength: trimmed.originalLength
         })
+      }
+    ),
+
+    tool(
+      {
+        id: 'browser_inspect_element',
+        label: 'Inspect element',
+        description:
+          "Everything about one element in one call: its markup, the computed styles that decide how it renders, its on-screen box, and a reusable selector. Pick it by selector, or by x/y when a user has pointed at it. This is the tool for 'why does this look like that' — reading markup and computed style separately costs two round trips and invites pairing them with the wrong node.",
+        dependsOn: ['browser_navigate'],
+        tier: 'safe',
+        inputSchema: {}
+      },
+      'browser.read',
+      z.object({
+        selector: z.string().optional().describe('CSS selector for the element.'),
+        index: z.number().int().min(0).optional().describe('Which match, when several. Default 0.'),
+        x: z.number().optional().describe('Pick whatever is under this viewport x, instead of a selector.'),
+        y: z.number().optional().describe('Pick whatever is under this viewport y, instead of a selector.'),
+        includeScreenshot: z.boolean().optional().describe('Also capture the viewport, for visual context. Default false.'),
+        maxChars: z.number().int().min(200).max(200_000).optional().describe('Markup cap. Default 8000.'),
+        tabId: tabIdArg
+      }),
+      async (input: { selector?: string; index?: number; x?: number; y?: number; includeScreenshot?: boolean; maxChars?: number; tabId?: string }, ctx: ToolContext) => {
+        const target = resolveTab(tabs, input.tabId)
+        if (!target.ok) return noTabResult(target)
+
+        // Pointing at something needs both coordinates. Accepting one alone
+        // would silently fall back to the document element and hand back the
+        // whole page labelled as if a specific node had been inspected.
+        const hasX = typeof input.x === 'number'
+        const hasY = typeof input.y === 'number'
+        if (hasX !== hasY) {
+          return fail(
+            'Incomplete coordinates',
+            'Give both x and y to pick an element by point, or neither to use a selector.'
+          )
+        }
+        const byPoint = hasX && hasY && !input.selector
+        if (!byPoint && !input.selector) {
+          return fail(
+            'Nothing to inspect',
+            'Give a selector, or both x and y to pick what is under the pointer.'
+          )
+        }
+
+        const result = await target.page.call('inspect', {
+          selector: byPoint ? undefined : input.selector,
+          index: input.index,
+          x: byPoint ? input.x : undefined,
+          y: byPoint ? input.y : undefined,
+          maxChars: input.maxChars ?? 8000
+        })
+        if (!result.ok) return bridgeResult('Inspect element', result)
+
+        const data = result as Record<string, unknown>
+        const element = (data.element ?? {}) as Record<string, unknown>
+        const tag = String(element.tag ?? '?')
+        const name = String(element.name ?? '')
+        const text = String(element.text ?? '').slice(0, 80)
+
+        const payload: Record<string, unknown> = {
+          selector: data.selector,
+          selectorMatches: data.selectorMatches,
+          pickedBy: data.pickedBy,
+          element,
+          html: data.html,
+          htmlLength: data.htmlLength,
+          htmlTruncated: Number(data.htmlLength ?? 0) > String(data.html ?? '').length,
+          style: data.style,
+          rect: data.rect,
+          url: data.url
+        }
+
+        // Best-effort. The inspection is the point; a capture that fails on a
+        // machine without a compositor must not turn a good answer into a
+        // failure, and must not be reported as if it had succeeded either.
+        if (input.includeScreenshot) {
+          try {
+            const image = await target.page.screenshot()
+            if (image.length > 0) {
+              const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+              const safeTask = (ctx.taskId ?? 'adhoc').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
+              const path = join(tabs.cacheDir, 'screenshots', safeTask, `inspect-${stamp}-${target.tabId.slice(0, 8)}.png`)
+              const written = await writeScreenshot(path, image)
+              const artifact = ctx.recordArtifact({
+                taskId: ctx.taskId ?? null,
+                kind: 'screenshot',
+                path: written.path,
+                bytes: written.bytes,
+                summary: `Viewport containing <${tag}${name ? ` id="${name}"` : ''}>`
+              })
+              payload.screenshot = { path: written.path, bytes: written.bytes, artifactId: artifact.id }
+            } else {
+              payload.screenshot = { error: 'The tab produced an empty image.' }
+            }
+          } catch (error) {
+            payload.screenshot = { error: error instanceof Error ? error.message : String(error) }
+          }
+        }
+
+        return ok(
+          `<${tag}${name ? ` id="${name}"` : ''}> — ${text || 'no text'} · selector ${String(data.selector)} ` +
+            `(${String(data.selectorMatches)} match${Number(data.selectorMatches) === 1 ? '' : 'es'})`,
+          payload
+        )
       }
     ),
 

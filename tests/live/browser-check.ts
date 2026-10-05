@@ -57,6 +57,7 @@ const REQUIRED_BROWSER_TOOLS = [
   'browser_press_key', 'browser_select', 'browser_check', 'browser_uncheck',
   'browser_scroll', 'browser_drag', 'browser_upload_file', 'browser_download_file',
   'browser_get_url', 'browser_get_title', 'browser_get_text', 'browser_get_dom',
+  'browser_inspect_element',
   'browser_query_selector', 'browser_query_all', 'browser_get_attributes',
   'browser_get_computed_style', 'browser_get_accessibility_tree', 'browser_screenshot',
   'browser_console_logs', 'browser_network_requests', 'browser_network_failures',
@@ -408,6 +409,70 @@ async function main(): Promise<void> {
       JSON.stringify(attributeMap)
     )
 
+    // ------------------------------------------------- inspect (Design Mode path)
+    // The three facts Design Mode needs — markup, computed style, a reusable
+    // selector — have to arrive together and agree about which node they
+    // describe. Read one at a time they can be paired with the wrong element.
+    const inspected = await call('browser_inspect_element', { tabId, selector: '#low-contrast' })
+    const inspectData = (inspected.data as {
+      selector?: string
+      selectorMatches?: number
+      element?: { tag?: string; id?: string }
+      html?: string
+      htmlLength?: number
+      htmlTruncated?: boolean
+      style?: Record<string, string>
+    }) ?? {}
+    record(
+      'browser_inspect_element returns markup, style and a reusable selector for one element',
+      inspected.ok &&
+        inspectData.element?.id === 'low-contrast' &&
+        typeof inspectData.html === 'string' &&
+        inspectData.html.includes('low-contrast') &&
+        // The whole point: a selector the agent can feed straight back in.
+        inspectData.selector === '#low-contrast' &&
+        inspectData.selectorMatches === 1,
+      `selector=${String(inspectData.selector)} matches=${String(inspectData.selectorMatches)} html=${String(
+        inspectData.htmlLength
+      )}B`
+    )
+    record(
+      'browser_inspect_element read the real computed style, not a guess',
+      inspected.ok &&
+        typeof inspectData.style?.['color'] === 'string' &&
+        /^rgb/.test(inspectData.style['color']),
+      `color=${String(inspectData.style?.['color'])} display=${String(inspectData.style?.['display'])}`
+    )
+
+    // Design Mode points at pixels rather than naming a selector.
+    const pointed = await call('browser_inspect_element', {
+      tabId,
+      x: 640,
+      y: 392
+    })
+    const pointedData = (pointed.data as { pickedBy?: string; element?: { tag?: string } }) ?? {}
+    record(
+      'browser_inspect_element picks the element under a point, for click-to-inspect',
+      pointed.ok && pointedData.pickedBy === 'point' && typeof pointedData.element?.tag === 'string',
+      `pickedBy=${String(pointedData.pickedBy)} tag=${String(pointedData.element?.tag)}`
+    )
+
+    // Half a coordinate must not silently fall back to the whole document and
+    // hand back a page labelled as if a node had been inspected.
+    const halfPoint = await call('browser_inspect_element', { tabId, x: 640 })
+    record(
+      'browser_inspect_element refuses half a coordinate instead of guessing',
+      !halfPoint.ok && /both x and y/i.test(halfPoint.error ?? ''),
+      halfPoint.ok ? 'accepted a lone x' : String(halfPoint.error)
+    )
+
+    const nothing = await call('browser_inspect_element', { tabId })
+    record(
+      'browser_inspect_element refuses an empty request instead of returning the page',
+      !nothing.ok,
+      nothing.ok ? 'accepted an empty request' : String(nothing.error)
+    )
+
     // ------------------------------------------------------------ computed style
     const style = await call('browser_get_computed_style', { tabId, selector: '#low-contrast', properties: ['color', 'background-color', 'font-size'] })
     const styleData = (style.data as { contrast?: number | null; lowContrast?: boolean; color?: string }) ?? {}
@@ -745,8 +810,9 @@ async function main(): Promise<void> {
     )
     const registered = new Set(registry.list().map((descriptor) => descriptor.id))
     record(
-      'all 43 requested browser tools are registered',
-      registered.size === 43 && missingBrowserTools.every((id) => registered.has(id)),
+      `all ${REQUIRED_BROWSER_TOOLS.length} requested browser tools are registered`,
+      registered.size === REQUIRED_BROWSER_TOOLS.length &&
+        missingBrowserTools.every((id) => registered.has(id)),
       `${registered.size} browser tools registered, ${missingBrowserTools.length} required`
     )
   } catch (err) {

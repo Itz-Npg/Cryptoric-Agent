@@ -565,6 +565,104 @@
       var html = target.outerHTML || ''
       return { ok: true, selector: selector || null, html: clip(html, max), length: html.length }
     },
+    /**
+     * Everything an agent needs to work on one element, in a single round
+     * trip: markup, the properties that decide how it looks, its box, and a
+     * selector it can reuse.
+     *
+     * This exists because the three facts are useless apart. Markup without
+     * computed style says nothing about why an element renders 40px tall;
+     * computed style without markup names properties that cannot be found
+     * again. Reading them through three separate tools also costs three round
+     * trips and invites the agent to correlate them by hand, which is where
+     * "the style is 12px" ends up attached to the wrong element.
+     *
+     * Atomic on purpose: the element is resolved once, here, so the three
+     * halves cannot drift onto different nodes because the page re-rendered
+     * between calls.
+     */
+    inspect: function (args) {
+      var max = (args && args.maxChars) || 8000
+      var node = null
+      var how = null
+
+      if (args && typeof args.x === 'number' && typeof args.y === 'number') {
+        // The Design Mode path: pick by what the user pointed at.
+        var at = document.elementFromPoint(Number(args.x), Number(args.y))
+        if (!at) return { ok: false, reason: 'Nothing at ' + args.x + ',' + args.y }
+        node = at
+        how = 'point'
+      } else if (args && args.selector) {
+        var found = pick(args.selector, args.index)
+        if (!found.ok) return found
+        node = found.node
+        how = 'selector'
+      } else {
+        return { ok: false, reason: 'Give a selector, or x and y to pick what is under the pointer.' }
+      }
+
+      // The properties an agent most often needs to reason about layout and
+      // colour. Not all ~350: a dump this size is unreadable in a transcript
+      // and the interesting ones are always in this set.
+      var PROPERTIES = [
+        'display', 'position', 'width', 'height', 'margin', 'padding',
+        'flex-direction', 'justify-content', 'align-items', 'gap',
+        'grid-template-columns', 'font-size', 'font-weight', 'line-height',
+        'font-family', 'color', 'background-color', 'border',
+        'border-radius', 'box-shadow', 'opacity', 'z-index', 'overflow',
+        'text-align', 'transform'
+      ]
+
+      var computed = window.getComputedStyle(node)
+      var style = {}
+      for (var i = 0; i < PROPERTIES.length; i++) {
+        var value = computed.getPropertyValue(PROPERTIES[i])
+        if (value) style[PROPERTIES[i]] = value
+      }
+
+      // Walk up for a selector that is actually unique enough to reuse. An id
+      // alone is not enough if the id repeats, which real pages do.
+      var parts = []
+      var current = node
+      var depth = 0
+      while (current && current.nodeType === 1 && depth < 6) {
+        var tag = current.tagName.toLowerCase()
+        if (current.id) {
+          // A unique id is the shortest selector that still names this exact
+          // node, so use it alone. `p#low-contrast` also matches exactly one
+          // element but reads like a mistake to anyone who sees it in a prompt.
+          var idUnique = document.querySelectorAll('#' + CSS.escape(current.id)).length === 1
+          parts.push(idUnique ? '#' + CSS.escape(current.id) : tag + '[id="' + current.id + '"]')
+          break
+        }
+        var cls = (current.className && typeof current.className === 'string')
+          ? current.className.trim().split(/\s+/).slice(0, 2).join('.')
+          : ''
+        parts.push(cls ? tag + '.' + cls.split('.').map(function (c) { return CSS.escape(c) }).join('.') : tag)
+        current = current.parentElement
+        depth++
+      }
+      var selector = parts.join(' > ')
+
+      return {
+        ok: true,
+        pickedBy: how,
+        selector: selector,
+        selectorMatches: (function () {
+          try {
+            return document.querySelectorAll(selector).length
+          } catch (err) {
+            return -1
+          }
+        })(),
+        element: describe(node, 0),
+        html: clip(node.outerHTML || '', max),
+        htmlLength: (node.outerHTML || '').length,
+        style: style,
+        rect: rectOf(node),
+        url: location.href
+      }
+    },
     query: function (args) {
       var selector = args.selector
       var limit = Math.min(args.limit || 50, MAX_NODES)
