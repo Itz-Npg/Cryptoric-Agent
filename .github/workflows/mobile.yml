@@ -1,0 +1,99 @@
+# Cryptoric Agent — mobile companion CI
+#
+# Why this exists separately from the main build: the companion is Swift, and
+# Swift cannot be compiled or tested on Linux. GitHub's macOS runners have a
+# full Xcode toolchain, so the model and relay-client logic — where the real
+# bugs are — get genuinely compiled and unit tested on every push.
+#
+# What is NOT claimed, and cannot be:
+#
+#   - Nothing here installs the app on a device or simulator. `swift test`
+#     runs the logic; it does not launch a UI.
+#   - App Store or TestFlight submission needs a paid Apple Developer Program
+#     membership and certificates only the account holder can create. This
+#     workflow never touches them.
+#   - The SwiftUI views are *typechecked* because they are compiled into the
+#     library, but they are never rendered. "Compiles" is not "looks right",
+#     and pretending otherwise would be the exact overclaim this project
+#     corrects for elsewhere.
+#
+# Android builds and runs in `mobile-android.yml` for the same reason: a real
+# build artifact, verifiable with no account at all.
+
+name: Mobile companion
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    name: iOS companion (compile + test)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the toolchain
+        # Pinned in the log so a failure is diagnosable without guessing which
+        # Swift version produced it.
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Build
+        # `swift build`, not `xcodebuild`: the package has no app target and no
+        # signing requirement, so nothing here needs a developer account.
+        working-directory: mobile/ios
+        run: swift build
+
+      - name: Test
+        working-directory: mobile/ios
+        # `path` points at the package directory, so `Package.swift` is found
+        # without the working-directory step masking a wrong path.
+        run: swift test --package-path mobile/ios
+
+      - name: Confirm the tests actually ran
+        # A green tick from `swift test` on a package with no test target is
+        # indistinguishable from a real pass in the job summary.
+        run: |
+          set -o pipefail
+          swift test --package-path mobile/ios 2>&1 | tee /tmp/swift-test.log
+          if ! grep -qE "Executed [0-9]+ tests?" /tmp/swift-test.log; then
+            echo "::error::No 'Executed N tests' line — the suite may not have run."
+            exit 1
+          fi
+          COUNT="$(grep -oE "Executed [0-9]+ tests?" /tmp/swift-test.log | tail -1 | grep -oE '[0-9]+')"
+          echo "executed=$COUNT"
+          if [ "$COUNT" -lt 10 ]; then
+            echo "::error::Only $COUNT tests executed; a partial run must not read as a pass."
+            exit 1
+          fi
+
+  relay:
+    name: Relay protocol tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test the relay
+        # The relay is the other half of the wire contract. If only the Swift
+        # side is tested, a field renamed on one side still ships broken.
+        run: node --test mobile/relay/test/
