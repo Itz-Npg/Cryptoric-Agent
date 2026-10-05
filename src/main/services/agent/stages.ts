@@ -236,29 +236,157 @@ function implementStage(deps: PipelineDeps): Stage {
 }
 
 // ---------------------------------------------------------------------------
-// 4. DEBUGGER / TESTER
+// 4. VERIFIER
 // ---------------------------------------------------------------------------
 
-function verifyStage(_deps: PipelineDeps): Stage {
+/**
+ * Checks that are worth running for a JavaScript project, in the order that
+ * fails fastest and cheapest.
+ *
+ * Each entry names the manifest script it wants. A script the project does not
+ * declare is skipped and reported as skipped — not silently treated as a pass.
+ * That distinction is the whole reason this stage exists.
+ */
+const JS_CHECKS: { script: string; label: string; argv: (pm: string) => { command: string; args: string[] } }[] = [
+  {
+    script: 'typecheck',
+    label: 'typecheck',
+    argv: (pm) => ({ command: pm, args: ['run', 'typecheck'] })
+  },
+  { script: 'lint', label: 'lint', argv: (pm) => ({ command: pm, args: ['run', 'lint'] }) },
+  { script: 'test', label: 'test', argv: (pm) => ({ command: pm, args: ['test'] }) },
+  { script: 'build', label: 'build', argv: (pm) => ({ command: pm, args: ['run', 'build'] }) }
+]
+
+interface CheckResult {
+  label: string
+  /** `pass` | `fail` | `skip` | `error`. Never anything else. */
+  outcome: 'pass' | 'fail' | 'skip' | 'error'
+  detail: string
+}
+
+/**
+ * Run the project's own checks and report what actually happened.
+ *
+ * The previous version of this stage called `list_running_processes` and
+ * returned "N supervised process(es)", which the UI rendered as **"Ran tests and
+ * verified"**. Nothing was run and nothing was verified. That is the specific
+ * failure the product requirement forbids: a stage that marks itself complete
+ * without performing the work it names.
+ *
+ * Every result here is derived from a real `run_command` exit code. A check the
+ * project does not define reports `skip` and says so; a check that errors
+ * reports the error. Neither is reported as a pass.
+ */
+function verifyStage(deps: PipelineDeps): Stage {
   return {
     role: 'TESTER',
     name: 'verify',
     maxTier: 'ask',
     async run(ctx: StageContext): Promise<StageOutcome> {
-      const processes = await ctx.call('list_running_processes', {})
-      const count = ((processes.data as unknown[] | undefined) ?? []).length
-      const stale = ((processes.data as { envStale?: boolean }[] | undefined) ?? []).filter((p) => p.envStale).length
+      const project = deps.getProject()
+      if (!project) {
+        return { continue: false, status: 'FAILED', summary: 'No project is open, so there is nothing to verify.' }
+      }
 
-      if (stale > 0) {
-        ctx.note(`${stale} process(es) predate the current environment snapshot`, 'info')
+      const pm = project.packageManager ?? 'npm'
+      const declared = project.scripts ?? {}
+      const results: CheckResult[] = []
+
+      for (const check of JS_CHECKS) {
+        if (ctx.signal.aborted) {
+          return { continue: false, status: 'CANCELLED', summary: 'Stopped during verification.' }
+        }
+
+        if (!declared[check.script]) {
+          results.push({
+            label: check.label,
+            outcome: 'skip',
+            detail: `the project declares no "${check.script}" script`
+          })
+          ctx.note(`skipped ${check.label} — the project declares no "${check.script}" script`, 'info')
+          continue
+        }
+
+        const { command, args } = check.argv(pm)
+        ctx.note(`running ${pm} ${args.join(' ')}`, 'info')
+
+        const run = await ctx.call('run_command', { command, args, cwd: project.root })
+        const code = exitCodeOf(run)
+        const tail = tailOf(run, 400)
+
+        if (!run.ok) {
+          results.push({ label: check.label, outcome: 'error', detail: run.error ?? run.summary })
+          ctx.note(`${check.label} could not run: ${run.error ?? run.summary}`, 'error')
+          continue
+        }
+        if (code === 0) {
+          results.push({ label: check.label, outcome: 'pass', detail: 'exit 0' })
+          ctx.note(`${check.label} passed`, 'ok')
+          continue
+        }
+
+        results.push({ label: check.label, outcome: 'fail', detail: `exit ${code}${tail ? ` — ${tail}` : ''}` })
+        ctx.note(`${check.label} FAILED (exit ${code})`, 'error')
+      }
+
+      const passed = results.filter((r) => r.outcome === 'pass')
+      const failed = results.filter((r) => r.outcome === 'fail' || r.outcome === 'error')
+      const skipped = results.filter((r) => r.outcome === 'skip')
+
+      // Browser verification is reported as not applicable unless browser tools
+      // exist. There are none in this build, so claiming a visual pass would be
+      // the exact fabrication this stage is meant to stop.
+      const browserApplicable = false
+      const browserNote = browserApplicable
+        ? 'Browser checks ran.'
+        : 'Browser verification not run — no browser tools are registered in this build.'
+      ctx.note(browserNote, 'info')
+
+      const lines = [
+        ...results.map(
+          (r) =>
+            `- ${r.label}: ${r.outcome === 'pass' ? 'passed' : r.outcome === 'skip' ? 'SKIPPED' : 'FAILED'} (${r.detail})`
+        ),
+        `- browser: NOT RUN — ${browserNote.replace('Browser verification ', '')}`
+      ]
+
+      if (failed.length > 0) {
+        // A failing check is a real outcome. The task ends here rather than
+        // continuing to a review that would report success.
         return {
-          continue: true,
-          summary: `${count} supervised process(es). ${stale} still carry an older environment; restart them to pick up the refreshed toolchain.`
+          continue: false,
+          status: 'FAILED',
+          summary:
+            `Verification failed — ${failed.length} of ${results.length} checks did not pass ` +
+            `(${passed.length} passed, ${skipped.length} skipped):\n${lines.join('\n')}`
         }
       }
-      return { continue: true, summary: `${count} supervised process(es), all on the current environment.` }
+
+      return {
+        continue: true,
+        summary:
+          `Verification: ${passed.length} passed, ${skipped.length} skipped, 0 failed.\n${lines.join('\n')}`
+      }
     }
   }
+}
+
+/** Exit code out of a tool result, or null when the tool did not report one. */
+function exitCodeOf(result: { data?: unknown; summary?: string; ok: boolean }): number | null {
+  const data = result.data as { exitCode?: unknown; code?: unknown } | undefined
+  const raw = data?.exitCode ?? data?.code
+  if (typeof raw === 'number') return raw
+  const m = /exit(?: code)?\s+(\d+)/i.exec(result.summary ?? '')
+  return m ? Number(m[1]) : null
+}
+
+/** Last few lines of command output, for a failure report. */
+function tailOf(result: { data?: unknown; summary?: string }, max: number): string {
+  const data = result.data as { stdout?: unknown; stderr?: unknown } | undefined
+  const text = `${data?.stdout ?? ''}\n${data?.stderr ?? ''}`.trim()
+  if (!text) return result.summary ?? ''
+  return text.length > max ? `…${text.slice(-max)}` : text
 }
 
 // ---------------------------------------------------------------------------

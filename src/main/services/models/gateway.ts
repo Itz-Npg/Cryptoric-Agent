@@ -602,6 +602,14 @@ export interface ModelGatewayDeps {
    * request is indistinguishable from a hang.
    */
   note?: (message: string) => void
+  /**
+   * Deadline for one POST, in ms. Defaults to 120s.
+   *
+   * Injectable so the bound can be tested in milliseconds rather than waited
+   * out in real time. It used to be a module constant, which made the single
+   * most important guarantee in this file impossible to assert.
+   */
+  attemptTimeoutMs?: number
 }
 
 /**
@@ -689,8 +697,18 @@ export class ModelGateway {
    * treats a provider failure as the end of the run, so one burst of rate
    * limiting would look to the user exactly like the model giving up mid-task.
    *
-   * The waits are the measured ones, not a guess: a plain 1/2/4 second ladder
-   * gave up at 7 seconds total and still failed.
+   * **Every attempt is bounded, always.** This used to read
+   * `signal: signal ?? AbortSignal.timeout(120_000)`, which applied the deadline
+   * only when the caller passed no signal — and the agent loop always passes one.
+   * So in the only path that mattered there was no deadline at all: a provider
+   * that accepted the connection and then stopped answering held `await
+   * complete()` open forever, the stage never returned, and the task sat in
+   * RUNNING for the rest of the session. `AbortSignal.any` composes the caller's
+   * cancellation with the per-attempt deadline instead of choosing between them.
+   *
+   * The backoff sleeps are abortable for the same reason. A plain
+   * `setTimeout` promise keeps a stopped task alive for the remaining 38s of the
+   * ladder, which reads to the user as "Stop did nothing".
    *
    * Only 429 and 5xx are retried. A retry re-issues the request, so it is
    * surfaced as a note rather than done silently.
@@ -701,18 +719,39 @@ export class ModelGateway {
     payload: Record<string, unknown>,
     signal: AbortSignal | undefined
   ): Promise<Response> {
-    const backoffMs = [3000, 10_000, 25_000]
-    const maxAttempts = backoffMs.length + 1
+    const backoff = [3000, 10_000, 25_000]
+    const maxAttempts = backoff.length + 1
+    const attemptTimeoutMs = this.deps.attemptTimeoutMs ?? ATTEMPT_TIMEOUT_MS
     let last: Response | null = null
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (signal?.aborted) break
-      const res = await fetch(url, {
-        method: 'POST',
-        headers,
-        signal: signal ?? AbortSignal.timeout(120_000),
-        body: JSON.stringify(payload)
-      })
+
+      const deadline = AbortSignal.timeout(attemptTimeoutMs)
+      // The caller cancelling must still cancel the socket, and the deadline must
+      // still fire when the caller has no opinion. Both, always.
+      const combined = signal ? AbortSignal.any([signal, deadline]) : deadline
+
+      let res: Response
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers,
+          signal: combined,
+          body: JSON.stringify(payload)
+        })
+      } catch (err) {
+        // A deadline that fires mid-request surfaces here as an AbortError, and
+        // it must be reported as a timeout rather than re-issued forever.
+        if (deadline.aborted || combined.aborted) {
+          this.deps.note?.(`model request aborted after ${attemptTimeoutMs}ms`)
+          return new Response(
+            JSON.stringify({ error: { message: `No answer within ${attemptTimeoutMs}ms.` } }),
+            { status: 504, headers: { 'Content-Type': 'application/json' } }
+          )
+        }
+        throw err
+      }
 
       if (res.ok) return res
 
@@ -726,12 +765,12 @@ export class ModelGateway {
       // Honour a server-sent Retry-After when it is a sane number of seconds,
       // otherwise the measured ladder.
       const header = Number(res.headers.get('retry-after'))
-      const fallback = backoffMs[Math.min(attempt - 1, backoffMs.length - 1)] ?? 5000
+      const fallback = backoff[Math.min(attempt - 1, backoff.length - 1)] ?? 5000
       const waitMs = Number.isFinite(header) && header > 0 && header <= 60 ? header * 1000 : fallback
       this.deps.note?.(
         `model endpoint returned ${res.status}, retrying in ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1} of ${maxAttempts})`
       )
-      await new Promise((r) => setTimeout(r, waitMs))
+      if (!(await sleepOrAbort(waitMs, signal))) break
     }
 
     return last ?? new Response('request aborted', { status: 499 })
@@ -1075,6 +1114,37 @@ export class ModelGateway {
 
 function todayUtc(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+/**
+ * Deadline for a single POST.
+ *
+ * A reasoning model can legitimately think for a while, so this is generous —
+ * but generous is not unbounded. The agent loop's own `modelTimeoutMs` is the
+ * outer ceiling; this is the inner one that guarantees the socket closes even if
+ * nothing upstream is watching.
+ */
+const ATTEMPT_TIMEOUT_MS = 120_000
+
+/**
+ * Wait, but stop waiting the moment the caller cancels.
+ *
+ * Resolves false when interrupted, so the caller can abandon the retry ladder
+ * rather than sleeping out the remainder of it.
+ */
+function sleepOrAbort(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false)
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve(true)
+    }, ms)
+    function onAbort(): void {
+      clearTimeout(timer)
+      resolve(false)
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 function failed(usage: UsageRecord, model: string, error: string): CompletionResult {

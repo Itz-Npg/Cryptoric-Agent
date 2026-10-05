@@ -31,7 +31,8 @@ import { BrowserTabManager } from './services/browser/tabs'
 import { buildBrowserTools } from './services/browser/tools'
 import { AgentRuntime } from './services/agent/core'
 import { buildPipeline } from './services/agent/stages'
-import { runAgentLoop } from './services/agent/loop'
+import { runAgentLoop, describeExecution } from './services/agent/loop'
+import { formatExecutionLog, heartbeatLine } from './services/agent/execution'
 import { ConversationStore, deriveTitle } from './services/agent/conversation'
 import type { StageContext } from './services/agent/pipeline-types'
 import { IpcRouter } from './ipc/router'
@@ -360,7 +361,10 @@ async function boot(): Promise<Services> {
         maxTokens: 700,
         signal: ctx.signal
       })
-      if (!result.ok) return { ok: false, text: '', error: result.error, tools: [] }
+      if (!result.ok) {
+        ctx.note(formatExecutionLog('PLAN_FAILED', result.error ?? 'unknown error'), 'error')
+        return { ok: false, text: '', error: result.error, tools: [] }
+      }
       const text = result.text.trim()
       return {
         ok: true,
@@ -376,7 +380,13 @@ async function boot(): Promise<Services> {
         listTools: () => tools.list(),
         invoke: (toolId, args) => agent.invoke(ctx.task, toolId, args, ctx.signal, 'elevated'),
         note: (message, status) => ctx.note(message, status ?? 'info'),
-        record: (role, text, tool, ok) => recordTurn({ role, text, tool, ok })
+        record: (role, text, tool, ok) => recordTurn({ role, text, tool, ok }),
+        // Surface what the loop is doing while it does it. The reported symptom
+        // was a frozen screen with no indication of anything; a heartbeat that
+        // says "waiting for the model, 41s" turns a mystery into an answer.
+        heartbeat: (beat) => {
+          ctx.note(formatExecutionLog('HEARTBEAT', heartbeatLine(beat)), 'info')
+        }
       },
       {
         systemPrompt: chanSystemPrompt(ctx.task.projectRoot),
@@ -385,6 +395,13 @@ async function boot(): Promise<Services> {
         signal: ctx.signal
       }
     )
+
+    // Structured, timestamped, greppable. A hang found in a log is a hang that
+    // can be explained; a hang found in a screenshot is a hang that can only be
+    // guessed at.
+    for (const line of describeExecution(outcome)) {
+      ctx.note(line, line.includes('FAILED') || line.includes('TIMEOUT') ? 'error' : 'info')
+    }
 
     return { ok: outcome.ok, text: outcome.text, error: outcome.error, tools: outcome.called }
   }
