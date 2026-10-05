@@ -272,7 +272,8 @@ describe('the real verify stage', () => {
         hasTool: () => options.hasBrowserTools,
         workspaceRoots: [],
         skillContext: '',
-        selectedSkills: []
+        selectedSkills: [],
+    session: null
       })
   }
 

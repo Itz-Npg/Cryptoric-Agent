@@ -501,7 +501,8 @@ function verifyRun(scripts: Record<string, string>, exitFor: (cmd: string) => nu
       hasTool: () => false,
       workspaceRoots: [],
       skillContext: '',
-      selectedSkills: []
+      selectedSkills: [],
+    session: null
     })
     .then((outcome) => ({ outcome, ran, notes }))
 }
@@ -560,7 +561,8 @@ describe('verification runs real checks', () => {
         hasTool: () => false,
         workspaceRoots: [],
         skillContext: '',
-        selectedSkills: []
+        selectedSkills: [],
+    session: null
       })
 
     expect(outcome.continue).toBe(false)
