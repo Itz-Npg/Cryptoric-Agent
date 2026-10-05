@@ -50,7 +50,10 @@ public final class CompanionModel: ObservableObject {
     public func stop() {
         task?.cancel()
         task = nil
-        Task { await transport.disconnect() }
+        Task {
+            await transport.disconnect()
+            await store.endSubscription()
+        }
     }
 
     private func observe() async {
