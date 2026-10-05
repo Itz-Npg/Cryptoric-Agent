@@ -187,32 +187,43 @@ With no model configured it exits **2** and reports `BLOCKED` with a reason.
 
 ## The mobile companion
 
-**No mobile app ships. Nothing here puts anything on a phone.**
+**An `.ipa` now builds on every push and ships with every release. There is no Android app.**
 
-What exists is real and verified, and it is smaller than an app:
+What exists, all of it verified on a GitHub macOS runner:
 
 - `mobile/ios` — a Swift package (`CryptoricKit`) holding the relay protocol,
-  client and SwiftUI views. It compiles and its tests pass on a GitHub macOS
-  runner, and the job **fails** unless the suite reports `Executed N tests` with
-  N ≥ 10.
+  client and SwiftUI views. It compiles and its tests pass, and the job **fails**
+  unless the suite reports `Executed N tests` with N ≥ 10.
+- `mobile/ios-app` — the Xcode **app target** that turns that library into an
+  `.app`: a SwiftUI entry point plus a `URLSessionWebSocketTask` transport. It
+  is the only part of the phone build that is not unit tested, because a socket
+  and a screen are the two things a library cannot cover.
+- `scripts/build-ios-ipa.sh` — one script, run by `mobile.yml` on every push
+  **and** by `release.yml` on a tag, so the published artifact is built by the
+  same steps that were verified on every commit rather than by a second
+  implementation that could drift.
 - `mobile/relay` — a zero-dependency Node relay, **17/17** tests.
 
-What does *not* exist: an Xcode app target, an `.app`, an `.ipa`, an Android
-project, an `.apk`. There are no mobile artifacts in any published release, and
-there never have been.
+The build asserts `BUILD SUCCEEDED`, that an `.app` exists, that the archive is
+over 100 KB, and that it really contains `CryptoricCompanion.app/Info.plist` and
+the `CryptoricCompanion` executable. A green tick from a build that quietly
+produced nothing is the failure this repository keeps correcting for, so it is
+asserted rather than assumed.
 
-Both are buildable, and the obstacles are different from the usual story:
+### Installing the `.ipa`
 
-- **An `.ipa` needs no Apple account to *produce*.** A macOS runner can build an
-  app target with `CODE_SIGNING_ALLOWED=NO` and zip the `.app` into an `.ipa`.
-  What the paid account buys is *installing* it on a device without re-signing
-  first. The blocker here is that no app target exists — only a library.
-- **An `.apk` needs no account at all.** Gradle signs a debug build with a
-  throwaway key. The blocker here is that there is no Android project whatsoever:
-  no `AndroidManifest.xml`, no `build.gradle`, no wrapper.
+It is **unsigned**, and it has to be. Producing one needs no Apple Developer
+account; *installing* one needs a signature. Use Sideloadly, AltStore or
+SideStore with your own Apple ID — they re-sign the bundle on the way in. It is
+not an App Store or TestFlight submission, and this repository holds no Apple
+credentials.
 
-Neither is a packaging step away. Both are a project that has to be written
-first — which is exactly what the next thing to build is.
+### Android
+
+There is no Android project at all: no `AndroidManifest.xml`, no `build.gradle`,
+no Gradle wrapper, and therefore no `.apk` in any release. An `.apk` needs no
+account to produce — Gradle signs a debug build with a throwaway key — so this
+is purely unbuilt work, not a blocked one. It is the obvious next thing.
 
 ---
 
@@ -319,8 +330,11 @@ could not run, that is written down below rather than left to look like success.
 
 **Not done — stated rather than implied:**
 
-- **No mobile app ships.** No `.ipa`, no `.apk`, no Xcode app target, no Android
-  project. See [The mobile companion](#the-mobile-companion).
+- **The iOS companion has never run on a device.** The `.ipa` builds and is
+  published, but nothing here has installed it on a phone or simulator, so the
+  app target's own code is unexercised. The library underneath it is not.
+- **There is no Android app.** No `.apk`, no manifest, no Gradle project. See
+  [The mobile companion](#the-mobile-companion).
 - **The browser check does not run in CI.** It passes 64/64 on a desktop, but
   under `xvfb` the tools needing a real pointer path or a composited surface
   fail. Software-rendering switches were tried and rejected. There is no

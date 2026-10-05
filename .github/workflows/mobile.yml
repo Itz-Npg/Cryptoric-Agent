@@ -17,12 +17,17 @@
 #     and pretending otherwise would be the exact overclaim this project
 #     corrects for elsewhere.
 #
+# What exists: mobile/ios is a Swift package (a library, so its logic is
+# unit tested on every push) and mobile/ios-app is the Xcode app target that
+# turns that library into an .app. The `ipa` job builds the target on a macOS
+# runner with signing disabled and packages the .app as an .ipa, which is the
+# same script the release workflow runs on a tag.
+#
 # There is no Android build here, and no Android project to build. An earlier
-# version of this comment pointed at a `mobile-android.yml` that does not exist;
-# that was a false claim about a capability, which is the one thing this file
-# exists to avoid. `mobile/ios` is a Swift package and `mobile/relay` is a Node
-# library — eight files in total. Neither is an app target, so neither can
-# produce an `.ipa` or an `.apk`.
+# version of this comment pointed at a `mobile-android.yml` that does not
+# exist; that was a false claim about a capability, which is the one thing this
+# file exists to avoid. Producing an `.apk` needs an AndroidManifest.xml and a
+# Gradle build, and neither exists yet.
 
 name: Mobile companion
 
@@ -97,77 +102,14 @@ jobs:
           swift --version
           xcodebuild -version
 
-      # The library still builds and tests on its own, but a library cannot
-      # become an .app. This job is the first thing in this repository that
-      # produces something a phone can install, so it is also the first thing
-      # that can fail for a reason nobody was watching for.
-      - name: Build the app target (unsigned, device SDK)
-        run: |
-          set -o pipefail
-          xcodebuild \
-            -project mobile/ios-app/CryptoricCompanion.xcodeproj \
-            -target CryptoricCompanion \
-            -sdk iphoneos \
-            -configuration Release \
-            SYMROOT="$RUNNER_TEMP/products" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            build 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
+      # The library still builds and tests on its own, and a library can never
+      # become an .app — so this step is what turns the companion into something
+      # a phone can install. The assertions live in the script, not here, and
+      # the same script runs on a tag, so the push build and the published
+      # artifact cannot be different builds of different code.
+      - name: Build and package the .ipa
+        run: bash scripts/build-ios-ipa.sh
 
-      # `xcodebuild` exiting 0 is not proof of a bundle. The check below is the
-      # same shape as the Swift test count assertion above: verify the artifact
-      # itself, so a build that quietly produced nothing cannot read as green.
-      - name: Confirm an .app bundle really exists
-        run: |
-          set -o pipefail
-          if ! grep -q "BUILD SUCCEEDED" "$RUNNER_TEMP/xcodebuild.log"; then
-            echo "::error::xcodebuild never reported BUILD SUCCEEDED."
-            tail -40 "$RUNNER_TEMP/xcodebuild.log"
-            exit 1
-          fi
-          APP="$(find "$RUNNER_TEMP/products/Release-iphoneos" -maxdepth 1 -name '*.app' -print -quit)"
-          if [ -z "$APP" ]; then
-            echo "::error::No .app in Release-iphoneos. A library cannot produce one."
-            ls -la "$RUNNER_TEMP/products" || true
-            exit 1
-          fi
-          echo "app=$APP"
-          ls -la "$APP"
-
-      # An .ipa is a zip with the .app at its root — the layout Sideloadly,
-      # AltStore and SideStore expect. (App Store submissions use a Payload/
-      # wrapper instead; that is a different file for a different purpose, and
-      # building the wrong one would produce an .ipa that no sideloading tool
-      # can read.)
-      - name: Package the .ipa
-        run: |
-          set -o pipefail
-          mkdir -p dist
-          APP="$(find "$RUNNER_TEMP/products/Release-iphoneos" -maxdepth 1 -name '*.app' -print -quit)"
-          ( cd "$(dirname "$APP")" && zip -qry "$GITHUB_WORKSPACE/dist/CryptoricCompanion-unsigned.ipa" "$(basename "$APP")" )
-          ls -la dist/
-          SIZE=$(wc -c < dist/CryptoricCompanion-unsigned.ipa)
-          echo "ipa_bytes=$SIZE"
-          if [ "$SIZE" -lt 100000 ]; then
-            echo "::error::The .ipa is $SIZE bytes. That is not a bundle."
-            exit 1
-          fi
-          unzip -l dist/CryptoricCompanion-unsigned.ipa | head -20
-          if ! unzip -l dist/CryptoricCompanion-unsigned.ipa | grep -q "CryptoricCompanion.app/Info.plist"; then
-            echo "::error::No CryptoricCompanion.app/Info.plist at the archive root."
-            exit 1
-          fi
-          # The binary the library was linked into, so a build that shipped only
-          # resources cannot pass.
-          if ! unzip -l dist/CryptoricCompanion-unsigned.ipa | grep -q "CryptoricCompanion.app/CryptoricCompanion$"; then
-            echo "::error::The .ipa contains no CryptoricCompanion executable."
-            exit 1
-          fi
-
-      # Unsigned on purpose. Producing an .ipa needs no Apple account; only
-      # installing it on a device does, or a re-signing tool. Claiming otherwise
-      # would put an Apple requirement on a step that does not have one.
       - name: Upload the .ipa
         uses: actions/upload-artifact@v4
         with:
