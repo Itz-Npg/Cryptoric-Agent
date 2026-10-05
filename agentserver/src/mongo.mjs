@@ -74,7 +74,12 @@ export function createMongoStore(uri, { apiBase = DEFAULT_API_BASE, fetchImpl = 
 
     async getAccount(accountId) {
       const found = await call(collections.accounts, 'findOne', { filter: { _id: accountId } })
-      return found?.document ?? null
+      const doc = found?.document
+      if (!doc) return null
+      // Mongo stores the id as `_id`; every consumer reads `id`. Returning the
+      // raw document made `/v1/accounts` answer `accountId: undefined` on a
+      // Mongo-backed server — a server that created accounts it could not name.
+      return { ...doc, id: doc.id ?? doc._id }
     }
 
     async recordCharge(charge) {
