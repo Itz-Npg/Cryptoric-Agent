@@ -43,7 +43,7 @@ GRADLE="gradle"
 command -v gradle >/dev/null 2>&1 || fail "gradle is not on PATH."
 
 log "Java version"
-java -version 2>&1 | head -3
+java -version 2>&1 | sed -n '1,3p'
 
 log "Unit tests (the relay protocol)"
 # `--no-daemon` because a daemon left behind by a finished job is a daemon that
@@ -57,8 +57,10 @@ REPORT="$PROJECT_DIR/app/build/reports/tests/testDebugUnitTest/index.html"
 [ -f "$REPORT" ] || fail "No unit test report at $REPORT. The tests did not run."
 if [ -f "$PROJECT_DIR/app/build/test-results/testDebugUnitTest/TEST-com.itznpg.cryptoric.companion.RelayProtocolTest.xml" ]; then
   RESULT_FILE="$PROJECT_DIR/app/build/test-results/testDebugUnitTest/TEST-com.itznpg.cryptoric.companion.RelayProtocolTest.xml"
-  COUNT="$(grep -o 'tests="[0-9]*"' "$RESULT_FILE" | head -1 | grep -o '[0-9]*')"
-  FAILURES="$(grep -o 'failures="[0-9]*"' "$RESULT_FILE" | head -1 | grep -o '[0-9]*')"
+  # grep -m1 stops by itself, so nothing downstream can close the pipe
+  # early and hand the build a SIGPIPE under `set -o pipefail`.
+  COUNT="$(grep -o -m1 'tests="[0-9]*"' "$RESULT_FILE" | tr -dc '0-9')"
+  FAILURES="$(grep -o -m1 'failures="[0-9]*"' "$RESULT_FILE" | tr -dc '0-9')"
   echo "tests=$COUNT failures=$FAILURES"
   [ "${COUNT:-0}" -ge 5 ] || fail "Only ${COUNT:-0} tests ran; a partial run must not read as a pass."
   [ "${FAILURES:-1}" -eq 0 ] || fail "$FAILURES test(s) failed."
@@ -80,7 +82,10 @@ echo "apk_bytes=$BYTES"
 [ "$BYTES" -ge 100000 ] || fail "The APK is $BYTES bytes. That is not an app."
 
 LIST="$(unzip -l "$BUILT")"
-echo "$LIST" | head -20
+# sed, not head: `head` closes the pipe after 20 lines, echo takes SIGPIPE,
+# and under `set -o pipefail` that kills the script. sed reads the whole stream.
+printf '%s
+' "$LIST" | sed -n '1,20p'
 echo "$LIST" | grep -q "AndroidManifest.xml" || fail "The APK has no AndroidManifest.xml."
 echo "$LIST" | grep -q "classes.dex" || fail "The APK has no classes.dex: there is no compiled code in it."
 

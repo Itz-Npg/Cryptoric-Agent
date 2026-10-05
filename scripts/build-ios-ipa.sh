@@ -69,7 +69,10 @@ echo "ipa_bytes=$BYTES"
 [ "$BYTES" -ge 100000 ] || fail "The .ipa is $BYTES bytes. That is not a bundle."
 
 LIST="$(unzip -l "$IPA")"
-echo "$LIST" | head -20
+# sed, not head: `head` closes the pipe after 20 lines, echo takes SIGPIPE,
+# and under `set -o pipefail` that kills the script. sed reads the whole stream.
+printf '%s
+' "$LIST" | sed -n '1,20p'
 echo "$LIST" | grep -q "$TARGET.app/Info.plist" || fail "No $TARGET.app/Info.plist at the archive root."
 echo "$LIST" | grep -q "$TARGET.app/$TARGET$" || fail "The .ipa contains no $TARGET executable."
 
