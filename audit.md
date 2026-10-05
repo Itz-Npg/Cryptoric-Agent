@@ -516,6 +516,131 @@ Two ordering rules that follow, both now load-bearing:
   the job re-downloads the manifest from the *published* release and asserts
   `^version: <tag>$` before calling it a success.
 
+### "Running — running" forever: the agent hang
+
+> Observed: `Analyzed ✓`, `Planned ✓`, `Implemented ✓`, `Ran tests ○`, `Reviewed ○`,
+> header reading **Running — running**, and nothing further. Indefinitely.
+
+Not a slow model and not a UI problem. **Five independent defects**, of which one
+alone is sufficient to hang the task forever. All five are real; none is cosmetic.
+
+#### 1. The hang itself — a deadline that existed only on the path nobody used
+
+[gateway.ts](../src/main/services/models/gateway.ts) line 713, before the fix:
+
+```js
+signal: signal ?? AbortSignal.timeout(120_000),
+```
+
+The 120-second deadline was applied **only when the caller passed no signal**. The
+agent loop always passes one — `runAgentLoop` calls `deps.complete({ ..., signal:
+input.signal })` — so on the only path that mattered there was **no deadline at
+all**. A provider that accepted the connection and then stopped answering left
+`await deps.complete()` pending forever, `stage.run()` never returned, and
+`task.status` stayed `RUNNING` for the rest of the session.
+
+The `??` reads as a safe default and is the opposite: it made the bound *vanish*
+precisely when a caller cared enough to pass a signal. `AbortSignal.any([signal,
+AbortSignal.timeout(n)])` composes the two instead of choosing between them.
+
+The backoff sleeps were the same shape — `await new Promise(r => setTimeout(r,
+waitMs))` — so a stopped task slept out the remaining 38s of the 3/10/25 ladder
+before it could unwind. "Stop" that takes half a minute reads as a broken button.
+
+#### 2. The UI ticked a stage "done" when it started
+
+`AgentRuntime.runTask` emitted its only per-stage timeline entry **before**
+`await stage.run()`:
+
+```js
+this.note(task, stage.role, stage.name, `${stage.role} · ${stage.name}`, 'info')
+const outcome = await stage.run(...)
+```
+
+and `groupByStage` in [Chan.tsx](../src/renderer/src/panes/Chan.tsx) inferred
+completion from *"this stage has at least one timeline entry"*:
+
+```js
+status: hasError ? 'error' : isActive ? 'active' : entries.length > 0 ? 'done' : 'pending'
+```
+
+So `Implemented changes` was ticked the instant implementation began. The
+reported screenshot is exactly this: three green ticks and a frozen header, because
+the agent was still *inside* the stage that claimed to be finished.
+
+That is why this bug survived so long as "the agent is slow". Every green tick was
+a lie, and the lie pointed at the one stage where the hang was happening.
+
+#### 3. `statusForRole` collapsed every work state into `RUNNING`
+
+`IMPLEMENTER` and `TERMINAL_AGENT` both mapped to `RUNNING`, so implementing,
+verifying, and waiting-on-a-provider were indistinguishable in the header. The
+state machine now has a name per stage.
+
+#### 4. The "verify" stage never verified anything
+
+`verifyStage` called `list_running_processes` and returned *"N supervised
+process(es)"*, which the UI rendered under the label **"Ran tests and verified"**.
+No test ran. No build ran. Nothing was verified — the tick was a hardcoded string
+attached to a process count.
+
+It now derives the applicable checks from the project's own manifest
+(`typecheck`, `lint`, `test`, `build`), executes each through `run_command`, and
+reports the real exit code. A check the project does not declare is reported
+**SKIPPED**, never as a pass; browser verification is reported **NOT RUN**,
+because no browser tools are registered in this build.
+
+#### 5. No ceilings, no watchdogs, no no-progress detection
+
+`DEFAULT_MAX_STEPS = 12` bounded reasoning turns and nothing else. There was no
+wall-clock bound, no tool-call bound, no model-call bound, no per-call deadline,
+and nothing that noticed a model calling the same tool with the same arguments and
+receiving the same answer, forty times.
+
+#### What changed
+
+New pure module [execution.ts](../src/main/services/agent/execution.ts) — imports
+nothing, so the state machine, ceilings, failure classification and no-progress
+rule are all directly testable. The same lesson as `updater-feed.ts`: the line
+deciding whether a task is finished had shipped untested because it lived where a
+test could not reach it.
+
+| Requirement | Where it lives |
+|---|---|
+| Explicit states, legal transitions asserted | `execution.ts` `assertTransition` |
+| Model watchdog → `MODEL_TIMEOUT` | `loop.ts` `withDeadline` |
+| Tool watchdog → `TOOL_TIMEOUT` | `loop.ts` `withDeadline` |
+| Stage watchdog → `STAGE_TIMEOUT` | `core.ts` `runStage` |
+| Per-request socket deadline | `gateway.ts` `fetchWithRetry` |
+| Ceilings (iterations/calls/runtime) | `execution.ts` `limitTripped` |
+| `NO_PROGRESS_LOOP` | `execution.ts` `detectNoProgress` |
+| Heartbeat + inactivity | `execution.ts` `heartbeatLine` |
+| Per-call usage records | `loop.ts` `ModelCallRecord` |
+| Failure classification | `execution.ts` `classifyFailure` |
+| Structured log | `execution.ts` `formatExecutionLog` |
+
+#### Verification
+
+`tests/unit/agent-hang.test.ts`, **39 tests**, covering all ten required
+scenarios. Two are worth calling out because they are the difference between
+"testing the bug" and "testing a mock":
+
+- The hang is reproduced at the **gateway**, not simulated in the loop: `fetch` is
+  replaced with one that resolves and then goes silent, exactly like a stalled
+  provider. It asserts the request settles and reports a deadline.
+- That mock **rejects on abort** the way undici does. A mock that simply never
+  settled passed nothing — the first version of this test hung for 15s and proved
+  only that the mock was wrong.
+
+Measured: the hang reproduction went from **180s of suite time to 312ms**.
+
+`npm run typecheck` exit 0 · `npx vitest run` **453 passed / 18 files** ·
+`npm run build` exit 0.
+
+**Not verified:** no live agent run has been driven through the new state machine
+against a real provider. The fix is proven at the unit level and at the gateway
+boundary; that it behaves well inside a full session is untested.
+
 ### `0 / 500` — a correct number rendered from the wrong field
 
 The coin panel showed **500** while the allowance was meant to be **25**. `todo.md`

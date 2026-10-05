@@ -237,7 +237,12 @@ describe('agent loop', () => {
         })
       },
       listTools: () => [descriptor('list_directory')],
-      invoke: async () => ({ ok: true, summary: 'ok' }),
+      // Each call answers differently on purpose. An identical answer every turn
+      // is a no-progress loop, which the loop now stops and names *before* the
+      // step ceiling is reached — so leaving it constant would mean this test
+      // exercised the repetition guard while claiming to test the ceiling. That
+      // case is asserted directly in tests/unit/agent-hang.test.ts.
+      invoke: async () => ({ ok: true, summary: `ok ${turns}` }),
       note: () => undefined,
       record: () => undefined
     }

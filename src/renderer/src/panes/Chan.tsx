@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentTask, TimelineEntry, WorkspaceState } from '@shared/types'
+import { isTerminalTaskStatus } from '@shared/types'
 import { MAX_PROMPT_CHARS } from '@shared/limits'
 import { Button, Chip, Dot, Icon, SectionHead, type IconName } from '../components/primitives'
 import type { TranscriptEntry } from '../state/store'
@@ -61,7 +62,7 @@ export function ChanPanel({
   onClearConversation: () => void
   onStop: (taskId: string) => void
 }) {
-  const activeTask = tasks.find((t) => !['COMPLETED', 'FAILED', 'CANCELLED'].includes(t.status)) ?? null
+  const activeTask = tasks.find((t) => !isTerminalTaskStatus(t.status)) ?? null
   const idle = !activeTask && transcript.length === 0 && approvals.length === 0
 
   return (
@@ -81,10 +82,16 @@ export function ChanPanel({
           }}
         >
           <span className="caption" style={{ flex: 1 }}>
-            Running — {activeTask.status.toLowerCase()}
+            {activeTask.status === 'CANCELLING' ? 'Cancelling' : `Running — ${activeTask.status.toLowerCase()}`}
           </span>
-          <Button variant="ghost" onClick={() => onStop(activeTask.id)}>
-            Stop
+          <Button
+            variant="ghost"
+            // Disabled once cancelling, so a second click cannot be read as a
+            // request that has not taken effect yet.
+            disabled={activeTask.status === 'CANCELLING'}
+            onClick={() => onStop(activeTask.id)}
+          >
+            {activeTask.status === 'CANCELLING' ? 'Stopping' : 'Stop'}
           </Button>
         </div>
       )}
@@ -528,35 +535,56 @@ function StageRow({ group, open, onToggle }: { group: StageGroup; open: boolean;
   )
 }
 
-/** Fold a flat timeline into the fixed stage sequence. */
+/**
+ * Fold a flat timeline into the fixed stage sequence.
+ *
+ * Completion is keyed on the stage's `-end` marker, never on "this stage has at
+ * least one entry". The old version inferred done-ness from the mere presence of
+ * a timeline entry, and the runtime emitted that entry when the stage *began* —
+ * so `Implemented changes` showed a green tick while the agent was still inside
+ * implementation, and stayed ticked if the stage hung there forever. The tick is
+ * a claim about work that finished; it has to be derived from work that finished.
+ */
 export function groupByStage(timeline: TimelineEntry[], activeTask: AgentTask | null): StageGroup[] {
   const byStage = new Map<StageName, TimelineEntry[]>()
   const relevant = activeTask ? timeline.filter((e) => e.taskId === activeTask.id) : timeline
 
   for (const entry of relevant) {
-    const stage = STAGES.find((s) => entry.stage === s || entry.stage.startsWith(`${s}-`) || entry.stage === `${s}`)
+    const stage = STAGES.find((s) => entry.stage === s || entry.stage.startsWith(`${s}-`))
     if (!stage) continue
     const list = byStage.get(stage) ?? []
     list.push(entry)
     byStage.set(stage, list)
   }
 
-  const firstSeen = STAGES.findIndex((s) => byStage.has(s))
-  const activeIndex = activeTask
-    ? STAGES.findIndex((s) => byStage.has(s) && byStage.get(s)?.some((e) => e.status === 'pending'))
-    : -1
-
-  return STAGES.map((stage, index) => {
+  return STAGES.map((stage) => {
     const entries = byStage.get(stage) ?? []
-    const hasError = entries.some((e) => e.status === 'error')
-    const isActive = index === activeIndex || (activeTask && entries.some((e) => e.status === 'pending') && index === (firstSeen < 0 ? 0 : firstSeen + 1))
-    const started = entries[0]?.at ?? null
-    const finished = entries.length > 0 ? (entries[entries.length - 1] as TimelineEntry).at : null
+    const startedEntry = entries.find((e) => e.stage === `${stage}-start`)
+    const endedEntry = entries.find((e) => e.stage === `${stage}-end`)
+    const failedEntry = entries.find((e) => e.stage === `${stage}-failed`)
+
+    const started = startedEntry?.at ?? entries[0]?.at ?? null
+    const finished = failedEntry?.at ?? endedEntry?.at ?? null
+    const hasError = Boolean(failedEntry) || entries.some((e) => e.status === 'error')
+
+    // Started and not finished is the only definition of "active". A stage that
+    // never started is pending, and a stage with an end or a failure is done.
+    const isActive = Boolean(startedEntry) && !finished
+
+    const status: StageGroup['status'] = hasError
+      ? 'error'
+      : finished
+        ? 'done'
+        : isActive
+          ? 'active'
+          : entries.length > 0
+            ? 'done'
+            : 'pending'
 
     return {
       stage,
       label: STAGE_LABEL[stage],
-      status: hasError ? 'error' : isActive ? 'active' : entries.length > 0 ? 'done' : 'pending',
+      status,
       startedAt: started,
       finishedAt: finished,
       entries,

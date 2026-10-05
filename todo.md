@@ -565,3 +565,66 @@ does not. This is the next thing to build.
       the fix, so this is the first version where the install path can actually run.
 - [ ] Nothing is signed. macOS Gatekeeper will block an unquarantined `.dmg` until
       the user clears it; Windows SmartScreen warns. No certificates exist here.
+
+## PHASE 0.12 — The agent execution hang *(done, verified)*
+
+Reported: three stages green, header stuck on `Running — running`, nothing further,
+indefinitely. Five independent defects; the first alone is sufficient to hang a
+task forever. Full write-up in `audit.md`; the invariants in `work.md`.
+
+- [x] **Root cause found.** `gateway.ts:713` read
+      `signal: signal ?? AbortSignal.timeout(120_000)` — the deadline applied
+      **only when no signal was passed**, and `runAgentLoop` always passes one. So
+      on the path that mattered there was no deadline at all. Now composed with
+      `AbortSignal.any`, and `attemptTimeoutMs` is injectable so the bound is
+      testable in milliseconds instead of waited out in real time.
+- [x] Backoff sleeps made abortable, so a stopped task no longer sits out the
+      remaining 38s of the 3/10/25 ladder before unwinding.
+- [x] **Model and tool watchdogs.** Every `complete()` and every `invoke()` is
+      raced against a deadline; a miss emits `MODEL_TIMEOUT` / `TOOL_TIMEOUT` and
+      reaches a terminal state.
+- [x] **Stage watchdog** in `AgentRuntime.runStage`, because a stage can also hang
+      on its own probe and nothing else bounded it.
+- [x] **The UI was ticking stages at their start.** `runTask` emitted its only
+      per-stage entry before `await stage.run()`, and `groupByStage` read "has an
+      entry" as "finished" — so `Implemented changes` went green while the agent
+      was still inside it. Now two markers (`-start`, `-end`/`-failed`) and
+      completion keys off the second.
+- [x] **Named execution states.** `ANALYZING / IMPLEMENTING / VERIFYING / FIXING /
+      CANCELLING / BLOCKED` added to `TaskStatus`; `statusForRole` replaced by
+      `statusForStage`. The two workspace-state derivations updated so the new
+      states do not fall through to `IDLE`.
+- [x] **Ceilings**, all configurable: 30 iterations, 40 model calls, 100 tool
+      calls, 30 minutes. Reaching one stops and says *Agent execution limit
+      reached* rather than continuing.
+- [x] **`NO_PROGRESS_LOOP`** — compares rendered results, not tool names, so a
+      genuinely changing result is not stopped.
+- [x] **`verifyStage` actually verifies.** It ran `list_running_processes` and the
+      UI called it *Ran tests and verified*. Now executes the project's own
+      `typecheck` / `lint` / `test` / `build` and reports real exit codes;
+      undeclared checks report SKIPPED, browser reports NOT RUN (no browser tools
+      are registered), and a failing check fails the task.
+- [x] **Per-call records** — requestId, provider, model, status, duration, token
+      counts, finish reason. Usage renders as *Usage unavailable* when the provider
+      returns none; never a fabricated zero.
+- [x] **Failure classification** — RATE_LIMITED / AUTH_ERROR / NETWORK_ERROR /
+      PROVIDER_ERROR / TIMEOUT / INVALID_RESPONSE / TOOL_ERROR / UNKNOWN.
+- [x] **Heartbeat + structured log** — `[03:45:02] MODEL_COMPLETED mc_x model
+      1240ms …`, `EXECUTION_FINISHED <state> reason=<…>`.
+- [x] **Stop is real.** `CANCELLING` is a visible state before `CANCELLED`; the
+      header and button reflect it, and the button disables so a second click
+      cannot be read as a request that has not landed.
+- [x] 39 regression tests in `tests/unit/agent-hang.test.ts` covering all ten
+      required scenarios. The hang reproduction runs against a `fetch` mock that
+      models undici — one that accepts the connection, goes silent, and rejects on
+      abort — because a mock that simply never settles proves nothing.
+- [x] `npm run typecheck` exit 0 · `npx vitest run` **453 passed / 18 files** ·
+      `npm run build` exit 0. Hang reproduction: 180s of suite time → 312ms.
+- [ ] **No live agent run has been driven through the new state machine against a
+      real provider.** The fix is proven at the unit level and at the gateway
+      boundary; end-to-end behaviour inside a real session is unverified.
+- [ ] `maxAgentIterations`, `maxModelCalls`, `maxToolCalls` and `maxRuntimeMinutes`
+      are not yet surfaced in Settings — they are constants a caller can override,
+      not user-tunable.
+- [ ] Browser tooling still does not exist, so the browser portion of the testing
+      stage reports NOT RUN. That is honest, not implemented.

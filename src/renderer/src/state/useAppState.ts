@@ -206,15 +206,30 @@ function toTranscriptEntry(turn: ConversationTurn): TranscriptEntry {
 
 function deriveState(status: AgentTask['status'], previous: WorkspaceState): WorkspaceState {
   switch (status) {
+    // Every named work state maps to a live workspace. Leaving these to the
+    // `default` branch would have dropped ANALYZING / IMPLEMENTING / VERIFYING
+    // to IDLE, so a task doing real work would show as an idle workspace.
+    case 'ANALYZING':
+    case 'PLANNING':
+    case 'IMPLEMENTING':
+    case 'VERIFYING':
+    case 'REVIEWING':
+    case 'FIXING':
+    case 'CANCELLING':
+      return 'ACTIVE'
     case 'RUNNING':
       return 'RUNNING'
     case 'TESTING':
       return 'TESTING'
     case 'FAILED':
+    case 'BLOCKED':
       return 'ERROR'
+    case 'COMPLETED':
+      return 'IDLE'
+    case 'CANCELLED':
+    case 'PAUSED':
+      return previous === 'RUNNING' || previous === 'TESTING' ? 'IDLE' : previous
     case 'QUEUED':
-    case 'PLANNING':
-    case 'REVIEWING':
     case 'WAITING_FOR_USER':
       return 'ACTIVE'
     default:

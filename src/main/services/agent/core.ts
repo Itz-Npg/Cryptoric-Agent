@@ -24,7 +24,7 @@ import type {
   TimelineEntry,
   UsageRecord
 } from '@shared/types'
-import type { PermissionTier } from '@shared/types'
+import { isTerminalTaskStatus, type PermissionTier } from '@shared/types'
 import type { SkillRegistry } from '../skills/registry'
 import { buildSkillContext, routeSkills, type TaskCategory } from '../skills/registry'
 import type { ToolRegistry, ToolResult } from '../tools/registry'
@@ -145,18 +145,61 @@ export class AgentRuntime {
     const controller = this.controllers.get(id)
     const task = this.tasks.get(id)
     if (!task) return false
+    // CANCELLING is a real state rather than an instant jump to CANCELLED: the
+    // abort only takes effect at the next await boundary, and during that window
+    // the task is genuinely still finishing. Showing CANCELLED while work is
+    // still unwinding would be a lie in the other direction.
+    if (!isTerminalTaskStatus(task.status)) {
+      task.status = 'CANCELLING'
+      this.touch(task)
+    }
     controller?.abort()
     const queue = this.queues.get('default') ?? []
     this.queues.set(
       'default',
       queue.filter((q) => q !== id)
     )
-    if (task.status !== 'COMPLETED' && task.status !== 'FAILED') {
+    if (!isTerminalTaskStatus(task.status)) {
       task.status = 'CANCELLED'
       task.error = 'Stopped by user'
       this.touch(task)
     }
     return true
+  }
+
+  /**
+   * Run one stage under a deadline.
+   *
+   * The agent loop watchdogs its own model calls and tool calls, but a stage can
+   * also hang on its own — a probe, a `list_running_processes` that never
+   * answers, anything awaited inside `stage.run`. Without this the stage loop's
+   * `await` is unbounded and the task never reaches a terminal state at all.
+   */
+  private async runStage(
+    stage: Stage,
+    ctx: StageContext,
+    signal: AbortSignal,
+    task: AgentTask
+  ): Promise<StageOutcome> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const onAbort = (): void => {
+      if (timer) clearTimeout(timer)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+
+    try {
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`STAGE_TIMEOUT: ${stage.name} did not finish within ${STAGE_TIMEOUT_MS}ms.`))
+        }, STAGE_TIMEOUT_MS)
+      })
+      const race = await Promise.race([stage.run({ ...ctx, maxTier: stage.maxTier }), timeout])
+      return race
+    } finally {
+      if (timer) clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      void task
+    }
   }
 
   stopAll(): void {
@@ -243,13 +286,28 @@ export class AgentRuntime {
         if (task.status !== 'PAUSED') task.status = 'CANCELLED'
         break
       }
-      task.status = statusForRole(stage.role, task.status)
+      task.status = statusForStage(stage.name, task.status)
       this.touch(task)
       ceiling = stage.maxTier
-      this.note(task, stage.role, stage.name, `${stage.role} · ${stage.name}`, 'info')
+
+      // Two entries, not one, and the UI keys completion off the second.
+      //
+      // The single start entry was the second half of the hang report: the
+      // renderer treated "this stage has any timeline entry" as "this stage
+      // finished", so `Implemented changes` was ticked the instant the stage
+      // began. A task then sat inside implementation for minutes — or forever —
+      // behind a green tick that meant nothing.
+      this.note(task, stage.role, `${stage.name}-start`, `${stage.role} · ${stage.name} started`, 'info')
 
       try {
-        const outcome = await stage.run({ ...ctx, maxTier: stage.maxTier })
+        const outcome = await this.runStage(stage, ctx, controller.signal, task)
+        this.note(
+          task,
+          stage.role,
+          `${stage.name}-end`,
+          outcome.summary ?? `${stage.name} finished`,
+          'ok'
+        )
         this.deps.events.toolResult('__stage__', {
           ok: outcome.continue,
           summary: outcome.summary ?? `${stage.name} finished`,
@@ -262,14 +320,14 @@ export class AgentRuntime {
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
-        task.status = 'FAILED'
+        task.status = controller.signal.aborted ? 'CANCELLED' : 'FAILED'
         task.error = message
-        this.note(task, stage.role, stage.name, message, 'error')
+        this.note(task, stage.role, `${stage.name}-failed`, message, 'error')
         break
       }
     }
 
-    if (task.status !== 'COMPLETED' && task.status !== 'FAILED' && task.status !== 'CANCELLED') {
+    if (!isTerminalTaskStatus(task.status)) {
       task.status = controller.signal.aborted ? 'CANCELLED' : 'COMPLETED'
     }
     this.touch(task)
@@ -463,18 +521,39 @@ function sameOrNested(candidate: string, claim: string): boolean {
   return a === b || a.startsWith(b.endsWith('/') || b.endsWith('\\') ? b : b + '/')
 }
 
-function statusForRole(role: AgentRole, previous: TaskStatus): TaskStatus {
-  switch (role) {
-    case 'PLANNER':
+/**
+ * Ceiling for a single stage.
+ *
+ * Generous, because `implement` legitimately contains several model turns and
+ * many tools. It is not unbounded, which is the point: without it a stage that
+ * never resolves is indistinguishable from one that is working hard.
+ */
+const STAGE_TIMEOUT_MS = 10 * 60_000
+
+/**
+ * The task state a stage name corresponds to.
+ *
+ * Keyed on the stage name rather than the role because the name is what the UI
+ * renders as a tick, and the two must agree. `IMPLEMENTER` used to report
+ * `RUNNING`, which is why implementing, verifying and waiting-on-a-provider all
+ * looked identical on screen.
+ */
+function statusForStage(name: string, previous: TaskStatus): TaskStatus {
+  switch (name) {
+    case 'analyze':
+      return 'ANALYZING'
+    case 'plan':
       return 'PLANNING'
-    case 'TERMINAL_AGENT':
-    case 'IMPLEMENTER':
-      return 'RUNNING'
-    case 'TESTER':
+    case 'implement':
+      return 'IMPLEMENTING'
+    case 'verify':
+      return 'VERIFYING'
+    case 'test':
       return 'TESTING'
-    case 'REVIEWER':
-    case 'SECURITY_REVIEWER':
+    case 'review':
       return 'REVIEWING'
+    case 'fix':
+      return 'FIXING'
     default:
       return previous === 'QUEUED' ? 'PLANNING' : previous
   }

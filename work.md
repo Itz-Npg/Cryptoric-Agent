@@ -220,6 +220,51 @@ email; and a diagnostic step of mine used `ls -la` under the default PowerShell,
 the Windows package built fine and then the step failed. Fixed with
 `author: {name, email}` and `shell: bash`.
 
+### Execution must terminate — the rule the agent hangs broke
+
+> Every execution ends in `COMPLETED`, `FAILED`, `CANCELLED` or `BLOCKED`.
+> A task in `RUNNING`, `VERIFYING` or `TESTING` is only legitimate while an
+> operation is genuinely in flight.
+
+Written here because it is a **product invariant**, not an implementation detail,
+and the code that enforced it lived in three files that could not be loaded by a
+test.
+
+**The deadline must not be conditional.** `signal: signal ?? AbortSignal.timeout(n)`
+looked like a safe default and was the bug: it removed the bound exactly when the
+caller cared enough to pass a signal. Where a caller's cancellation and a timeout
+both apply, *compose* them — `AbortSignal.any([a, b])`. Never let a caller-supplied
+value select whether a bound exists.
+
+**Await that can lose its bound must be raced explicitly.** `runAgentLoop` had a
+bare `await deps.complete(...)`. A watchdog is a `Promise.race` with a timer that
+is **always cleared**, including on the success path — a leaked timer per call is
+a leaked handle per call.
+
+**A tick is a claim about completed work.** The UI derived stage completion from
+"this stage has an entry", and the runtime emitted that entry at stage *start*. So
+the green tick appeared before the work started, and survived the work never
+finishing. Stage boundaries must be two markers — `-start` and `-end`/`-failed` —
+and completion must key off the second.
+
+**A stage label is a promise.** "Ran tests and verified" was rendered above a
+process count. A stage whose name asserts a check must perform that check; when
+the check does not apply, say SKIPPED, and when it cannot run, say NOT RUN. Never
+let a hardcoded label stand in for work that did not happen.
+
+**The no-progress check compares results, not tool names.** A model calling the
+same tool with the same arguments and getting a *different* answer is making
+progress; stopping on the tool id alone would kill correct behaviour. What makes it
+a loop is the identical *rendered result* repeating.
+
+**Usage is reported or it is unavailable.** A provider that returns no usage block
+renders "Usage unavailable" — never `0`, because "zero tokens" and "not reported"
+are different facts and conflating them makes a working meter look broken.
+
+Pure rules go in [agent/execution.ts](../src/main/services/agent/execution.ts) and
+carry no imports, for the same reason `updater-feed.ts` does. Verify with
+`npx vitest run tests/unit/agent-hang.test.ts`.
+
 ### The updater's feed translation — keep it testable
 
 `electron-updater` fills `updateInfo` from the feed whether or not an update applies, and

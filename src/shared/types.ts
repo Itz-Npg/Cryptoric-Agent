@@ -442,18 +442,47 @@ export interface ToolAuditRecord {
   startedAt: string
 }
 
+/**
+ * Task status.
+ *
+ * The named work states were added because `RUNNING` covered too much. A task
+ * that was implementing, a task that was verifying and a task waiting for a
+ * provider to answer were all reported identically, so a hang inside any of them
+ * looked the same to the user — "Running — running" with nothing changing. Each
+ * pipeline stage now has its own state, and `CANCELLING` exists so a stop is
+ * visible before it completes.
+ */
 export type TaskStatus =
   | 'QUEUED'
+  | 'ANALYZING'
   | 'PLANNING'
+  | 'IMPLEMENTING'
   | 'RUNNING'
-  | 'WAITING_FOR_USER'
-  | 'WAITING_FOR_TOOL'
+  | 'VERIFYING'
   | 'TESTING'
   | 'REVIEWING'
+  | 'FIXING'
+  | 'WAITING_FOR_USER'
+  | 'WAITING_FOR_TOOL'
+  | 'CANCELLING'
   | 'COMPLETED'
   | 'FAILED'
+  | 'BLOCKED'
   | 'PAUSED'
   | 'CANCELLED'
+
+/** Statuses a task can never leave on its own. A live task must not be one. */
+export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = [
+  'COMPLETED',
+  'FAILED',
+  'CANCELLED',
+  'BLOCKED'
+]
+
+/** True when a task is still doing something. */
+export function isTerminalTaskStatus(status: TaskStatus): boolean {
+  return TERMINAL_TASK_STATUSES.includes(status)
+}
 
 export type AgentRole =
   | 'PROJECT_ANALYZER'

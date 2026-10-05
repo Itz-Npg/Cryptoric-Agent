@@ -156,15 +156,30 @@ function reducer(state: AppStateShape, action: Action): AppStateShape {
 
 function deriveWorkspaceState(task: AgentTask, previous: WorkspaceState): WorkspaceState {
   switch (task.status) {
+    // Every named work state counts as live. Without these the default branch
+    // reported ANALYZING / IMPLEMENTING / VERIFYING as IDLE, so a workspace
+    // doing real work looked abandoned.
+    case 'ANALYZING':
+    case 'PLANNING':
+    case 'IMPLEMENTING':
+    case 'VERIFYING':
+    case 'REVIEWING':
+    case 'FIXING':
+    case 'CANCELLING':
+      return 'ACTIVE'
     case 'RUNNING':
       return 'RUNNING'
     case 'TESTING':
       return 'TESTING'
     case 'FAILED':
+    case 'BLOCKED':
       return 'ERROR'
+    case 'COMPLETED':
+      return 'IDLE'
+    case 'CANCELLED':
+    case 'PAUSED':
+      return previous === 'RUNNING' ? 'IDLE' : previous
     case 'QUEUED':
-    case 'PLANNING':
-    case 'REVIEWING':
     case 'WAITING_FOR_USER':
       return 'ACTIVE'
     default:
