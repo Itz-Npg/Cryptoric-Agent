@@ -118,13 +118,33 @@ jobs:
             console.log('reason=' + r.reason);
           "
 
-          AFTER="$(find "$WORK" -type f -not -path '*/.cryptoric/*' | sort)"
+          # `.cryptoricagent/` is excluded on purpose. Opening a folder is
+          # *supposed* to create it — project id plus transcript — so counting
+          # it as "the agent changed the project" would fail the build for the
+          # behaviour we want. What must not appear is any other file.
+          AFTER="$(find "$WORK" -type f \
+            -not -path '*/.cryptoric/*' \
+            -not -path '*/.cryptoricagent/*' | sort)"
           if [ "$BEFORE" != "$AFTER" ]; then
-            echo "::error::The run changed files in the project directory."
+            echo "::error::The run changed project files."
             diff <(echo "$BEFORE") <(echo "$AFTER") || true
             exit 1
           fi
-          echo "no files were created"
+          echo "no project files were created"
+
+          # ...and the workspace it is allowed to create must actually be there,
+          # with a real id. Otherwise "excluded" would quietly become "missing".
+          for f in project.json conversation.json; do
+            if [ ! -f "$WORK/.cryptoricagent/$f" ]; then
+              echo "::error::Expected .cryptoricagent/$f after opening a project."
+              exit 1
+            fi
+          done
+          node -e "
+            const m = require('$WORK/.cryptoricagent/project.json');
+            if (typeof m.id !== 'string' || !m.id.length) throw new Error('no project id');
+            console.log('project id: ' + m.id);
+          "
 
       - name: A bad command line exits 64, not 1
         run: |
