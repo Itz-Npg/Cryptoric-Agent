@@ -326,7 +326,11 @@ async function boot(): Promise<Services> {
               taskId: null,
               grantedTier: 'safe',
               recordArtifact: () => ({}) as never
-            }) ?? Promise.resolve({ ok: false, summary: 'Unknown tool', error: `No tool registered with id "${toolId}".` })
+            }) ?? Promise.resolve({ ok: false, summary: 'Unknown tool', error: `No tool registered with id "${toolId}".` }),
+        // Read from the same registry the tools come from, so a stage asking
+        // "can this build drive a browser?" gets an answer that tracks the real
+        // tool set instead of a separately-maintained capability flag.
+        hasTool: (toolId) => tools.has(toolId)
       },
       getProject: () => project,
       probeRuntime: async (toolId) => {

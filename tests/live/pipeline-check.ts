@@ -192,7 +192,7 @@ async function runPipeline(prompt: string, root: string): Promise<{ task: AgentT
   }
 
   const stages = buildPipeline({
-    tools: { call: async () => ({ ok: true, summary: 'unused' }) },
+    tools: { call: async () => ({ ok: true, summary: 'unused' }), hasTool: () => false },
     getProject: () => project as never,
     probeRuntime: async () => ({ state: 'present', version: 'n/a', detail: '' }),
     model: async (ctx, phase) => {
@@ -281,6 +281,7 @@ async function runPipeline(prompt: string, root: string): Promise<{ task: AgentT
             workspaceRoots: [root]
           })
         },
+        hasTool: (toolId) => tools.has(toolId),
         workspaceRoots: [root],
         skillContext: '',
         selectedSkills: []

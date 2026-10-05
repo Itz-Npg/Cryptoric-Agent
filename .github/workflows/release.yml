@@ -69,6 +69,92 @@ jobs:
       - name: Unit tests
         run: npx vitest run
 
+  # The integrated browser is the largest single subsystem in this project
+  # (43 tools, ~5,600 lines) and until now its only proof lived on whoever's
+  # desktop happened to run `npm run test:browser`. A subsystem that large
+  # cannot be verified by one developer pressing one command.
+  #
+  # It has to run under a real Electron main process against real Chromium:
+  # `WebContentsView`, the DevTools protocol and the permission handlers simply
+  # do not exist under vitest, so there is no honest way to move this into the
+  # Node-based `verify` job. xvfb supplies the display the runner lacks.
+  browser:
+    name: Live browser check (real Chromium)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Chromium's runtime libraries, and xvfb for the display. Without these the
+      # Electron binary cannot start and the failure is an unhelpful shared-object
+      # error rather than a test result.
+      - name: Install Chromium and display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            xvfb \
+            libnss3 \
+            libatk1.0-0 \
+            libatk-bridge2.0-0 \
+            libcups2 \
+            libdrm2 \
+            libgbm1 \
+            libgtk-3-0 \
+            libnspr4 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxrandr2 \
+            libasound2t64 \
+            libpango-1.0-0 \
+            libcairo2
+
+      # Electron's setuid sandbox needs privileges a GitHub runner does not
+      # grant. Disabling it is safe here and only here: this job runs a
+      # first-party test against a local fixture server, not untrusted content.
+      - name: Live browser check
+        env:
+          ELECTRON_DISABLE_SANDBOX: '1'
+        run: |
+          set -o pipefail
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
+            npm run test:browser 2>&1 | tee browser-check.log
+
+      # The harness exits 1 on any failure, and `pipefail` above propagates that
+      # through `tee`. The count is asserted as well, because a run that crashed
+      # before its first assertion would otherwise be indistinguishable from a
+      # pass in the job summary.
+      - name: Assert the browser suite actually ran its assertions
+        run: |
+          SUMMARY="$(grep -oE '^[0-9]+/[0-9]+ checks passed' browser-check.log | tail -1)"
+          if [ -z "$SUMMARY" ]; then
+            echo "::error::No 'N/M checks passed' line in the browser check output."
+            tail -40 browser-check.log
+            exit 1
+          fi
+          PASSED="${SUMMARY%%/*}"
+          TOTAL="${SUMMARY##*/}"
+          TOTAL="${TOTAL%% *}"
+          echo "browser checks: $PASSED/$TOTAL"
+          if [ "$PASSED" != "$TOTAL" ]; then
+            echo "::error::$((TOTAL - PASSED)) browser check(s) failed."
+            grep -E '^\[FAIL\]' browser-check.log || true
+            exit 1
+          fi
+          if [ "$TOTAL" -lt 40 ]; then
+            echo "::error::Only $TOTAL browser checks ran; the suite has more than that."
+            echo "A partial run must not be reported as a passing one."
+            exit 1
+          fi
+
   build:
     name: Package ${{ matrix.name }}
     needs: verify

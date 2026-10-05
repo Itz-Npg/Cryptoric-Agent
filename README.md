@@ -81,6 +81,30 @@ timeout, cancellation, redaction and audit. The model chooses a tool; it cannot
 raise a tool's tier. Permissions are visible per domain in Settings
 (`fs.read`, `fs.write`, `terminal.elevated`, …).
 
+### Browser
+
+The agent drives a real Chromium. **43 browser tools** are registered, from
+`browser_create_tab` and `browser_navigate` through typing, clicking, dragging,
+uploading, downloads, dialogs, permissions, cookies, storage, console capture
+and network-failure capture.
+
+This is not a stub and not a mock. `npm run test:browser` runs **59 checks
+against real Chromium in a real Electron main process**, driving the same tool
+definitions through the same `ToolRuntime` that enforces tiers, approvals,
+redaction and audit — the `verify` and `redact` guards below are proved there,
+not asserted.
+
+That check now runs in CI under `xvfb`, so a regression in the largest
+subsystem in this project cannot reach `main` unnoticed.
+
+The verify stage uses it too. When a task changes web files, the stage opens the
+page for real and fails the task on console errors or failed requests. It
+reports five distinct outcomes — `PASSED`, `FAILED`, `NOT RUN`,
+`NOT APPLICABLE`, `ERROR` — because "no browser was needed", "this build has no
+browser" and "the browser could not be reached" are three different facts, and
+collapsing them into one is how a stage ends up denying a capability the build
+has.
+
 ---
 
 ## Status — honestly
@@ -89,6 +113,10 @@ raise a tool's tier. Permissions are visible per domain in Settings
 
 - Agent loop with real tools — `npm run test:agent` → **13/13**
 - Full stage pipeline incl. the evidence gate — `npm run test:agent:pipeline` → **8/8**
+- **Integrated browser** — `npm run test:browser` → **59/59 against real Chromium**,
+  43 tools, now running in CI under `xvfb`
+- Release signing — sign and verify round trip on the real 188 MB installer;
+  public key in [`docs/signing/`](docs/signing/SIGNING.md)
 - Coin allowance rules — 14 tests in `tests/unit/coins.test.ts`
 - Watchdogs on every model call, tool call and stage. No unbounded `await`.
 - Hard ceilings: 30 iterations, 40 model calls, 100 tool calls, 30 min — each
@@ -100,11 +128,15 @@ raise a tool's tier. Permissions are visible per domain in Settings
 
 **Not done — stated rather than implied:**
 
-- **Browser automation does not exist.** The verify stage reports
-  `browser: NOT RUN`. There is no browser tool in this build.
+- **The browser check needs a display.** It passes in CI under `xvfb` and on a
+  desktop, but it cannot run under `vitest` — `WebContentsView`, the DevTools
+  protocol and the permission handlers do not exist in Node. There is no
+  headless variant, and inventing one would mean testing a fake.
 - **Runtime installation is Windows-only.** Every installer id is `-winget`;
   there is no apt or brew route. On macOS/Linux the product correctly refuses.
-- **Binaries are unsigned.** SmartScreen warns, Gatekeeper blocks on first open.
+- **Binaries carry no Authenticode signature.** They are GPG-signed, which
+  proves provenance but does not clear SmartScreen — see
+  [`docs/signing/SIGNING.md`](docs/signing/SIGNING.md).
 - **Multi-project workspaces** — persistence scoping exists; the UI does not.
 - **`npm run lint` exits 1** on ~350 pre-existing errors in untouched files.
 
