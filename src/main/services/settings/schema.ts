@@ -70,7 +70,17 @@ export const ProviderConfigSchema = z.object({
   models: z.array(z.string().min(1)).default([]),
   /** Set when the user marked this provider as their own; BYOK spends nothing. */
   byok: z.boolean().default(false),
-  enabled: z.boolean().default(true)
+  enabled: z.boolean().default(true),
+  /**
+   * The user's own statement of the model's context window, in tokens.
+   *
+   * A budget the user typed, never a capability this app detected. It is read by
+   * the gateway, which refuses an over-long prompt with the numbers rather than
+   * letting the provider answer with an opaque 400.
+   */
+  contextWindow: z.number().int().positive().max(10_000_000).optional(),
+  /** Ceiling on a single reply, in tokens. Clamps whatever the agent asked for. */
+  maxOutputTokens: z.number().int().positive().max(1_000_000).optional()
 })
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>
