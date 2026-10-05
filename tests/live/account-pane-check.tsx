@@ -27,10 +27,10 @@ const account = {
   signedInAt: '2026-10-05T10:00:00.000Z'
 }
 
-const cases: { name: string; status: AuthStatus | null; phase: 'idle' | 'starting' | 'waiting'; error: string | null; hosted: boolean }[] = [
+const cases: { name: string; status: AuthStatus | null; phase: 'idle' | 'pending'; error: string | null; hosted: boolean }[] = [
   { name: 'signed out, configured', status: { signedIn: false, configured: true, account: null, message: null }, phase: 'idle', error: null, hosted: false },
   { name: 'not configured', status: { signedIn: false, configured: false, account: null, message: 'Set GOOGLE_CLIENT_ID in .env to a Desktop app client id.' }, phase: 'idle', error: null, hosted: true },
-  { name: 'waiting', status: { signedIn: false, configured: true, account: null, message: null }, phase: 'waiting', error: null, hosted: false },
+  { name: 'in flight', status: { signedIn: false, configured: true, account: null, message: null }, phase: 'pending', error: null, hosted: false },
   { name: 'failed', status: { signedIn: false, configured: true, account: null, message: null }, phase: 'idle', error: 'Sign-in timed out. Try again.', hosted: false },
   { name: 'signed in', status: { signedIn: true, configured: true, account, message: null }, phase: 'idle', error: null, hosted: true }
 ]
