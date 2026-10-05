@@ -52,7 +52,10 @@ import {
 } from './services/models/custom-providers'
 import { ensureProjectWorkspace, resolveHistoryPaths } from './services/project/workspace'
 import { SessionLedger, ledgerPath } from './services/session/ledger'
-import { remainingMs, resumableGrant, startSession, type ModelTier } from '@shared/session-time'
+import { beginSession as beginSessionForTask } from './services/session/charge'
+import { AgentServerClient, serverConfigFrom } from './services/server/client'
+import { remainingMs, resumableGrant } from '@shared/session-time'
+import type { RunMode } from '@shared/mode'
 import {
   authorizeUrl,
   createAttempt,
@@ -63,7 +66,13 @@ import {
   attemptIsFresh,
   type AuthAttempt
 } from './services/auth/google'
-import { AUTH_CREDENTIAL, parseSession, summarise, type SessionSummary } from './services/auth/session-store'
+import {
+  AUTH_CREDENTIAL,
+  parseSession,
+  readStoredAccountId,
+  summarise,
+  type SessionSummary
+} from './services/auth/session-store'
 import { CALLBACK_PORT, CALLBACK_URI, startCallbackListener, type CallbackListener } from './services/auth/loopback'
 import { startSignIn } from './services/auth/sign-in'
 import { describeMode, modeRequiresAccount, resolveMode } from '../shared/mode'
@@ -330,6 +339,33 @@ async function boot(): Promise<Services> {
     credentialsRef.get = (key: string | null) => (key ? c.get(key) : null)
   }
 
+  // --------------------------------------------------------------- mode
+  //
+  // Resolved once, here, and handed to both the billing gate and the mode
+  // route. Resolving it per request would mean a build could bill one task as
+  // local and the next as hosted if the environment changed underneath it.
+  //
+  // A half-configured build is *refused*, not downgraded. `AGENT_SERVER_URL`
+  // with no `CRYPTORIC_MODE` means someone meant to connect; falling back to the
+  // local ledger would show them a balance the app is not spending.
+  const modeEnv = readEnvFile([app.getPath('userData'), process.cwd()])
+  const modeResult = resolveMode(modeEnv)
+  const runMode: RunMode = modeResult.ok ? modeResult.mode : 'local'
+  const serverConfigResult = modeResult.ok ? serverConfigFrom(modeEnv, runMode) : null
+  const modeProblem = !modeResult.ok
+    ? modeResult.error
+    : serverConfigResult && !serverConfigResult.ok
+      ? serverConfigResult.error
+      : ''
+  const server =
+    serverConfigResult && serverConfigResult.ok && serverConfigResult.config
+      ? new AgentServerClient({ config: serverConfigResult.config })
+      : null
+
+  /** The account the server should bill, read fresh: signing in changes it. */
+  const currentAccountId = async (): Promise<string | null> =>
+    readStoredAccountId(await credentials.get(AUTH_CREDENTIAL))
+
   const agent = new AgentRuntime(
     {
       tools,
@@ -343,34 +379,32 @@ async function boot(): Promise<Services> {
       skillTokenBudget: 6000,
       maxSkillsPerTask: 4,
       getProjectRoot: () => project?.root ?? null,
-      beginSession: async (task, resume) => {
-        const now = Date.now()
-        const day = new Date(now).toISOString().slice(0, 10)
-        // A resumed task continues the session it was interrupted in. Charging
-        // again would bill the user twice for the same thirty minutes, and the
-        // time it would buy has, by definition, already partly elapsed.
-        if (resume && remainingMs(resume, now) > 0) {
-          return { ok: true as const, grant: resume, remainingCoins: 0 }
-        }
-        // Balance is derived, never stored as a running total: the gateway's
-        // daily allowance (which already knows about the signup bonus) minus
-        // everything the session ledger says was charged today.
-        const balance = Math.max(0, gateway.budget().budgetCoins - sessionLedger.chargedOn(day))
-        // Own key or a model running on the user's machine costs nothing to
-        // serve, so it is the cheap tier. Anything Cryptoric pays for is not.
-        const tier: ModelTier = gateway.usesUserKey() || gateway.getConfig().provider === 'ollama' ? 'own' : 'hosted'
-        const result = startSession({
-          id: task.id,
-          model: gateway.getConfig().model,
-          tier,
-          available: balance,
-          now,
-          projectRoot: task.projectRoot ?? '',
-          prompt: task.prompt
-        })
-        if (result.ok) await sessionLedger.record(result.grant)
-        return result
-      },
+      // Who pays, and how much, is decided in one tested place: `local` derives
+      // the balance from the gateway's allowance minus the ledger, `hosted`
+      // asks the server and uses its answer. A resumed task is charged nothing
+      // in either mode.
+      beginSession: async (task, resume) =>
+        beginSessionForTask(
+          {
+            mode: runMode,
+            server,
+            blockedReason: modeProblem.length > 0 ? modeProblem : null,
+            accountId: currentAccountId,
+            // Balance is derived, never stored as a running total.
+            localBalance: () => {
+              const day = new Date().toISOString().slice(0, 10)
+              return Math.max(0, gateway.budget().budgetCoins - sessionLedger.chargedOn(day))
+            },
+            record: (grant) => sessionLedger.record(grant),
+            model: () => gateway.getConfig().model,
+            // Own key or a model running on the user's machine costs nothing to
+            // serve, so it is the cheap tier. Anything Cryptoric pays for is not.
+            tier: () =>
+              gateway.usesUserKey() || gateway.getConfig().provider === 'ollama' ? 'own' : 'hosted'
+          },
+          { id: task.id, projectRoot: task.projectRoot ?? '', prompt: task.prompt },
+          resume
+        ),
       endSession: async (grantId) => {
         await sessionLedger.markConsumed(grantId)
       },
@@ -659,6 +693,11 @@ async function boot(): Promise<Services> {
   }
 
   registerRoutes(router, {
+    runMode,
+    server,
+    modeProblem,
+    currentAccountId,
+    sessionLedger,
     env,
     terminals,
     processes,
@@ -741,6 +780,13 @@ async function boot(): Promise<Services> {
 }
 
 interface RouteDeps {
+  /** Which mode this build runs in, and the server it bills. */
+  runMode: RunMode
+  server: AgentServerClient | null
+  /** Why charging is impossible here, when it is. */
+  modeProblem: string
+  currentAccountId(): Promise<string | null>
+  sessionLedger: SessionLedger
   env: EnvironmentManager
   terminals: TerminalSessionManager
   processes: ProcessSupervisor
@@ -765,6 +811,7 @@ interface RouteDeps {
 
 function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   const { env, terminals, processes, tools, policy, approvals, skills, agent, store, files, git, gateway } = deps
+  const { runMode, server, modeProblem, currentAccountId, sessionLedger } = deps
   const { updates } = deps
   const settings = deps.settings
   const credentials = deps.credentials
@@ -939,6 +986,38 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   // The renderer cannot read `CRYPTORIC_MODE` itself, and guessing `local`
   // would be a lie with a UI attached to it: a hosted build would show a local
   // balance and ask nobody to sign in.
+  router.register(CHANNELS.balanceGet, {
+    domain: 'network.read',
+    requiresApproval: false,
+    // In `hosted` this is the server's number, fetched on request. Showing the
+    // local ledger in a hosted build would be a balance the app does not spend.
+    handler: async () => {
+      const day = new Date().toISOString().slice(0, 10)
+      if (runMode === 'hosted') {
+        if (!server) return { source: 'server' as const, ok: false, error: modeProblem || 'No account server is configured.' }
+        const accountId = await currentAccountId()
+        if (!accountId) {
+          return { source: 'server' as const, ok: false, error: 'Sign in to see the balance this build spends.' }
+        }
+        const remote = await server.balance(accountId)
+        if (!remote.ok) return { source: 'server' as const, ok: false, error: remote.error }
+        return {
+          source: 'server' as const,
+          ok: true,
+          accountId: remote.value.accountId,
+          balance: remote.value.balance,
+          dailyCoins: remote.value.dailyCoins
+        }
+      }
+      return {
+        source: 'local' as const,
+        ok: true,
+        balance: Math.max(0, gateway.budget().budgetCoins - sessionLedger.chargedOn(day)),
+        dailyCoins: gateway.budget().budgetCoins
+      }
+    }
+  })
+
   router.register(CHANNELS.modeGet, {
     domain: 'env.detect',
     requiresApproval: false,

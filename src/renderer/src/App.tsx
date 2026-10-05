@@ -368,9 +368,11 @@ export function App() {
               phase={state.authPhase}
               error={state.authError}
               hosted={state.mode?.ok === true && state.mode.mode === 'hosted'}
+              balance={state.balance}
               onSignIn={() => void actions.startSignIn()}
               onSignOut={() => void actions.signOut()}
               onComplete={(code, state_) => void actions.completeSignIn(code, state_)}
+              onRefreshBalance={() => void actions.refreshBalance()}
             />
           )}
 

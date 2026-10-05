@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { accountView, parsePastedRedirect } from '../../src/shared/account-view'
+import { accountView, describeBalance, parsePastedRedirect } from '../../src/shared/account-view'
 import type { AuthStatus } from '../../src/preload'
 
 function status(over: Partial<AuthStatus> = {}): AuthStatus {
@@ -156,5 +156,37 @@ describe('reading a redirect pasted by hand', () => {
     expect(parsed.ok).toBe(false)
     if (parsed.ok) return
     expect(parsed.error).toMatch(/no sign-in response/i)
+  })
+})
+
+describe('the coins line', () => {
+  it('says it is still reading, rather than claiming the user is broke', () => {
+    expect(describeBalance(null)).toMatch(/reading/i)
+  })
+
+  it('shows a failure as a failure, so no stale number is left standing', () => {
+    expect(describeBalance({ source: 'server', ok: false, error: 'The Cryptoric account server could not be reached.' }))
+      .toMatch(/could not be reached/)
+  })
+
+  it('says where the coins are counted, which differs by mode', () => {
+    expect(describeBalance({ source: 'server', ok: true, balance: 25, dailyCoins: 25 })).toMatch(
+      /on the Cryptoric server/
+    )
+    expect(describeBalance({ source: 'local', ok: true, balance: 25, dailyCoins: 25 })).toMatch(/on this computer/)
+  })
+
+  it('converts coins into the minutes they actually buy', () => {
+    // 6 minutes a coin: 20 coins is two hours. An approximate figure here would
+    // be the same lie the pricing rule exists to prevent.
+    expect(describeBalance({ source: 'server', ok: true, balance: 20 })).toMatch(/about 120 minutes/)
+  })
+
+  it('does not call one coin "1 coins"', () => {
+    expect(describeBalance({ source: 'local', ok: true, balance: 1 })).toMatch(/1 coin —/)
+  })
+
+  it('says plainly that zero coins stops the agent', () => {
+    expect(describeBalance({ source: 'server', ok: true, balance: 0 })).toMatch(/cannot run/i)
   })
 })

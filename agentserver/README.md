@@ -47,6 +47,22 @@ in a file.
 
 All except `/health` need `Authorization: Bearer $AGENT_SERVER_TOKEN`.
 
+### The client side of this
+
+The Electron app ships a client for exactly these endpoints
+(`src/main/services/server/client.ts`) and a billing gate that uses nothing
+else in `hosted` mode (`src/main/services/session/charge.ts`):
+
+- a task's price comes from `POST /v1/charge`, and the grant is built from the
+  server's `coins` and `minutes` — the app never computes its own;
+- an unreachable server **refuses the task**. It does not fall back to the local
+  ledger, because unplugging the network would otherwise be a way to run free;
+- nobody signed in means no task, with the server's own wording;
+- a resumed task sends no request at all — it continues the grant it already has.
+
+`tests/unit/hosted-session.test.ts` drives all four against this real handler on
+a real socket.
+
 ```bash
 curl -X POST http://127.0.0.1:8789/v1/accounts \
   -H "authorization: Bearer $AGENT_SERVER_TOKEN" \
@@ -143,5 +159,7 @@ list, commit it and point at the file in your repo.
   API; the wire format itself is assumed to match Atlas's. Point it at a real
   cluster before trusting a balance with it.
 - **It has no accounts, no passwords and no sessions.** `accountId` is an opaque
-  id the client is responsible for issuing. Google sign-in is what should mint
-  it, and that is not built.
+  id, and the app now mints it from a Google sign-in (`acct_` plus 32 hex
+  characters) rather than trusting anything the request body says. What the
+  server still does not do is *authenticate* that id: it stores what it is
+  given. Anyone who can reach it with the token can bill any account id.

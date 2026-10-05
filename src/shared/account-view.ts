@@ -11,7 +11,7 @@
  * cannot import out of `src/renderer/`.
  */
 
-import type { AuthStatus } from '../preload'
+import type { AuthStatus, BalanceInfo } from '../preload'
 
 /** Where the browser round-trip has got to. */
 export type SignInPhase = 'idle' | 'starting' | 'waiting'
@@ -118,6 +118,26 @@ export function accountView(status: AuthStatus | null, phase: SignInPhase, error
     busy,
     notice: null
   }
+}
+
+/**
+ * The coins line under the account surface.
+ *
+ * `null` means "not read yet", which is not the same as zero: a build that has
+ * not asked must not claim the user is broke. A failed read shows the reason,
+ * because a balance left over from an earlier successful read would be a stale
+ * number presented as current.
+ */
+export function describeBalance(balance: BalanceInfo | null): string {
+  if (balance === null) return 'Reading your balance…'
+  if (!balance.ok) return balance.error
+  const where = balance.source === 'server' ? 'on the Cryptoric server' : 'on this computer'
+  const allowance = balance.dailyCoins && balance.dailyCoins > 0 ? ` of ${balance.dailyCoins} today` : ''
+  if (balance.balance <= 0) {
+    return `No coins left${allowance}. They are counted ${where}, and the agent cannot run until the allowance refreshes.`
+  }
+  const minutes = Math.round(balance.balance * 6)
+  return `${balance.balance} coin${balance.balance === 1 ? '' : 's'}${allowance} — about ${minutes} minutes of agent time, counted ${where}.`
 }
 
 /**

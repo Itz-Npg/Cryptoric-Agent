@@ -43,9 +43,11 @@ for (const c of cases) {
       phase: c.phase,
       error: c.error,
       hosted: c.hosted,
+      balance: { source: 'server', ok: true, balance: 20, dailyCoins: 25 },
       onSignIn: () => {},
       onSignOut: () => {},
-      onComplete: () => {}
+      onComplete: () => {},
+      onRefreshBalance: () => {}
     })
   )
   const view = accountView(c.status, c.phase, c.error)
@@ -60,6 +62,8 @@ for (const c of cases) {
     ['action label rendered', view.action ? has(view.action.label) : true],
     ['primary button count matches the view model', primaryButtons === (wantsPrimary ? 1 : 0)],
     ['paste box present', has('127.0.0.1:53123/callback?code=')],
+    ['coins line present', has('20 coins')],
+    ['balance says where it is counted', has('on the Cryptoric server')],
     ['no token in markup', !/ya29\.|refresh_token|accessToken/.test(html)]
   ]
   if (c.hosted) checks.push(['hosted chip rendered', has('Hosted')])

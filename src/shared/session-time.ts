@@ -150,6 +150,55 @@ export function startSession(input: {
   }
 }
 
+/**
+ * Build a grant from a price somebody else decided.
+ *
+ * The hosted path must not go through `startSession`: that one computes the
+ * price locally, which is precisely the authority the server exists to hold. The
+ * coins and minutes arrive from the server and are used as given; the only
+ * things decided here are when the time runs out, and which project and prompt
+ * it belongs to.
+ *
+ * A charge of nothing is refused rather than accepted, because a zero-coin
+ * grant is an unlimited agent wearing a session's clothes.
+ */
+export function grantFromCharge(input: {
+  id: string
+  model: string
+  coins: number
+  minutes: number
+  now: number
+  projectRoot: string
+  prompt: string
+}): GrantResult {
+  const coins = Number.isFinite(input.coins) ? input.coins : 0
+  const minutes = Number.isFinite(input.minutes) ? input.minutes : 0
+  if (coins <= 0 || minutes <= 0) {
+    return {
+      ok: false,
+      error:
+        'You have no coins left, so the agent cannot run. Your allowance refreshes tomorrow, ' +
+        'or raise it in Settings.'
+    }
+  }
+  return {
+    ok: true,
+    grant: {
+      id: input.id,
+      model: input.model,
+      coins,
+      minutes,
+      startedAt: input.now,
+      expiresAt: input.now + minutes * 60_000,
+      day: new Date(input.now).toISOString().slice(0, 10),
+      projectRoot: input.projectRoot,
+      prompt: input.prompt,
+      consumed: false
+    },
+    remainingCoins: 0
+  }
+}
+
 /** Milliseconds left on a grant. Never negative: an expired grant is zero. */
 export function remainingMs(grant: SessionGrant, now: number): number {
   return Math.max(0, grant.expiresAt - now)

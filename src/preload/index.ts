@@ -41,6 +41,18 @@ export type ModeInfo =
       requiresAccount: boolean
     }
   | { ok: false; error: string }
+
+/** Coins, and whether they are counted here or on the server. */
+export type BalanceInfo =
+  | {
+      source: 'local' | 'server'
+      ok: true
+      balance: number
+      /** The day's allowance, when the source knows one. */
+      dailyCoins?: number
+      accountId?: string
+    }
+  | { source: 'local' | 'server'; ok: false; error: string }
 import type {
   AgentTask,
   ConversationTurn,
@@ -391,6 +403,15 @@ const api = {
    */
   mode: {
     get: () => invoke<ModeInfo>(CHANNELS.modeGet, {})
+  },
+  /**
+   * Coins available, and where they live.
+   *
+   * `source` is part of the answer rather than something the UI decides: in a
+   * hosted build the number is the server's, and the UI must say so.
+   */
+  balance: {
+    get: () => invoke<BalanceInfo>(CHANNELS.balanceGet, {})
   },
   /** Subscribe to main-process pushes. Returns an unsubscribe function. */
   onMainEvent(handler: (event: MainEvent) => void): Unsubscribe {
