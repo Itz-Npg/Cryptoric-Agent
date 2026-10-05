@@ -15,6 +15,8 @@ import { resolve } from 'node:path'
 
 import { HELP_TEXT, parseArgs, type RunCommand } from './args'
 import { CliHost, resolveStateDir, verdictFor } from './host'
+import { Session } from './repl'
+import { wordmarkWidth, type ChromeOptions } from './banner'
 import { EXIT_CANCELLED, EXIT_USAGE, exitCodeFor } from './exit-code'
 import {
   renderApprovalWarning,
@@ -32,6 +34,24 @@ const render: RenderOptions = {
   // Colour only when a human is watching AND nobody is capturing. Piping to a
   // file is the normal case in CI, and escape codes there are noise.
   color: Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined
+}
+
+/**
+ * Terminal geometry, used for the wordmark and the result box.
+ *
+ * The width is clamped rather than trusted: `columns` is undefined when stdout
+ * is not a terminal, and a box built from `undefined` produces `NaN` dashes.
+ */
+function chromeOptions(): ChromeOptions {
+  const width = Math.max(48, Math.min(process.stdout.columns ?? 88, 100))
+  const color = render.color
+  return {
+    color,
+    width,
+    // The block wordmark needs its own width plus margin, or it wraps and
+    // destroys the frame it is drawn in.
+    wordmark: color && width >= wordmarkWidth() + 4
+  }
 }
 
 function write(text: string): void {
@@ -257,6 +277,23 @@ async function main(): Promise<void> {
 
   const command = parsed.command
   switch (command.kind) {
+    case 'chat': {
+      if (!process.stdin.isTTY) {
+        process.stderr.write('cryptoric: the interactive session needs a terminal.\n')
+        process.stderr.write('For a pipe or a script, use: cryptoric run "<task>"\n')
+        process.exitCode = EXIT_USAGE
+        return
+      }
+      const session = await Session.create({
+        cwd: resolve(process.cwd()),
+        chrome: chromeOptions(),
+        allowApprovals: false,
+        env: process.env,
+        isTTY: Boolean(process.stderr.isTTY)
+      })
+      process.exitCode = await session.run()
+      return
+    }
     case 'help':
       write(HELP_TEXT)
       return

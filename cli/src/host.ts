@@ -78,6 +78,8 @@ export interface RunResult {
   answer: string | null
   task: AgentTask
   durationMs: number
+  /** Turns now on disk for this project. */
+  history: number
 }
 
 /**
@@ -356,6 +358,15 @@ export class CliHost {
 
   async run(task: string, signal: AbortSignal): Promise<RunResult> {
     const started = Date.now()
+
+    // Scoped to the project and recorded before anything runs. Without this a
+    // CLI session with no model provider wrote an empty conversation file, so
+    // "the history is still there after a restart" was true only for runs that
+    // reached the model. The task text belongs in the history regardless of
+    // which stages it managed to reach.
+    this.conversation.setProject(this.projectRoot)
+    this.conversation.appendUser(task)
+
     const created = this.requireAgent().submit({
       title: task.length > 72 ? `${task.slice(0, 69)}…` : task,
       prompt: task,
@@ -375,10 +386,18 @@ export class CliHost {
     const reason =
       firstNonEmpty(finished.evidence?.reason, finished.error, this.lastAnswer)
 
+    // The outcome is recorded too, so the history reads as a conversation
+    // rather than a list of unanswered questions.
+    const verdict = verdictFor(finished)
+    this.conversation.appendAssistant(
+      firstNonEmpty(this.lastAnswer, reason) ?? `${verdict}: no response was produced.`
+    )
+
     return {
-      verdict: verdictFor(finished),
+      verdict,
       reason,
       answer: this.lastAnswer,
+      history: this.conversation.all().length,
       task: finished,
       durationMs: Date.now() - started
     }

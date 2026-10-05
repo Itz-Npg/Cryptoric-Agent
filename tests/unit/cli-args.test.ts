@@ -13,9 +13,15 @@ import { describe, expect, it } from 'vitest'
 import { HELP_TEXT, parseArgs } from '../../cli/src/args'
 
 describe('parseArgs', () => {
-  it('shows help when given nothing', () => {
+  it('opens the interactive session when given nothing', () => {
+    // `cryptoric` with no subcommand is the product: a prompt box. Help is what
+    // you get when you ask for it, not what you get for having a shell.
     const result = parseArgs([])
-    expect(result).toEqual({ ok: true, command: { kind: 'help' } })
+    expect(result).toEqual({ ok: true, command: { kind: 'chat' } })
+  })
+
+  it('still reaches help on request', () => {
+    expect(parseArgs(['help'])).toEqual({ ok: true, command: { kind: 'help' } })
   })
 
   it.each([

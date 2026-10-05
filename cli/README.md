@@ -4,10 +4,19 @@ Cryptoric Chan from your terminal — the same staged agent pipeline that runs
 inside the Cryptoric Agent desktop app, headless.
 
 ```bash
-cryptoric run "add a README describing this project"
+cryptoric                       # interactive: prompt box, type a task, get a result
+cryptoric run "add a README describing this project"   # one shot, for scripts
 ```
 
+Inside a session: `/tools` lists what the binary can actually call, `/doctor`
+reports configuration, `/cwd` prints the workspace root, `/exit` leaves.
+
 ## What this is
+
+![A real cryptoric session: the wordmark, a task typed into the prompt box, and a BLOCKED verdict because no model provider is configured](docs/cli-session.svg)
+
+<sub>A real capture, produced by `node scripts/capture-cli-svg.mjs` driving this
+code with no model provider configured. It is what the CLI actually printed.</sub>
 
 The desktop app and this CLI are two **composition roots** over one
 implementation. `AgentRuntime`, the stage pipeline, `ToolRuntime`,

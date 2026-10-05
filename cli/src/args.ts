@@ -44,6 +44,10 @@ export interface DoctorCommand {
   json: boolean
 }
 
+export interface ChatCommand {
+  kind: 'chat'
+}
+
 export interface HelpCommand {
   kind: 'help'
 }
@@ -52,7 +56,7 @@ export interface VersionCommand {
   kind: 'version'
 }
 
-export type Command = RunCommand | ToolsCommand | DoctorCommand | HelpCommand | VersionCommand
+export type Command = RunCommand | ToolsCommand | DoctorCommand | ChatCommand | HelpCommand | VersionCommand
 
 export type ParseResult = { ok: true; command: Command } | { ok: false; error: string }
 
@@ -72,10 +76,11 @@ const VALUE_FLAGS = new Set([
 
 const BOOLEAN_FLAGS = new Set(['--yes', '--deny', '--json', '--help', '-h', '--version', '-v'])
 
-export const HELP_TEXT = `cryptoric — Cryptoric Chan in your terminal
+export const HELP_TEXT = `cryptoric — Cryptoric Agent from your terminal
 
 Usage:
-  cryptoric run "<task>"        Run the agent pipeline on a task
+  cryptoric                     Interactive session: type a task, get a result
+  cryptoric run "<task>"        Run one task and exit (for scripts and CI)
   cryptoric tools               List the tools this CLI actually has
   cryptoric doctor              Report environment and configuration
   cryptoric help                This text
@@ -108,7 +113,9 @@ Exit codes:
 const DEFAULT_TIMEOUT_MS = 1_800_000
 
 export function parseArgs(argv: readonly string[]): ParseResult {
-  if (argv.length === 0) return { ok: true, command: { kind: 'help' } }
+  // No arguments opens the interactive session rather than printing help. The
+  // prompt box is the product; help is what you ask for explicitly.
+  if (argv.length === 0) return { ok: true, command: { kind: 'chat' } }
 
   const first = argv[0] as string
 
