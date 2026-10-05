@@ -326,7 +326,11 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [build, sign]
+    # The phone jobs are dependencies, not bystanders. Without them here the
+    # publish step starts as soon as the desktop build finishes, while the macOS
+    # and Android runners are still compiling, and `download-artifact` then fails
+    # on an artifact that simply has not been uploaded yet.
+    needs: [build, sign, ios-ipa, android-apk]
     # Publishing is destructive and outward-facing: only ever on an explicit
     # version tag, never on an ordinary push to main.
     if: startsWith(github.ref, 'refs/tags/v')
