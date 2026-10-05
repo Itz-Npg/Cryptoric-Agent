@@ -284,7 +284,8 @@ async function runPipeline(prompt: string, root: string): Promise<{ task: AgentT
         hasTool: (toolId) => tools.has(toolId),
         workspaceRoots: [root],
         skillContext: '',
-        selectedSkills: []
+        selectedSkills: [],
+    session: null
       })
       if (!outcome.continue) {
         task.status = (outcome.status === 'PARTIAL' ? 'BLOCKED' : outcome.status) ?? 'COMPLETED'

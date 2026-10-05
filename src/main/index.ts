@@ -51,6 +51,8 @@ import {
   urlLeaksSecret
 } from './services/models/custom-providers'
 import { ensureProjectWorkspace, resolveHistoryPaths } from './services/project/workspace'
+import { SessionLedger, ledgerPath } from './services/session/ledger'
+import { remainingMs, resumableGrant, startSession, type ModelTier } from '@shared/session-time'
 import { FileService } from './services/fs/files'
 import { GitService } from './services/git/service'
 import {
@@ -325,6 +327,37 @@ async function boot(): Promise<Services> {
       skillTokenBudget: 6000,
       maxSkillsPerTask: 4,
       getProjectRoot: () => project?.root ?? null,
+      beginSession: async (task, resume) => {
+        const now = Date.now()
+        const day = new Date(now).toISOString().slice(0, 10)
+        // A resumed task continues the session it was interrupted in. Charging
+        // again would bill the user twice for the same thirty minutes, and the
+        // time it would buy has, by definition, already partly elapsed.
+        if (resume && remainingMs(resume, now) > 0) {
+          return { ok: true as const, grant: resume, remainingCoins: 0 }
+        }
+        // Balance is derived, never stored as a running total: the gateway's
+        // daily allowance (which already knows about the signup bonus) minus
+        // everything the session ledger says was charged today.
+        const balance = Math.max(0, gateway.budget().budgetCoins - sessionLedger.chargedOn(day))
+        // Own key or a model running on the user's machine costs nothing to
+        // serve, so it is the cheap tier. Anything Cryptoric pays for is not.
+        const tier: ModelTier = gateway.usesUserKey() || gateway.getConfig().provider === 'ollama' ? 'own' : 'hosted'
+        const result = startSession({
+          id: task.id,
+          model: gateway.getConfig().model,
+          tier,
+          available: balance,
+          now,
+          projectRoot: task.projectRoot ?? '',
+          prompt: task.prompt
+        })
+        if (result.ok) await sessionLedger.record(result.grant)
+        return result
+      },
+      endSession: async (grantId) => {
+        await sessionLedger.markConsumed(grantId)
+      },
       events: {
         timeline: (entry) => push({ type: 'timeline', entry }),
         task: (task) => push({ type: 'task', task }),
@@ -441,7 +474,14 @@ async function boot(): Promise<Services> {
         systemPrompt: chanSystemPrompt(ctx.task.projectRoot),
         history,
         prompt: ctx.task.prompt,
-        signal: ctx.signal
+        signal: ctx.signal,
+        // The bought session *is* the runtime ceiling, so one mechanism stops a
+        // runaway task and the two can never disagree. Without this the loop
+        // would fall back to its own 30-minute default and quietly hand out
+        // time that was never charged for.
+        ...(ctx.session
+          ? { limits: { maxRuntimeMs: remainingMs(ctx.session, Date.now()) } }
+          : {})
       }
     )
 
@@ -477,6 +517,9 @@ async function boot(): Promise<Services> {
     // out its timeout instead of asking the user anything.
     push
   })
+
+  const sessionLedger = new SessionLedger(ledgerPath(userDataDir))
+  void sessionLedger.load()
 
   const credentials = new CredentialStore(join(userDataDir, 'credentials.json'), {
     isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
@@ -515,6 +558,7 @@ async function boot(): Promise<Services> {
     approvals,
     skills,
     agent,
+    sessionLedger,
     store,
     settings,
     files,
@@ -616,6 +660,8 @@ interface RouteDeps {
   approvals: ApprovalQueue
   skills: SkillRegistry
   agent: AgentRuntime
+  /** Bought sessions, and which of them were interrupted. */
+  sessionLedger: SessionLedger
   store: ReturnType<typeof createStore>
   settings: SettingsStore
   files: FileService
@@ -633,6 +679,7 @@ interface RouteDeps {
 function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   const { env, terminals, processes, tools, policy, approvals, skills, agent, store, files, git, gateway } = deps
   const { updates } = deps
+  const { sessionLedger } = deps
   const settings = deps.settings
   const credentials = deps.credentials
   const { conversation } = deps
@@ -698,7 +745,33 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
     handler: async (args: { root: string }) => {
       const selected = args.root || (await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory'] })).filePaths[0]
       if (!selected) throw new Error('No directory selected')
-      return deps.setProject(selected)
+      const opened = await deps.setProject(selected)
+      // Reopen the task that was interrupted by the last exit, if its time is
+      // still running. Restarting it charges nothing: the original session was
+      // already paid for, and `resumableGrant` only ever returns one that has
+      // not been consumed and has not run out.
+      const grant = resumableGrant(sessionLedger.list(), selected, Date.now())
+      if (grant) {
+        agent.submit({
+          title: deriveTitle(grant.prompt),
+          prompt: grant.prompt,
+          role: 'IMPLEMENTER',
+          projectRoot: grant.projectRoot,
+          // Carries the session that was already paid for. Without this a
+          // resume would be charged a second time for time the user already
+          // bought, which is the fastest way to make resume feel like a trap.
+          resume: grant
+        })
+        push({
+          type: 'log',
+          level: 'info',
+          message:
+            `Resumed an interrupted task · ${Math.round(remainingMs(grant, Date.now()) / 60_000)} minutes ` +
+            'left on the session already paid for.',
+          at: new Date().toISOString()
+        })
+      }
+      return opened
     }
   })
   router.register(CHANNELS.projectClose, {

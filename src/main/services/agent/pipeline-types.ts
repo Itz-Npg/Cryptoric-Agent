@@ -6,6 +6,7 @@
  */
 
 import type { AgentRole, AgentTask, TimelineEntry } from '@shared/types'
+import type { SessionGrant } from '@shared/session-time'
 import type { ToolResult } from '../tools/registry'
 
 /** The tool invocation surface handed to a stage. */
@@ -42,6 +43,14 @@ export interface StageContext {
   /** Assembled once per task from the routed skills. */
   skillContext: string
   selectedSkills: string[]
+  /**
+   * The session this task was bought with, or null when nothing was charged.
+   *
+   * Carried on the context rather than read from a module so the pipeline
+   * cannot accidentally consult a *different* task's time: the value travels
+   * with the task it belongs to.
+   */
+  session: SessionGrant | null
 }
 
 export interface StageOutcome {
@@ -57,3 +66,4 @@ export interface StageOutcome {
 }
 
 export type { AgentRole, AgentTask }
+export type { SessionGrant } from '@shared/session-time'
