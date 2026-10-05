@@ -56,12 +56,20 @@ echo "app=$APP"
 ls -la "$APP"
 
 log "Packaging the .ipa"
-# The .app sits at the archive root, which is the layout Sideloadly, AltStore
-# and SideStore read. App Store submissions wrap it in Payload/ instead; that
-# is a different file for a different purpose.
+# The app bundle is wrapped in Payload/, which is the layout Apple's own
+# archives use and the one a sideloading tool looks for when it opens the file.
+# Zipping the .app at the archive root was a claim about what Sideloadly and
+# AltStore tolerate rather than a format anything guarantees, and a companion
+# app that no tool can be relied on to open is not a deliverable. The bundle
+# itself is staged rather than moved so the build directory keeps the product
+# xcodebuild made.
+STAGE="$(mktemp -d)"
+mkdir -p "$STAGE/Payload"
+cp -R "$APP" "$STAGE/Payload/$(basename "$APP")"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
-( cd "$(dirname "$APP")" && zip -qry "$GITHUB_WORKSPACE/$IPA" "$(basename "$APP")" )
+( cd "$STAGE" && zip -qry "$GITHUB_WORKSPACE/$IPA" Payload )
+rm -rf "$STAGE"
 ls -la "$OUT_DIR/"
 
 BYTES="$(wc -c < "$IPA" | tr -d ' ')"
@@ -76,7 +84,7 @@ printf '%s
 # Bash pattern matching, not `echo "$LIST" | grep -q`: grep -q exits on the first
 # match and closes the pipe while echo is still writing, which hands the writer a
 # SIGPIPE and, under `set -o pipefail`, fails the build at random.
-[[ "$LIST" == *"$TARGET.app/Info.plist"* ]] || fail "No $TARGET.app/Info.plist at the archive root."
-[[ "$LIST" == *"$TARGET.app/$TARGET"* ]] || fail "The .ipa contains no $TARGET executable."
+[[ "$LIST" == *"Payload/$TARGET.app/Info.plist"* ]] || fail "No Payload/$TARGET.app/Info.plist in the archive."
+[[ "$LIST" == *"Payload/$TARGET.app/$TARGET"* ]] || fail "The .ipa contains no $TARGET executable under Payload/."
 
 log "Done: $IPA ($BYTES bytes, unsigned)"
