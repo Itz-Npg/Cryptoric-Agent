@@ -53,6 +53,18 @@ import {
 import { ensureProjectWorkspace, resolveHistoryPaths } from './services/project/workspace'
 import { SessionLedger, ledgerPath } from './services/session/ledger'
 import { remainingMs, resumableGrant, startSession, type ModelTier } from '@shared/session-time'
+import {
+  authorizeUrl,
+  createAttempt,
+  describeMissingClientId,
+  exchangeCode,
+  fetchIdentity,
+  stateMatches,
+  attemptIsFresh,
+  type AuthAttempt
+} from './services/auth/google'
+import { AUTH_CREDENTIAL, parseSession, summarise, type SessionSummary } from './services/auth/session-store'
+import { CALLBACK_PORT, CALLBACK_URI, awaitCallback } from './services/auth/loopback'
 import { FileService } from './services/fs/files'
 import { GitService } from './services/git/service'
 import {
@@ -755,6 +767,144 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   const settings = deps.settings
   const credentials = deps.credentials
   const { conversation } = deps
+
+  // ------------------------------------------------------------- sign-in
+  //
+  // The browser does the credential entry; this window never sees a password.
+  // The attempt holds the two secrets that must match, and it is cleared the
+  // moment it is used, so a callback cannot be replayed.
+
+  const clientId = readEnvFile([app.getPath('userData'), process.cwd()]).GOOGLE_CLIENT_ID ?? ''
+  let attempt: AuthAttempt | null = null
+  let session: SessionSummary | null = null
+
+  async function loadSession(): Promise<SessionSummary | null> {
+    const raw = await credentials.get(AUTH_CREDENTIAL)
+    if (!raw) {
+      session = null
+      return null
+    }
+    let stored: { summary?: SessionSummary; secrets?: unknown }
+    try {
+      stored = JSON.parse(raw) as { summary?: SessionSummary; secrets?: unknown }
+    } catch {
+      // Corrupt data is signed-out-with-a-reason, never an exception, and never
+      // a session the UI shows as signed in.
+      session = null
+      return null
+    }
+    const parsed = parseSession(stored.secrets)
+    if (!parsed.ok || !stored.summary) {
+      session = null
+      return null
+    }
+    session = stored.summary
+    return session
+  }
+
+  router.register(CHANNELS.authStatus, {
+    domain: 'env.detect',
+    requiresApproval: false,
+    handler: async () => {
+      const current = (await loadSession()) ?? session
+      return {
+        signedIn: current !== null && current.accountId.length > 0,
+        configured: clientId.length > 0,
+        account: current,
+        message: current?.accountId ? null : describeMissingClientId()
+      }
+    }
+  })
+
+  router.register(CHANNELS.authStart, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: async () => {
+      if (clientId.length === 0) return { ok: false, error: describeMissingClientId() }
+      attempt = createAttempt()
+      const url = authorizeUrl({ clientId, redirectUri: CALLBACK_URI, attempt })
+      await shell.openExternal(url)
+
+      // Listen *before* handing control to the browser. The other order is the
+      // shape of bug this file has already produced once: the tab loads before
+      // anyone is listening and the code is lost with nothing to show for it.
+      const waiting = awaitCallback({ port: CALLBACK_PORT })
+      const arrived = await waiting
+      if (!arrived.ok) {
+        attempt = null
+        return { ok: false, error: arrived.error, url, redirectUri: CALLBACK_URI }
+      }
+      return { ...(await completeSignIn(arrived.result.code, arrived.result.state)), url, redirectUri: CALLBACK_URI }
+    }
+  })
+
+  router.register(CHANNELS.authComplete, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: async (args: { code: string; state: string }) => {
+      // Kept for the case where a person pastes a redirect URL themselves —
+      // which some corporate browsers make necessary.
+      return completeSignIn(args.code, args.state)
+    }
+  })
+
+  /**
+   * The half of sign-in that is shared by both entry points.
+   *
+   * Order matters and is the whole security story: the attempt is consumed
+   * before anything else, so a replayed callback finds nothing; `state` is
+   * compared in constant time; a stale attempt is refused; only then is the code
+   * redeemed, with the verifier that made it meaningful.
+   */
+  async function completeSignIn(code: string, state: string) {
+    const current = attempt
+    attempt = null
+    if (!current) return { ok: false, error: 'There is no sign-in in progress.' }
+    if (!stateMatches(current, state)) {
+      // A state we did not issue means the callback came from somewhere else.
+      return { ok: false, error: 'That sign-in response did not come from this app.' }
+    }
+    if (!attemptIsFresh(current, Date.now())) {
+      return { ok: false, error: 'That sign-in took too long. Start again.' }
+    }
+    const redirectUri = CALLBACK_URI
+    const token = await exchangeCode({ code, verifier: current.verifier, clientId, redirectUri })
+    if (!token.ok) return { ok: false, error: token.error }
+    const profile = await fetchIdentity(token.accessToken)
+    if (!profile.ok) return { ok: false, error: profile.error }
+    const built = summarise(profile.identity)
+    if (!built.ok) return { ok: false, error: built.error }
+    session = built.summary
+    // The store holds strings, so the whole session is one JSON document. It
+    // is not a *settings* file: it lives in the OS-encrypted credential store,
+    // which is why a refresh token may be written there at all.
+    const stored = await credentials.set(
+      AUTH_CREDENTIAL,
+      JSON.stringify({
+        summary: built.summary,
+        secrets: {
+          refreshToken: token.refreshToken,
+          accessToken: token.accessToken,
+          expiresAt: token.expiresInSeconds ? Date.now() + token.expiresInSeconds * 1000 : null
+        }
+      })
+    )
+    // Refusing beats storing plaintext: the alternative is a refresh token in
+    // a world-readable file, which is a standing credential.
+    if (!stored) return { ok: false, error: 'OS encryption is unavailable, so the session was not saved.' }
+    return { ok: true, account: built.summary }
+  }
+
+  router.register(CHANNELS.authSignOut, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: async () => {
+      attempt = null
+      session = null
+      await credentials.delete(AUTH_CREDENTIAL)
+      return { ok: true }
+    }
+  })
 
   // ------------------------------------------------------------- bootstrap
   router.register(CHANNELS.appInfo, {

@@ -105,6 +105,15 @@ export const CHANNELS = {
   // --- diagnostics
   diagnostics: 'diagnostics:run',
 
+  // --- sign-in
+  //
+  // `start` only *builds* a URL and opens the system browser; the credential is
+  // typed into Google's own page, never into our window.
+  authStatus: 'auth:status',
+  authStart: 'auth:start',
+  authComplete: 'auth:complete',
+  authSignOut: 'auth:sign-out',
+
   // --- main -> renderer pushes
   push: 'push:main-event',
   pushApproval: 'push:approval',

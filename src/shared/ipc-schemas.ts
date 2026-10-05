@@ -163,7 +163,20 @@ export const SCHEMAS = {
   [CHANNELS.updatesDownload]: z.object({}),
   [CHANNELS.updatesInstall]: z.object({}),
 
-  [CHANNELS.diagnostics]: z.object({})
+  [CHANNELS.diagnostics]: z.object({}),
+
+  // --- sign-in
+  //
+  // `code` and `state` are both required and both bounded. The handler compares
+  // `state` in constant time and refuses anything it did not issue, so the
+  // schema's job here is only to keep an unbounded string from arriving at all.
+  [CHANNELS.authStatus]: z.object({}),
+  [CHANNELS.authStart]: z.object({}),
+  [CHANNELS.authComplete]: z.object({
+    code: z.string().min(1).max(4096),
+    state: z.string().min(1).max(1024)
+  }),
+  [CHANNELS.authSignOut]: z.object({})
 } as const
 
 /**

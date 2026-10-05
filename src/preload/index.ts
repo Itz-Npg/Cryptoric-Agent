@@ -10,6 +10,23 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import { CHANNELS, type IpcResult } from '@shared/ipc-channels'
+
+/** Who is signed in. No token: the UI never holds one. */
+export interface AuthAccount {
+  accountId: string
+  email: string | null
+  name: string | null
+  picture: string | null
+  signedInAt: string
+}
+
+export interface AuthStatus {
+  signedIn: boolean
+  /** False when no OAuth client id is configured; `message` then says what to set. */
+  configured: boolean
+  account: AuthAccount | null
+  message: string | null
+}
 import type {
   AgentTask,
   ConversationTurn,
@@ -336,6 +353,21 @@ const api = {
   },
   diagnostics: {
     run: () => invoke<DiagnosticsReport>(CHANNELS.diagnostics, {})
+  },
+  /**
+   * Sign in with Google.
+   *
+   * `start` opens the system browser and returns the URL as well, so a user
+   * whose browser did not open can copy it. No token ever crosses this bridge
+   * back to the renderer: `status` reports whether someone is signed in and who,
+   * and that is all the UI needs.
+   */
+  auth: {
+    status: () => invoke<AuthStatus>(CHANNELS.authStatus, {}),
+    start: () => invoke<{ ok: boolean; url?: string; redirectUri?: string; error?: string }>(CHANNELS.authStart, {}),
+    complete: (code: string, state: string) =>
+      invoke<{ ok: boolean; account?: AuthAccount; error?: string }>(CHANNELS.authComplete, { code, state }),
+    signOut: () => invoke<{ ok: boolean }>(CHANNELS.authSignOut, {})
   },
   /** Subscribe to main-process pushes. Returns an unsubscribe function. */
   onMainEvent(handler: (event: MainEvent) => void): Unsubscribe {
