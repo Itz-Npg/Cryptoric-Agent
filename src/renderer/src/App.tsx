@@ -34,10 +34,11 @@ import { Workspace, type WorkspaceView } from './panes/Workspace'
 import { ModelPicker, StatusBar, type BudgetSummary, type ModelSummary } from './panes/ModelPicker'
 import { SettingsSurface, ToolsSurface } from './panes/Settings'
 import { UpdatePrompt } from './panes/UpdatePrompt'
+import { AccountChip, AccountPane } from './panes/Account'
 import { useAppState } from './state/useAppState'
 import { describe } from './state/store'
 
-type Section = 'home' | 'files' | 'agent' | 'tasks' | 'search' | 'environment' | 'settings'
+type Section = 'home' | 'files' | 'agent' | 'tasks' | 'search' | 'environment' | 'account' | 'settings'
 
 const NAV: { id: Section; label: string; icon: IconName }[] = [
   { id: 'home', label: 'Home', icon: 'home' },
@@ -46,6 +47,7 @@ const NAV: { id: Section; label: string; icon: IconName }[] = [
   { id: 'tasks', label: 'Tasks', icon: 'tasks' },
   { id: 'search', label: 'Search', icon: 'search' },
   { id: 'environment', label: 'Environment', icon: 'environment' },
+  { id: 'account', label: 'Account', icon: 'account' },
   { id: 'settings', label: 'Settings', icon: 'settings' }
 ]
 
@@ -120,8 +122,38 @@ export function App() {
         hint: state.gaps.length ? `Needed: ${state.gaps.map((g) => g.label).join(', ')}` : 'No gaps detected',
         available: () => state.gaps.length > 0,
         run: () => void actions.install(state.gaps[0]?.toolId ?? 'node')
+      },      {
+        id: 'env.open',
+        group: 'Environment',
+        title: 'Open Runtime Manager',
+        run: () => setSection('environment')
       },
-      { id: 'env.open', group: 'Environment', title: 'Open Runtime Manager', run: () => setSection('environment') },
+      {
+        id: 'account.signin',
+        group: 'Account',
+        title: state.auth?.signedIn ? 'Sign out' : 'Sign in with Google',
+        hint: state.auth?.configured === false ? 'No OAuth client id configured' : 'Opens your browser',
+        run: async () => {
+          if (state.auth?.signedIn) await actions.signOut()
+          else await actions.startSignIn()
+        }
+      },
+      {
+        id: 'mode.show',
+        group: 'Account',
+        title: 'Which mode is this build?',
+        hint: state.mode?.ok === true ? state.mode.description : state.mode?.ok === false ? state.mode.error : 'unknown',
+        run: async () => {
+          const mode = await actions.refreshMode()
+          actions.notify(
+            mode === null
+              ? 'Mode could not be read.'
+              : mode.ok
+                ? `${mode.description}${mode.serverUrl ? ` (${mode.serverUrl})` : ''}`
+                : mode.error
+          )
+        }
+      },
       {
         id: 'theme.toggle',
         group: 'View',
@@ -229,6 +261,17 @@ export function App() {
           <Dot tone={busy ? 'accent' : 'ok'} pulse={busy} />
           Chan
         </button>
+
+        {/* The chip sits in the topbar rather than only inside Account: a
+            hosted build must be able to say "sign in" before the agent is
+            ever asked to run, and burying that in a pane makes it invisible
+            until someone goes looking. */}
+        <AccountChip
+          status={state.auth}
+          phase={state.authPhase}
+          error={state.authError}
+          onOpen={() => setSection('account')}
+        />
       </header>
 
       {/* ------------------------------------------------------------ body */}
@@ -316,6 +359,18 @@ export function App() {
               snapshotId={state.snapshotId}
               onInstall={(id) => void actions.install(id)}
               onRefresh={() => void actions.refreshEnvironment()}
+            />
+          )}
+
+          {section === 'account' && (
+            <AccountPane
+              status={state.auth}
+              phase={state.authPhase}
+              error={state.authError}
+              hosted={state.mode?.ok === true && state.mode.mode === 'hosted'}
+              onSignIn={() => void actions.startSignIn()}
+              onSignOut={() => void actions.signOut()}
+              onComplete={(code, state_) => void actions.completeSignIn(code, state_)}
             />
           )}
 

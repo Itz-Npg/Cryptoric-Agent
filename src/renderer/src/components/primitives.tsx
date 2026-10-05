@@ -74,6 +74,7 @@ export type IconName =
   | 'close'
   | 'sparkle'
   | 'coin'
+  | 'account'
 
 const ICON_PATHS: Record<IconName, ReactNode> = {
   home: (
@@ -140,6 +141,12 @@ const ICON_PATHS: Record<IconName, ReactNode> = {
     <>
       <circle cx="12" cy="12" r="8" />
       <path d="M12 7.5v9M14.4 9.4c-.5-.7-1.4-1-2.4-1-1.3 0-2.3.7-2.3 1.7 0 2.4 4.6 1.3 4.6 3.7 0 1.1-1 1.8-2.4 1.8-1.1 0-2-.4-2.5-1.1" />
+    </>
+  ),
+  account: (
+    <>
+      <circle cx="12" cy="8.5" r="3.75" />
+      <path d="M4.75 20c.7-3.7 3.6-5.75 7.25-5.75s6.55 2.05 7.25 5.75" />
     </>
   )
 }

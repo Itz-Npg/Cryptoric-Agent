@@ -176,7 +176,9 @@ export const SCHEMAS = {
     code: z.string().min(1).max(4096),
     state: z.string().min(1).max(1024)
   }),
-  [CHANNELS.authSignOut]: z.object({})
+  [CHANNELS.authSignOut]: z.object({}),
+
+  [CHANNELS.modeGet]: z.object({})
 } as const
 
 /**
