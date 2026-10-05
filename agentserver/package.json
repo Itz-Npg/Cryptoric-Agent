@@ -1,0 +1,16 @@
+{
+  "name": "cryptoric-agent-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Account, coin balance, model catalogue and integrity server for Cryptoric Agent.",
+  "type": "module",
+  "main": "./src/index.mjs",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "token": "node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\""
+  },
+  "dependencies": {}
+}
