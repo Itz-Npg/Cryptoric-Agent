@@ -119,6 +119,9 @@ export const CHANNELS = {
   // `CRYPTORIC_MODE` was read, validated and tested, and then nothing asked
   // for the answer, so a hosted build looked exactly like a local one.
   modeGet: 'mode:get',
+  // The balance, from wherever it actually lives: the local ledger, or the
+  // server. One channel for both, so the UI cannot show the wrong one.
+  balanceGet: 'balance:get',
 
   // --- main -> renderer pushes
   push: 'push:main-event',

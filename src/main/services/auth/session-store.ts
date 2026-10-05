@@ -113,3 +113,28 @@ export function sessionMatches(summary: SessionSummary, accountId: string): bool
 export function describeSignedOut(reason: string | null): string {
   return reason ?? 'Sign in with Google to use the agent. Your keys and your code never leave this machine.'
 }
+
+/**
+ * The account id inside a stored session, or `null`.
+ *
+ * Pure, so the rule "a corrupt store means signed out" is testable without an
+ * OS credential store. The billing gate needs this on every task, so it must
+ * not be able to throw or invent an id: a wrong account id would charge
+ * somebody else's balance.
+ */
+export function readStoredAccountId(raw: string | null): string | null {
+  if (!raw) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const summary = (parsed as { summary?: unknown }).summary
+  if (typeof summary !== 'object' || summary === null) return null
+  const id = (summary as { accountId?: unknown }).accountId
+  // The server only accepts 8-128 characters of A-Z a-z 0-9 _ -; anything else
+  // would be rejected there anyway, so it is treated as no account here.
+  return typeof id === 'string' && /^[A-Za-z0-9_-]{8,128}$/.test(id) ? id : null
+}

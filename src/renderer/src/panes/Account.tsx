@@ -16,8 +16,8 @@
 
 import { useState } from 'react'
 import { Button, Chip, Dot, SectionHead } from '../components/primitives'
-import { accountView, parsePastedRedirect, type SignInPhase } from '@shared/account-view'
-import type { AuthStatus } from '../../../preload'
+import { accountView, describeBalance, parsePastedRedirect, type SignInPhase } from '@shared/account-view'
+import type { AuthStatus, BalanceInfo } from '../../../preload'
 
 export interface AccountProps {
   status: AuthStatus | null
@@ -25,9 +25,12 @@ export interface AccountProps {
   error: string | null
   /** True when this install is pointed at the agent server rather than running alone. */
   hosted: boolean
+  /** Coins, and where they are counted. Null until read. */
+  balance: BalanceInfo | null
   onSignIn: () => void
   onSignOut: () => void
   onComplete: (code: string, state: string) => void
+  onRefreshBalance: () => void
 }
 
 export function AccountPane({
@@ -35,9 +38,11 @@ export function AccountPane({
   phase,
   error,
   hosted,
+  balance,
   onSignIn,
   onSignOut,
-  onComplete
+  onComplete,
+  onRefreshBalance
 }: AccountProps) {
   const view = accountView(status, phase, error)
   const [pasted, setPasted] = useState('')
@@ -95,6 +100,17 @@ export function AccountPane({
             )}
           </div>
         )}
+
+        <div className="card card-pad" style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontWeight: 550 }}>Coins</span>
+            <div style={{ flex: 1 }} />
+            <Button variant="ghost" onClick={onRefreshBalance} title="Read the balance again">
+              Refresh
+            </Button>
+          </div>
+          <span className="caption">{describeBalance(balance)}</span>
+        </div>
 
         {view.notice && status?.configured === false && (
           <div className="card card-pad" style={{ display: 'grid', gap: 6 }}>

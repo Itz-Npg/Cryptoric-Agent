@@ -241,7 +241,7 @@ store once; a key already in the store always wins.
 
 - Electron 33 + Vite, TypeScript, React renderer.
 - **Zero runtime dependencies in the main process beyond `zod`.**
-- **946 tests across 43 files**, run on every push.
+- **971 tests across 44 files**, run on every push.
 - CI: **Build and Release**, **CLI**, **Mobile companion** — all green on `main`.
 
 ---
@@ -288,7 +288,7 @@ could not run, that is written down below rather than left to look like success.
 
 **Verified, with the command that proves it:**
 
-- Agent loop, stages, evidence gate and tool runtime — 946 unit tests, all green.
+- Agent loop, stages, evidence gate and tool runtime — 971 unit tests, all green.
 - **Browser** — `npm run test:browser` → **64/64 against real Chromium**, 44 tools.
 - **CLI** — builds Electron-free, and a real run with no model exits **2
   `BLOCKED`**, writes nothing, and explains why in both human and JSON output.
@@ -303,6 +303,10 @@ could not run, that is written down below rather than left to look like success.
   it is open; the wrong order fails the test), the session store, and the pane
   itself: `npm run test:account` renders it in all five states and checks the
   right control is drawn.
+- **Hosted billing** — the app asks the server what a session costs and uses
+  its numbers; an unreachable server refuses the task instead of running it
+  free; a resumed task sends no request. Verified against the real handler on a
+  real socket, never against a deployment.
 
 **Not done — stated rather than implied:**
 
@@ -317,9 +321,10 @@ could not run, that is written down below rather than left to look like success.
 - **The CLI has never run against a live model provider.** Every CLI result here
   was produced with no key set. That is the path which must refuse to claim
   success, and it does — but the model path itself is untested end to end.
-- **Coin limits are enforced on the user's machine.** The balance is a file. That
-  raises the cost of cheating and does not make it impossible; a server holding
-  the balance is what would actually decide.
+- **In `local` mode the coin limit is enforced on the user's machine.** The
+  balance is a file, which raises the cost of cheating without making it
+  impossible. `hosted` mode is the answer to that — it asks the server — but
+  only if someone runs one.
 - **Multi-project execution is real; the UI is not.** There is no sidebar yet to
   switch between folders.
 - **The provider server has never been published.** It is tested against itself
@@ -328,10 +333,10 @@ could not run, that is written down below rather than left to look like success.
   tested, but the code exchange needs a real `GOOGLE_CLIENT_ID` — a Desktop app
   client id whose redirect URI is `http://127.0.0.1:53123/callback` — and only
   the maintainer can create one.
-- **`hosted` mode is read and displayed, not yet charged.** `CRYPTORIC_MODE` is
-  resolved, surfaced in the Account pane, and tested; the app still keeps its
-  balance in the local ledger. Coins are not yet spent against the server, so a
-  hosted build does not yet enforce the balance it displays.
+- **`hosted` mode is charged, but only against a server you control.** It has
+  never run against a deployment: `AGENT_SERVER_URL` and `AGENT_SERVER_TOKEN`
+  are yours to set, and no Vercel deployment exists. The billing path is
+  verified against the real handler on a real socket.
 
 ---
 

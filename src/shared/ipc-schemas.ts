@@ -178,7 +178,8 @@ export const SCHEMAS = {
   }),
   [CHANNELS.authSignOut]: z.object({}),
 
-  [CHANNELS.modeGet]: z.object({})
+  [CHANNELS.modeGet]: z.object({}),
+  [CHANNELS.balanceGet]: z.object({})
 } as const
 
 /**

@@ -22,7 +22,7 @@ import type {
   WorkspaceState
 } from '@shared/types'
 import type { BudgetSummary, ModelSummary } from '../panes/ModelPicker'
-import type { AuthStatus, ModeInfo, UpdateStatusDto } from '../../../preload'
+import type { AuthStatus, BalanceInfo, ModeInfo, UpdateStatusDto } from '../../../preload'
 import { describe } from './store'
 import type { SignInPhase } from '@shared/account-view'
 import type { TranscriptEntry } from './store'
@@ -60,6 +60,8 @@ export interface AppStateShape {
   authError: string | null
   /** Which mode this install runs in. Null until it is read. */
   mode: ModeInfo | null
+  /** Coins, and where they are counted. Null until it is read. */
+  balance: BalanceInfo | null
 }
 
 const initial: AppStateShape = {
@@ -89,7 +91,8 @@ const initial: AppStateShape = {
   auth: null,
   authPhase: 'idle',
   authError: null,
-  mode: null
+  mode: null,
+  balance: null
 }
 
 type Action =
@@ -117,6 +120,7 @@ type Action =
   | { type: 'auth'; status: AuthStatus | null }
   | { type: 'auth-phase'; phase: SignInPhase; error?: string | null }
   | { type: 'mode'; mode: ModeInfo | null }
+  | { type: 'balance'; balance: BalanceInfo | null }
 
 const MAX_TIMELINE = 800
 /**
@@ -209,6 +213,8 @@ function reducer(state: AppStateShape, action: Action): AppStateShape {
       }
     case 'mode':
       return { ...state, mode: action.mode }
+    case 'balance':
+      return { ...state, balance: action.balance }
     default:
       return state
   }
@@ -296,6 +302,7 @@ export function useAppState(): { state: AppStateShape; actions: ReturnType<typeo
         // the first paint rather than after a click.
         await actions.refreshAuth()
         await actions.refreshMode()
+        await actions.refreshBalance()
         for (const task of await bridge.agent.list()) dispatch({ type: 'task', task })
         // History first, so a restart shows the conversation that already
         // happened rather than an empty pane the model nonetheless remembers.
@@ -442,6 +449,26 @@ function useActions(dispatch: React.Dispatch<Action>) {
       return status
     } catch {
       dispatch({ type: 'auth', status: null })
+      return null
+    }
+  }, [dispatch])
+
+  /**
+   * Read the balance from wherever it lives.
+   *
+   * A failure is stored as the answer rather than thrown away: in a hosted
+   * build "the server could not be reached" is exactly what the account pane
+   * should say, and silently leaving the last number up would be a stale
+   * balance presented as current.
+   */
+  const refreshBalance = useCallback(async () => {
+    if (!window.cryptoric) return null
+    try {
+      const balance = await window.cryptoric.balance.get()
+      dispatch({ type: 'balance', balance })
+      return balance
+    } catch (err) {
+      dispatch({ type: 'balance', balance: { source: 'local', ok: false, error: describe(err) } })
       return null
     }
   }, [dispatch])
@@ -644,6 +671,7 @@ function useActions(dispatch: React.Dispatch<Action>) {
        * what the browser implied.
        */
       refreshAuth,
+      refreshBalance,
 
       startSignIn: async () => {
         dispatch({ type: 'auth-phase', phase: 'starting', error: null })
@@ -677,6 +705,7 @@ function useActions(dispatch: React.Dispatch<Action>) {
           const result = await window.cryptoric.auth.complete(code, state)
           dispatch({ type: 'auth-phase', phase: 'idle', error: result.ok ? null : (result.error ?? 'Sign-in failed.') })
           await refreshAuth()
+          await refreshBalance()
           if (result.ok) dispatch({ type: 'notice', notice: 'Signed in.' })
           return result
         } catch (err) {
@@ -693,6 +722,7 @@ function useActions(dispatch: React.Dispatch<Action>) {
           // UI still claiming to wait would be wrong.
           dispatch({ type: 'auth-phase', phase: 'idle', error: null })
           await refreshAuth()
+          await refreshBalance()
           dispatch({ type: 'notice', notice: 'Signed out. The account token was deleted from this computer.' })
         } catch (err) {
           dispatch({ type: 'notice', notice: describe(err) })
@@ -713,6 +743,6 @@ function useActions(dispatch: React.Dispatch<Action>) {
 
       routeSkills: async (prompt: string) => window.cryptoric.skill.route(prompt)
     }),
-    [refreshEnvironment, refreshGaps, refreshModels, refreshGit, refreshAuth, syncTerminals, loadConversation, dispatch]
+    [refreshEnvironment, refreshGaps, refreshModels, refreshGit, refreshAuth, refreshBalance, syncTerminals, loadConversation, dispatch]
   )
 }
