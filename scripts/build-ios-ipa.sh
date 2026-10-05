@@ -73,7 +73,10 @@ LIST="$(unzip -l "$IPA")"
 # and under `set -o pipefail` that kills the script. sed reads the whole stream.
 printf '%s
 ' "$LIST" | sed -n '1,20p'
-echo "$LIST" | grep -q "$TARGET.app/Info.plist" || fail "No $TARGET.app/Info.plist at the archive root."
-echo "$LIST" | grep -q "$TARGET.app/$TARGET$" || fail "The .ipa contains no $TARGET executable."
+# Bash pattern matching, not `echo "$LIST" | grep -q`: grep -q exits on the first
+# match and closes the pipe while echo is still writing, which hands the writer a
+# SIGPIPE and, under `set -o pipefail`, fails the build at random.
+[[ "$LIST" == *"$TARGET.app/Info.plist"* ]] || fail "No $TARGET.app/Info.plist at the archive root."
+[[ "$LIST" == *"$TARGET.app/$TARGET"* ]] || fail "The .ipa contains no $TARGET executable."
 
 log "Done: $IPA ($BYTES bytes, unsigned)"
