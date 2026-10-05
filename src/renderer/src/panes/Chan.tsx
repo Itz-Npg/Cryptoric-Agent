@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentTask, TimelineEntry, WorkspaceState } from '@shared/types'
 import { isTerminalTaskStatus } from '@shared/types'
 import { MAX_PROMPT_CHARS } from '@shared/limits'
+import { formatDuration } from '@shared/execution-display'
 import { Button, Chip, Dot, Icon, SectionHead, type IconName } from '../components/primitives'
 import type { TranscriptEntry } from '../state/store'
 
@@ -78,7 +79,8 @@ export function ChanPanel({
             gap: 10,
             padding: '8px 24px',
             borderBottom: '1px solid var(--line)',
-            background: 'var(--surface-1)'
+            background: 'var(--surface-1)',
+            flexWrap: 'wrap'
           }}
         >
           <span className="caption" style={{ flex: 1 }}>
@@ -93,6 +95,23 @@ export function ChanPanel({
           >
             {activeTask.status === 'CANCELLING' ? 'Stopping' : 'Stop'}
           </Button>
+          {/*
+            Observed facts only, and only once they exist. `evidence` is written
+            by the engine from a real before/after filesystem diff, so these
+            numbers cannot be inflated by a stage that merely claimed to work.
+          */}
+          {activeTask.evidence && (
+            <span style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap' }}>
+              <Chip tone="idle">{activeTask.evidence.toolCalls} tool call(s)</Chip>
+              <Chip tone="idle">{activeTask.evidence.modelCalls} model call(s)</Chip>
+              <Chip tone={activeTask.evidence.changedFiles.length > 0 ? 'accent' : 'idle'}>
+                {activeTask.evidence.changedFiles.length} file(s) changed
+              </Chip>
+              {activeTask.evidence.testsExecuted.length > 0 && (
+                <Chip tone="idle">{activeTask.evidence.testsExecuted.join(', ')} executed</Chip>
+              )}
+            </span>
+          )}
         </div>
       )}
       {idle ? (
@@ -485,11 +504,15 @@ function StageRow({ group, open, onToggle }: { group: StageGroup; open: boolean;
           {group.label}
         </span>
 
-        {group.startedAt && group.finishedAt && (
-          <span className="caption mono" style={{ fontSize: 'var(--t-xs)' }}>
-            {Math.max(0, Date.parse(group.finishedAt) - Date.parse(group.startedAt))} ms
-          </span>
-        )}
+        {/*
+          A duration is a claim that work happened and took time. A phase that
+          never ran has neither, so it renders NOT_RUN — the previous
+          `Math.max(0, …)` printed `0 ms` for stages that did nothing, which is
+          what made a no-op run look like five successful phases.
+        */}
+        <span className="caption mono" style={{ fontSize: 'var(--t-xs)' }}>
+          {formatDuration(group.startedAt, group.finishedAt)}
+        </span>
 
         <span
           style={{

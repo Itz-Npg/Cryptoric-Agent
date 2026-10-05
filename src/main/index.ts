@@ -348,7 +348,15 @@ async function boot(): Promise<Services> {
   async function runModelPhase(
     ctx: StageContext,
     phase: 'plan' | 'implement'
-  ): Promise<{ ok: boolean; text: string; error: string | null; tools: string[] }> {
+  ): Promise<{
+    ok: boolean
+    text: string
+    error: string | null
+    tools: string[]
+    toolCalls: number
+    failedToolCalls: number
+    modelCalls: number
+  }> {
     const history = conversation.contextMessages()
 
     if (phase === 'plan') {
@@ -363,14 +371,25 @@ async function boot(): Promise<Services> {
       })
       if (!result.ok) {
         ctx.note(formatExecutionLog('PLAN_FAILED', result.error ?? 'unknown error'), 'error')
-        return { ok: false, text: '', error: result.error, tools: [] }
+        return {
+          ok: false,
+          text: '',
+          error: result.error,
+          tools: [],
+          toolCalls: 0,
+          failedToolCalls: 0,
+          modelCalls: 1
+        }
       }
       const text = result.text.trim()
       return {
         ok: true,
         text: text || 'No plan produced.',
         error: null,
-        tools: []
+        tools: [],
+        toolCalls: 0,
+        failedToolCalls: 0,
+        modelCalls: 1
       }
     }
 
@@ -403,7 +422,20 @@ async function boot(): Promise<Services> {
       ctx.note(line, line.includes('FAILED') || line.includes('TIMEOUT') ? 'error' : 'info')
     }
 
-    return { ok: outcome.ok, text: outcome.text, error: outcome.error, tools: outcome.called }
+    // Counts are read from the loop's own records, not from prose. The old stage
+    // code asked the model how many tools it had used, which is exactly the
+    // question a model should not be trusted to answer.
+    const failedToolCalls = outcome.toolRecords.filter((r) => r.status !== 'COMPLETED').length
+
+    return {
+      ok: outcome.ok,
+      text: outcome.text,
+      error: outcome.error,
+      tools: outcome.called,
+      toolCalls: outcome.toolRecords.length,
+      failedToolCalls,
+      modelCalls: outcome.calls.length
+    }
   }
 
   const router = new IpcRouter({
