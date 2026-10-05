@@ -1,0 +1,11 @@
+# Line endings that must not be rewritten.
+#
+# The repository is developed on Windows, where `core.autocrlf=true` is usually
+# set. That silently rewrites a `.sh` to CRLF in the working copy, and bash then
+# fails with `\r: command not found` or a bad-interpreter error the first time
+# anyone runs it — which, for scripts/build-ios-ipa.sh, means the iOS build
+# breaks on a checkout rather than on a change.
+#
+# It is one line, and it is the difference between a script that works on the
+# machine that owns it and one that only works in CI.
+*.sh text eol=lf
