@@ -1,0 +1,233 @@
+# Cryptoric Agent — build and release.
+#
+# Why this exists: Windows builds were produced on a developer's Windows machine
+# and nothing else was ever packaged. `electron-builder.yml` already declares
+# `mac` and `linux` targets, but those can only actually be produced by a runner
+# on that operating system — electron-builder cannot cross-compile a macOS `.dmg`
+# from Windows. So without this workflow the macOS and Linux entries in the
+# builder config are declarations, not deliverables.
+#
+# What it does:
+#   1. `verify`  — typecheck and unit tests on every push and PR. Cheap, and it
+#      catches the class of breakage that otherwise only appears after a 5-minute
+#      package step.
+#   2. `build`   — packages the app for Windows, macOS and Linux. Runs on every
+#      push; uploads artifacts. Publishes nothing.
+#   3. `release` — on a `v*` tag, collects the artifacts from all three runners
+#      and attaches them to one GitHub Release.
+#
+# Honesty notes, because an unsigned build that behaves differently per platform
+# is worse than one that is not built at all:
+#   - Nothing here is signed. Windows SmartScreen will warn; macOS Gatekeeper will
+#     refuse to open a downloaded `.dmg` until the user clears it. There are no
+#     signing certificates in this repository, and none are invented.
+#   - The macOS `.app` is built for both `x64` and `arm64` on an Apple Silicon
+#     runner. That is a real cross-arch build, not an emulation claim.
+#   - A tag build only publishes if `package.json` version matches the tag. A
+#     mismatch would publish v0.1.4-tagged artifacts containing 0.1.3, which is
+#     exactly the kind of silent version drift that makes an installed build
+#     report the wrong thing about itself.
+
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to the same ref makes the in-flight run irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # `npm ci` rather than `npm install`: it installs exactly the lockfile, so
+      # a build cannot quietly succeed against versions nobody committed.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npx vitest run
+
+  build:
+    name: Package ${{ matrix.name }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing must not hide the state of the others, and a
+      # partially published release is worse than a visibly failed one.
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows (NSIS, x64)
+            os: windows-latest
+          - name: macOS (dmg, x64 + arm64)
+            os: macos-latest
+          - name: Linux (AppImage + deb)
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # electron-builder packages whatever `npm run build` produced. Running the
+      # typecheck inside it means a release tag cannot ship a type error that the
+      # `verify` job would have caught — the jobs are independent checkouts.
+      - name: Build
+        run: npm run build
+
+      # electron-builder needs these to assemble AppImage/deb on a bare runner.
+      - name: Linux packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libarchive-tools \
+            libfuse2 \
+            desktop-file-utils \
+            rpm
+
+      # With no signing certificate present, electron-builder's automatic
+      # identity discovery can sit and wait for a human on a headless runner.
+      # Saying so explicitly is honest: these builds are unsigned.
+      - name: Package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No certificate is configured; do not pretend to look for one.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --publish never
+
+      - name: List what was produced
+        run: |
+          echo "=== release/ contents ==="
+          ls -la release/ || true
+          echo
+          echo "=== package.json version ==="
+          node -p "require('./package.json').version"
+
+      # The unpacked app directory is what `mac` produces alongside the `.dmg`,
+      # and the Linux unpacked tree is just as large. Neither is a deliverable.
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+            release/latest*.yml
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    # Publishing is destructive and outward-facing: only ever on an explicit
+    # version tag, never on an ordinary push to main.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The updater reads `latest.yml` and compares it against the running build,
+      # so a tag whose version disagrees with package.json produces a release the
+      # app cannot reason about. Fail loudly instead.
+      - name: Verify the tag matches package.json
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          echo "tag=$TAG  package.json=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $PKG."
+            echo "Bump package.json to $TAG before tagging, or the release will lie."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List collected artifacts
+        run: ls -la artifacts/
+
+      # Uses the `gh` CLI that ships with the runner rather than a third-party
+      # action, so the publishing path adds no new dependency to trust.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          NOTES=$(mktemp)
+          {
+            echo "Unsigned builds. Windows may show a SmartScreen warning; macOS will"
+            echo "require Gatekeeper clearance on first open."
+            echo
+            echo "### Installers"
+            for f in artifacts/*.exe artifacts/*.dmg artifacts/*.AppImage artifacts/*.deb; do
+              [ -e "$f" ] || continue
+              echo "- ${f#artifacts/}"
+            done
+          } > "$NOTES"
+
+          # Replace the release if it exists, so re-running a tag fixes a partial
+          # publish instead of failing on "already_exists".
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/* --clobber
+            gh release edit "$TAG" --notes-file "$NOTES"
+          else
+            gh release create "$TAG" artifacts/* \
+              --title "$TAG" \
+              --notes-file "$NOTES" \
+              --latest
+          fi
+
+      - name: Verify the published feed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # `latest.yml` is the file `electron-updater` actually downloads. If it
+          # is missing or does not name this version, the app has nothing to read
+          # and the release is not usable however many installers it has.
+          echo "=== release assets ==="
+          gh release view "$TAG" --json assets --jq '.assets[].name'
+          echo
+          echo "=== latest.yml ==="
+          gh release download "$TAG" --pattern latest.yml --dir /tmp/feed --clobber
+          cat /tmp/feed/latest.yml
+          if ! grep -q "version: ${{ github.ref_name#v }}" /tmp/feed/latest.yml; then
+            echo "::error::latest.yml does not declare version ${{ github.ref_name#v }}."
+            exit 1
+          fi
