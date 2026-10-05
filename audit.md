@@ -836,6 +836,10 @@ claimed-but-not-written case, and the review stage's false `COMPLETED`. Restored
 `npm run typecheck` exit 0 · `npx vitest run` **495 passed / 19 files** ·
 `npm run build` exit 0.
 
-**Not verified:** no live provider run. The Nepal-landing-page prompt has not been
-driven through the real app end to end, so the fix is proven at the unit and
-stage level rather than in a full session.
+**Live-verified 2026-10-05.** `tests/live/pipeline-check.ts` runs the real
+stages against the real key — **8 passed, 0 failed.** An implementation prompt
+produced `landing.html` on disk and the log line `[implement] 1 file(s) changed
+on disk: landing.html ok`; a read-only prompt produced four real read tool calls,
+no change, and `COMPLETED` rather than `BLOCKED`. The earlier "not verified" note
+on this section is superseded: the fix is now demonstrated against a live
+provider, not only at the unit level.
