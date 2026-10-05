@@ -664,9 +664,20 @@ task forever. Full write-up in `audit.md`; the invariants in `work.md`.
 - [x] **Reverted, 4 tests fail.** Restored, 42 pass.
 - [x] `npm run typecheck` exit 0 · `npx vitest run` **495 passed / 19 files** ·
       `npm run build` exit 0.
-- [ ] **No live provider run.** The exact Nepal-landing-page prompt has not been
-      driven through the real app, so this is verified at the stage/unit level
-      rather than in a full session.
+- [x] **Live provider run — DONE, 2026-10-05.** `tests/live/pipeline-check.ts`
+      drives the real stages against the real key: **8 passed, 0 failed.**
+      Run 1 (`"Create a file named landing.html containing a heading"`) — the
+      model called `write_file` twice, the file exists on disk, and the log reads
+      `[implement] 1 file(s) changed on disk: landing.html ok`, `COMPLETED, and
+      backed by observed change`. Run 2 (`"What does index.js export?"`) —
+      classified `READ_ONLY`, ran four real read tools, changed nothing, and
+      finished `COMPLETED`, **not BLOCKED**. Both halves matter: an engine that
+      demands edits from a question is as broken as one that accepts a no-op.
+      `npm run test:agent` also passes 13/13 (real model, real `write_file`,
+      `index.html` on disk at 2118 bytes).
+      *The harness itself was wrong first time*: it registered only the
+      filesystem tools and the pipeline died at `analyze` with "Unknown tool:
+      inspect_environment". Only a live run surfaces that.
 - [ ] The model must be observed genuinely refusing to call tools. If a provider
       returns prose for an implementation request, the engine now blocks — but
       retrying with a stricter tool prompt before blocking has not been tried.

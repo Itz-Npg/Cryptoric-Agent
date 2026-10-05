@@ -37,7 +37,8 @@
     "test:agent:laguna": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs laguna",
     "test:agent:ling": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs ling",
     "test:agent:laguna-xs": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs laguna-xs",
-    "stage:keys": "node scripts/stage-keys.mjs"
+    "stage:keys": "node scripts/stage-keys.mjs",
+    "test:agent:pipeline": "node scripts/build-live-check.mjs tests/live/pipeline-check.ts .review/live/pipeline-check.mjs && node .review/live/pipeline-check.mjs"
   },
   "dependencies": {
     "@fontsource-variable/instrument-sans": "^5.1.0",
