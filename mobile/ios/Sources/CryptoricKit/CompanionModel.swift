@@ -69,7 +69,10 @@ public final class CompanionModel: ObservableObject {
             // Sent on connect so a phone that was asleep catches up instead of
             // showing an empty list that looks like an idle desktop.
             await send(.refresh)
-            for try await data in await transport.messages() {
+            // `messages()` is synchronous and returns a stream; the `await` here was
+            // flagged as unnecessary by the compiler, which is the signal that
+            // the protocol and the call site disagree about the shape.
+            for try await data in transport.messages() {
                 try Task.checkCancellation()
                 do {
                     let decoded = try RelayMessageDecoder.snapshot(from: data)
