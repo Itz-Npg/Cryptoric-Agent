@@ -83,12 +83,30 @@ async function main(): Promise<void> {
   const userDataDir = mkdtempSync(join(tmpdir(), 'cryptoric-browser-check-'))
   let fixture: Fixture | null = null
 
+  // Chromium switches have to be appended before the app is ready, and CI needs
+  // them: under `xvfb` there is no GPU and no compositor, so `capturePage` times
+  // out and synthesised pointer events never reach the page. Software rendering
+  // restores a real surface to render into. Passed as an environment variable
+  // rather than hard-coded so a desktop run is unaffected — the flags are wrong
+  // for a machine that does have a GPU.
+  //
+  // Not a workaround for a broken product: the switches configure the *test
+  // runner's* Chromium, not the shipped browser.
+  for (const flag of (process.env.CRYPTORIC_CHECK_CHROMIUM_FLAGS ?? '').split(/\s+/).filter(Boolean)) {
+    const [name, ...rest] = flag.split('=')
+    if (rest.length > 0) app.commandLine.appendSwitch(name, rest.join('='))
+    else app.commandLine.appendSwitch(name)
+  }
+
   // A watchdog, so a regression that wedges a page call fails the run loudly
-  // instead of hanging the terminal forever.
+  // instead of hanging the terminal forever. Configurable because software
+  // rendering under xvfb is several times slower than a desktop GPU, and a
+  // timeout that fires on a slow-but-correct run trains people to ignore it.
+  const watchdogMs = Number(process.env.CRYPTORIC_CHECK_WATCHDOG_MS ?? 180_000)
   const watchdog = setTimeout(() => {
-    process.stdout.write('[FAIL] watchdog — the run did not finish in 180s\n')
+    process.stdout.write(`[FAIL] watchdog — the run did not finish in ${watchdogMs}ms\n`)
     app.exit(1)
-  }, 180_000)
+  }, watchdogMs)
   watchdog.unref?.()
 
   await app.whenReady()

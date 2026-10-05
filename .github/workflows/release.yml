@@ -123,6 +123,18 @@ jobs:
       - name: Live browser check
         env:
           ELECTRON_DISABLE_SANDBOX: '1'
+          # Under xvfb there is no GPU and no compositor. Without software
+          # rendering, `capturePage` times out and synthesised pointer events
+          # never reach the page — which fails click, drag, screenshot and link
+          # navigation while everything read-only keeps passing.
+          CRYPTORIC_CHECK_CHROMIUM_FLAGS: >-
+            --disable-gpu
+            --disable-gpu-sandbox
+            --in-process-gpu
+            --use-gl=swiftshader
+            --disable-dev-shm-usage
+          # Software rendering is several times slower than a desktop GPU.
+          CRYPTORIC_CHECK_WATCHDOG_MS: '600000'
         run: |
           set -o pipefail
           xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
