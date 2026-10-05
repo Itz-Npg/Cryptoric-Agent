@@ -5,6 +5,8 @@
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
     "tests/**/*.ts",
+    "cli/src/**/*.ts",
+    "cli/test/**/*.ts",
     "electron.vite.config.ts",
     "vitest.config.ts",
     "eslint.config.js"

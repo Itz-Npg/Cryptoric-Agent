@@ -120,8 +120,13 @@ has.
 
 - Agent loop with real tools — `npm run test:agent` → **13/13**
 - Full stage pipeline incl. the evidence gate — `npm run test:agent:pipeline` → **8/8**
-- **Integrated browser** — `npm run test:browser` → **59/59 against real Chromium**,
-  43 tools. Desktop only; see the limitation below.
+- **Integrated browser** — `npm run test:browser` → **64/64 against real Chromium**,
+  44 tools. Desktop only; see the limitation below.
+- **iOS companion** — `swift build` + `swift test` green on a GitHub macOS
+  runner. The job fails unless the suite reports `Executed N tests` with N ≥ 10.
+- **`cryptoric` CLI** — the same pipeline, headless. 24 tools, one 398 KB file,
+  no Electron. A real task run returns exit **2 `BLOCKED`** and writes nothing
+  when no model is configured, rather than reporting success.
 - Release signing — sign and verify round trip on the real 188 MB installer;
   public key in [`docs/signing/`](docs/signing/SIGNING.md)
 - Coin allowance rules — 14 tests in `tests/unit/coins.test.ts`
@@ -135,7 +140,7 @@ has.
 
 **Not done — stated rather than implied:**
 
-- **The browser check does not run in CI.** It passes 59/59 on a desktop, but
+- **The browser check does not run in CI.** It passes 64/64 on a desktop, but
   under `xvfb` the five tools that need a real pointer path or a composited
   surface fail. Tried and rejected: software-rendering switches. There is no
   headless variant, and inventing one would mean testing a fake. Until it runs,
@@ -145,8 +150,41 @@ has.
 - **Binaries carry no Authenticode signature.** They are GPG-signed, which
   proves provenance but does not clear SmartScreen — see
   [`docs/signing/SIGNING.md`](docs/signing/SIGNING.md).
+- **The CLI has never run against a live model provider.** Every CLI result in
+  this README was produced with no API key set. That is the path that must
+  refuse to claim success, and it does — but the model path itself is untested
+  end-to-end.
+- **The iOS app is not distributed.** It compiles and its tests pass in CI.
+  App Store or TestFlight needs a paid Apple Developer account, so nothing here
+  puts an app on a phone.
 - **Multi-project workspaces** — persistence scoping exists; the UI does not.
 - **`npm run lint` exits 1** on ~350 pre-existing errors in untouched files.
+
+---
+
+## The CLI
+
+The same agent, in a terminal. Not a port — the desktop app and `cryptoric` are
+two composition roots over one implementation, so a change to the pipeline
+reaches both.
+
+```bash
+cryptoric run "add a README describing this project"
+cryptoric tools          # what this CLI can actually call
+cryptoric doctor         # environment and configuration
+```
+
+State lives in `CRYPTORIC_HOME` (default `~/.cryptoric`), the API key comes from
+`CRYPTORIC_API_KEY` and is never written to disk, and gated operations prompt on
+stdin — refusing outright when stdin is not a terminal, because an absent human
+is not consent.
+
+Exit codes distinguish what the pipeline actually concluded: `0` COMPLETED,
+`1` FAILED, `2` BLOCKED, `3` CANCELLED, `4` PARTIAL, `64` bad usage. **A run
+with no observed file change is never `0`.**
+
+Browser tools are absent rather than stubbed — they need a window. Full detail in
+[`cli/README.md`](cli/README.md).
 
 ---
 

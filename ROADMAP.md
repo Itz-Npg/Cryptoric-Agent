@@ -12,9 +12,42 @@ in `docs/signing/AUDIT.md`.
 | Thing | Proof |
 |---|---|
 | Release signing (OpenPGP) | Sign + verify round trip on the real 188 MB installer; public key committed |
-| Integrated browser | 43 tools, `npm run test:browser` → 64/64 against real Chromium |
+| Integrated browser | 44 tools, `npm run test:browser` → 64/64 against real Chromium |
 | Design Mode (`browser_inspect_element`) | Markup + computed style + reusable selector in one call; 5 new live checks |
 | Honest browser verification in the pipeline | 5 distinct outcomes; a build can no longer deny a browser it has |
+| **iOS companion** | `swift build` + `swift test` green on macos-15; the job fails unless `Executed N tests` appears with N ≥ 10 |
+| **`cryptoric` CLI** | 24 tools, one 398 KB file, no Electron; a real task run returns exit 2 `BLOCKED` and writes nothing |
+
+### The CLI shipped, and it did not need a rewrite
+
+The plan said the agent "currently assumes an Electron main process with a window
+and real browser tabs, so the core has to be extractable before a CLI can drive
+it honestly." **That was wrong, and the reason it is worth recording here:** the
+assumption had never been checked. Of 1,593 lines in `main/index.ts`, the agent,
+tool, skill, permission and environment layers never imported Electron at all —
+only 5 files in `src/main` ever did, and none of them were the agent.
+
+So the CLI is not a port. It is a second *composition root* over the same
+implementation:
+
+| | Desktop app | `cryptoric` |
+|---|---|---|
+| State | OS `userDataDir` | `CRYPTORIC_HOME`, default `~/.cryptoric` |
+| API key | OS-encrypted keychain | `CRYPTORIC_API_KEY`, never written to disk |
+| Approvals | on-screen queue | stdin; absent TTY **refuses** |
+| Browser | `WebContentsView` | not registered, not stubbed |
+
+What had to change: `chanSystemPrompt` / `planSystemPrompt` were private
+functions inside `main/index.ts`, so they moved to
+`src/main/services/agent/prompts.ts`. Two copies of an agent's instructions
+drift silently, because nothing fails when one is edited.
+
+Two properties are now asserted by tests rather than by memory: the shared layer
+imports no Electron, and the prompts are defined once.
+
+**Not verified:** a run against a live model provider. Everything above was
+proven with no API key configured, which is exactly the path that must refuse to
+claim success — and it did, exit 2, zero files written.
 
 ## In progress
 
@@ -38,24 +71,15 @@ built artifact you can install yourself if you hold the accounts.
 
 | Piece | State |
 |---|---|
-| `mobile/relay` — Node bridge the desktop app serves | Open |
-| `mobile/ios/CryptoricKit` — models, relay client, views | Open |
+| `mobile/relay` — Node bridge the desktop app serves | 17/17 protocol tests green |
+| `mobile/ios/CryptoricKit` — models, relay client, views | Green on macos-15 |
 | Android companion | Open |
 | Pairing / QR handshake | Open |
 
-### CLI
+### CLI — shipped
 
-`cryptoric run "task"` — the same pipeline, headless.
-
-This is the unlock for everything else. Worktrees, terminals and CI runners can
-only be automated once there is something to invoke without the GUI. The hard
-part is not argument parsing: it is that the agent currently assumes an Electron
-main process with a window and real browser tabs, so the core has to be
-extractable before a CLI can drive it honestly.
-
-Scope: extract the pipeline from the GUI, expose it, publish as an npm package.
-You run `npm publish` with your own token — **never send publish credentials to
-me.**
+See "Done and verified" above. Remaining: `npm publish`, which you run with your
+own token. **Never send publish credentials to me.**
 
 ### Worktree isolation
 
@@ -71,7 +95,8 @@ before the CLI exists means doing it twice.
 |---|---|
 | Quick open | Command palette over files, tools, commands. Self-contained. |
 | Notifications + unread | Electron native notifications; real value once agents run long. |
-| Multiple terminals | Working terminal panes. **Not** Ghostty-class WebGL rendering — that is a different product. |
+| Multiple terminals | Working terminal panes. **Not** Ghostty-class WebGL rendering — that is a different product. Now unblocked: `TerminalSessionManager` is already headless and drives `cryptoric` today. |
+| Any CLI agent | Orca's actual insight: *if it runs in a terminal, it runs in Orca.* Cryptoric already runs arbitrary commands via `run_command`, so this is a wrapper, not a reimplementation. |
 
 ## Deliberately not copying from the reference
 

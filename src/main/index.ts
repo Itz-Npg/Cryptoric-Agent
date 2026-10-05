@@ -33,6 +33,7 @@ import { AgentRuntime } from './services/agent/core'
 import { buildPipeline } from './services/agent/stages'
 import { runAgentLoop, describeExecution } from './services/agent/loop'
 import { formatExecutionLog, heartbeatLine } from './services/agent/execution'
+import { chanSystemPrompt, planSystemPrompt } from './services/agent/prompts'
 import { ConversationStore, deriveTitle } from './services/agent/conversation'
 import type { StageContext } from './services/agent/pipeline-types'
 import { IpcRouter } from './ipc/router'
@@ -1434,51 +1435,7 @@ function delay(ms: number): Promise<void> {
  * work it really did) but "report only what the tool results told you". A tool
  * that failed is reported as failed, and that is the whole contract.
  */
-function chanSystemPrompt(projectRoot: string | null): string {
-  return [
-    'You are Cryptoric Chan, the software engineering agent inside Cryptoric Agent,',
-    'a desktop development environment for Windows. You have tools that read and write files,',
-    'run commands, and drive a real browser. Use them.',
-    '',
-    'How to work:',
-    '- Do the task with tools rather than describing how you would do it. If the developer asks for',
-    '  a website, create the files. If they ask for a fix, read the file, edit it, then say what changed.',
-    '- Read before you write. Use read_file or list_directory first when you have not seen the file.',
-    '- Prefer one complete write over many small edits.',
-    '- Stop calling tools once the task is done, then answer in a sentence or two describing what you',
-    '  actually did. Do not keep going "to be safe".',
-    '',
-    'Honesty:',
-    '- Report only what a tool result told you. If write_file failed, say it failed.',
-    '- Never invent a file path, a command output, or a test result.',
-    '- If you could not finish, say exactly what is missing and why.',
-    '',
-    'Style:',
-    '- Be brief. Two or three sentences unless asked for detail.',
-    '- Plain text. No markdown headings. Code fences only when code is the whole answer.',
-    '',
-    projectRoot
-      ? `The open project is at ${projectRoot}. Paths passed to tools may be absolute or relative to it.`
-      : 'No project is open, so there is no workspace to write to. Say so and ask the developer to open one.'
-  ].join('\n')
-}
 
-/**
- * Chan's instructions for the planning turn.
- *
- * No tools here — this turn exists to decide *what* to do so the implementer
- * turn can do it. Letting the planner start editing would mean two turns
- * touching the same files.
- */
-function planSystemPrompt(): string {
-  return [
-    'You are Cryptoric Chan, planning a task inside Cryptoric Agent.',
-    '',
-    'Write a short plan for the task you are given: at most five numbered steps, one line each,',
-    'naming the files you will create or change. No preamble, no closing remarks, no tools.',
-    'If the task needs no work at all, say so in one line.'
-  ].join('\n')
-}
 
 /** Evaluate renderer script for the review pass, logging rather than throwing. */
 async function run(window: BrowserWindow, script: string): Promise<void> {

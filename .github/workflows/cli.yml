@@ -1,0 +1,140 @@
+# Cryptoric CLI CI
+#
+# The CLI shares its implementation with the desktop app, so `verify` in
+# release.yml already typechecks and tests most of what is bundled here. What it
+# cannot do is check the two things that are specific to a terminal surface:
+#
+#   1. The bundle builds, and does not drag Electron in with it.
+#   2. `cryptoric run` exits non-zero and writes nothing when no model is
+#      configured.
+#
+# That second check is the important one. A CLI wired into a script or a CI step
+# that reported success while doing nothing would be worse than no CLI at all,
+# so it is asserted here on every push rather than trusted.
+
+name: CLI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    name: Build and verify the CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The bundle is 398 KB and must stay that way. It fails the build outright
+      # if an Electron module reaches the entry point, because `require('electron')`
+      # would then resolve to the path of a binary that is not installed.
+      - name: Bundle
+        run: node cli/build.mjs
+
+      - name: Check the bundle really is Electron-free
+        run: |
+          set -euo pipefail
+          if grep -c "require(\"electron\")\|require('electron')\|from \"electron\"\|from 'electron'" cli/dist/index.js; then
+            echo "::error::The CLI bundle references electron."
+            exit 1
+          fi
+          echo "no electron reference in the bundle"
+
+      - name: Version and help
+        run: |
+          set -euo pipefail
+          node cli/dist/index.js --version
+          node cli/dist/index.js help > /dev/null
+
+      - name: Tool surface is non-empty
+        run: |
+          set -euo pipefail
+          COUNT="$(node cli/dist/index.js tools --json | node -e "
+            let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d).tools.length))
+          ")"
+          echo "tools=$COUNT"
+          if [ "$COUNT" -lt 10 ]; then
+            echo "::error::Only $COUNT tools registered; the CLI is not wired to the real tool set."
+            exit 1
+          fi
+
+      # No CRYPTORIC_API_KEY is set, on purpose. The deterministic stages still
+      # run, the implement stage cannot do the work, and the honest outcome is
+      # exit 2 / BLOCKED with an empty file listing.
+      - name: A run with no model must refuse, not fake success
+        run: |
+          set -euo pipefail
+          WORK="$(mktemp -d)"
+          # Captured outside WORK on purpose: writing the result into the
+          # directory whose contents are about to be compared would make this
+          # step fail on its own output rather than on the agent's.
+          OUT="$(mktemp -d)"
+          printf '{"name":"scratch","version":"1.0.0"}\n' > "$WORK/package.json"
+          BEFORE="$(find "$WORK" -type f | sort)"
+
+          set +e
+          CRYPTORIC_HOME="$WORK/.cryptoric" \
+            node cli/dist/index.js run "add a README.md" \
+            --cwd "$WORK" --json > "$OUT/result.json" 2> "$OUT/stderr.txt"
+          CODE=$?
+          set -e
+
+          echo "exit=$CODE"
+          if [ "$CODE" -eq 0 ]; then
+            echo "::error::Exit 0 with no model configured — a run that did nothing reported success."
+            cat "$OUT/result.json"
+            exit 1
+          fi
+          if [ "$CODE" -ne 2 ]; then
+            echo "::error::Expected exit 2 (BLOCKED), got $CODE."
+            cat "$OUT/result.json"
+            exit 1
+          fi
+
+          node -e "
+            const r = require('$OUT/result.json');
+            if (r.verdict !== 'BLOCKED') throw new Error('expected BLOCKED, got ' + r.verdict);
+            if ((r.changedPaths || []).length !== 0) throw new Error('wrote files it should not have');
+            if (!r.reason) throw new Error('BLOCKED without a reason');
+            console.log('verdict=' + r.verdict);
+            console.log('reason=' + r.reason);
+          "
+
+          AFTER="$(find "$WORK" -type f -not -path '*/.cryptoric/*' | sort)"
+          if [ "$BEFORE" != "$AFTER" ]; then
+            echo "::error::The run changed files in the project directory."
+            diff <(echo "$BEFORE") <(echo "$AFTER") || true
+            exit 1
+          fi
+          echo "no files were created"
+
+      - name: A bad command line exits 64, not 1
+        run: |
+          set -euo pipefail
+          set +e
+          node cli/dist/index.js run > /dev/null 2>&1
+          CODE=$?
+          set -e
+          echo "exit=$CODE"
+          if [ "$CODE" -ne 64 ]; then
+            echo "::error::Expected the usage exit code 64, got $CODE."
+            exit 1
+          fi
