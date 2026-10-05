@@ -1,0 +1,11 @@
+{
+  "models": [
+    {
+      "id": "fixture-model",
+      "label": "Fixture",
+      "description": "for tests",
+      "contextWindow": "32000",
+      "byok": true
+    }
+  ]
+}
