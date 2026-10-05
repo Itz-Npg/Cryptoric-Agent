@@ -79,21 +79,21 @@ describe('what the account surface shows', () => {
     expect(noNameNoEmail.detail).toBe(ACCOUNT.accountId)
   })
 
-  it('describes the browser round-trip while it is in flight, and disables the action', () => {
-    const starting = accountView(status(), 'starting', null)
-    expect(starting.busy).toBe(true)
-    expect(starting.action).toBeNull()
-    expect(starting.chip).toMatch(/browser/i)
-
-    const waiting = accountView(status(), 'waiting', null)
-    expect(waiting.busy).toBe(true)
-    expect(waiting.chip).toMatch(/google/i)
+  it('describes the whole round-trip as one wait, and disables the action', () => {
+    // `auth.start` resolves only after the redirect is redeemed, so the app
+    // genuinely cannot say "opening" versus "consenting". One honest message
+    // for the entire window beats two labels, one of which is never true.
+    const view = accountView(status(), 'pending', null)
+    expect(view.busy).toBe(true)
+    expect(view.action).toBeNull()
+    expect(view.chip).toMatch(/google/i)
+    expect(view.detail).toMatch(/browser tab/i)
   })
 
   it('never claims to be waiting while already signed in', () => {
     // The sign-in button is reachable while signed in; a stale phase must not
     // replace a working session with "waiting for Google".
-    const view = accountView(status({ signedIn: true, account: ACCOUNT }), 'waiting', null)
+    const view = accountView(status({ signedIn: true, account: ACCOUNT }), 'pending', null)
     expect(view.chip).toBe('Cryptoric Chan')
     expect(view.busy).toBe(true)
   })

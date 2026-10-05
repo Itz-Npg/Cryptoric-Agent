@@ -13,8 +13,17 @@
 
 import type { AuthStatus, BalanceInfo } from '../preload'
 
-/** Where the browser round-trip has got to. */
-export type SignInPhase = 'idle' | 'starting' | 'waiting'
+/**
+ * Where the sign-in attempt has got to.
+ *
+ * One in-flight state, not two. The main process resolves `auth.start` only
+ * after the redirect has been redeemed, so the renderer cannot tell "the
+ * browser is opening" from "the person is still consenting" — any split would
+ * be a guess, and the guess that gets displayed is whichever phase happens
+ * first. So the in-flight view says the one thing that is true for the whole
+ * wait: finish in the browser tab.
+ */
+export type SignInPhase = 'idle' | 'pending'
 
 export interface AccountView {
   /** What the topbar chip says. Never empty. */
@@ -49,12 +58,9 @@ export function accountView(status: AuthStatus | null, phase: SignInPhase, error
   // yet true, so the view describes the round-trip rather than the old answer.
   if (busy && !(status?.signedIn ?? false)) {
     return {
-      chip: phase === 'starting' ? 'Opening browser…' : 'Waiting for Google…',
+      chip: 'Waiting for Google…',
       tone: 'idle',
-      detail:
-        phase === 'starting'
-          ? 'Starting the loopback listener before your browser opens.'
-          : 'Finish in the browser tab. This tab can be closed once you are back.',
+      detail: 'Finish in the browser tab. This updates by itself when you are back.',
       action: null,
       busy: true,
       notice: error

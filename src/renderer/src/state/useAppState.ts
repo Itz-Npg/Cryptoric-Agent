@@ -674,19 +674,17 @@ function useActions(dispatch: React.Dispatch<Action>) {
       refreshBalance,
 
       startSignIn: async () => {
-        dispatch({ type: 'auth-phase', phase: 'starting', error: null })
+        // One in-flight phase for the whole round trip. `auth.start` resolves
+        // only once the redirect has been redeemed, so nothing between the
+        // click and that answer can be honestly labelled "opening".
+        dispatch({ type: 'auth-phase', phase: 'pending', error: null })
         try {
           const result = await window.cryptoric.auth.start()
-          if (!result.ok) {
-            dispatch({ type: 'auth-phase', phase: 'idle', error: result.error ?? 'Sign-in did not start.' })
-            await refreshAuth()
-            return result
-          }
-          dispatch({ type: 'auth-phase', phase: 'waiting' })
+          dispatch({ type: 'auth-phase', phase: 'idle', error: result.ok ? null : (result.error ?? 'Sign-in did not start.') })
           await refreshAuth()
-          // The button returns once the redirect has been redeemed, so the
-          // phase is only left open if the call itself failed above.
-          dispatch({ type: 'auth-phase', phase: 'idle' })
+          // Signing in changes whose balance this is, so the number is re-read
+          // rather than left showing the previous account's coins.
+          if (result.ok) await refreshBalance()
           dispatch({
             type: 'notice',
             notice: result.ok ? 'Signed in. Your coin balance is now tied to this account.' : null
