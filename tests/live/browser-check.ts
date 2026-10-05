@@ -93,8 +93,10 @@ async function main(): Promise<void> {
   // Not a workaround for a broken product: the switches configure the *test
   // runner's* Chromium, not the shipped browser.
   for (const flag of (process.env.CRYPTORIC_CHECK_CHROMIUM_FLAGS ?? '').split(/\s+/).filter(Boolean)) {
-    const [name, ...rest] = flag.split('=')
-    if (rest.length > 0) app.commandLine.appendSwitch(name, rest.join('='))
+    const separator = flag.indexOf('=')
+    const name = separator === -1 ? flag : flag.slice(0, separator)
+    const value = separator === -1 ? '' : flag.slice(separator + 1)
+    if (value) app.commandLine.appendSwitch(name, value)
     else app.commandLine.appendSwitch(name)
   }
 
