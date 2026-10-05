@@ -7,7 +7,7 @@ The short version of where things stand:
 
 | Platform | Signature status | Cost |
 | --- | --- | --- |
-| Linux, macOS, Windows — provenance | **Done.** OpenPGP detached signature on every artifact. | Free, self-serve |
+| Linux, macOS, Windows — provenance | **Built and proven, not yet published.** The pipeline signs; no release carries a signature yet. | Free, self-serve |
 | Windows — Authenticode (SmartScreen) | **Pending.** Configured and ready; blocked on SignPath Foundation approval. | Free for open source |
 | macOS — Developer ID + notarisation | **Not done.** Requires a paid Apple Developer Program membership. | $99/year |
 
@@ -15,12 +15,18 @@ The short version of where things stand:
 
 ## 1. What the project signs, and what that actually buys you
 
-Every installer published on the GitHub Releases page has a matching `.asc`
-file next to it, produced by the release pipeline:
+**No published release is currently signed.** All 23 assets across the five
+releases on the GitHub Releases page carry zero `.asc` files. The signing job
+exists and has been proven against the real 188 MB installer, but it requires
+the `CRYPTORIC_GPG_KEY` repository secret and a pinned fingerprint, and it
+**fails the build** rather than skipping when they are absent — which is the
+correct behaviour for a signing step, and the reason nothing has shipped signed.
+
+Once the secret is set, each asset is published beside a signature:
 
 ```
-CryptoricAgent-0.1.4-x64-setup.exe
-CryptoricAgent-0.1.4-x64-setup.exe.asc
+CryptoricAgent-0.1.4-x64.exe
+CryptoricAgent-0.1.4-x64.exe.asc
 ```
 
 The `.asc` is a **detached OpenPGP signature**. It proves the file is
@@ -40,14 +46,14 @@ does not.
 
 ```bash
 # From a clone of this repository:
-npm run verify:release -- ~/Downloads/CryptoricAgent-0.1.4-x64-setup.exe
+npm run verify:release -- ~/Downloads/CryptoricAgent-0.1.4-x64.exe
 ```
 
 Or with plain GnuPG, no checkout needed:
 
 ```bash
 gpg --keyserver keyserver.ubuntu.com --recv-keys 0A0BDF9C7A1C544D22505E4BC91B55788C7458A1
-gpg --verify CryptoricAgent-0.1.4-x64-setup.exe.asc CryptoricAgent-0.1.4-x64-setup.exe
+gpg --verify CryptoricAgent-0.1.4-x64.exe.asc CryptoricAgent-0.1.4-x64.exe
 ```
 
 A good result looks like:
@@ -220,8 +226,8 @@ something to sign.
 That is the whole integration. The existing `sign` job already publishes the
 OpenPGP `.asc` signatures, so a signed release then carries both:
 
-- `CryptoricAgent-0.1.4-x64-setup.exe.asc` — OpenPGP, ours, already working
-- `CryptoricAgent-0.1.4-x64-setup.exe.signed.exe` — Authenticode, from SignPath
+- `CryptoricAgent-0.1.4-x64.exe.asc` — OpenPGP, ours, already working
+- `CryptoricAgent-0.1.4-x64.signed.exe` — Authenticode, from SignPath
 
 ### 4.4 What to expect afterwards, honestly
 
