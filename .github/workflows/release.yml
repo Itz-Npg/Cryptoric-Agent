@@ -221,13 +221,22 @@ jobs:
           # `latest.yml` is the file `electron-updater` actually downloads. If it
           # is missing or does not name this version, the app has nothing to read
           # and the release is not usable however many installers it has.
+          #
+          # The `v` is stripped by the shell, not by the expression language.
+          # Actions has no `#` operator, so trying to trim the prefix inside an
+          # expression makes GitHub reject the entire workflow file before a
+          # single job starts. The example is written without braces on purpose:
+          # expressions are interpolated across the whole `run` string, comments
+          # included, so even a comment that merely *looks* like one gets parsed.
+          VERSION="${TAG#v}"
           echo "=== release assets ==="
           gh release view "$TAG" --json assets --jq '.assets[].name'
           echo
           echo "=== latest.yml ==="
           gh release download "$TAG" --pattern latest.yml --dir /tmp/feed --clobber
           cat /tmp/feed/latest.yml
-          if ! grep -q "version: ${{ github.ref_name#v }}" /tmp/feed/latest.yml; then
-            echo "::error::latest.yml does not declare version ${{ github.ref_name#v }}."
+          if ! grep -q "^version: ${VERSION}$" /tmp/feed/latest.yml; then
+            echo "::error::latest.yml does not declare version ${VERSION}."
             exit 1
           fi
+          echo "latest.yml declares ${VERSION} — the updater has a feed to read."
