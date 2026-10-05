@@ -11,7 +11,7 @@ pushed to `origin/main`, release `v0.1.0` published.
 ```bash
 npx tsc -p tsconfig.node.json --noEmit   # exit 0
 npx tsc -p tsconfig.web.json --noEmit    # exit 0
-npx vitest run                           # 387 passed / 16 files
+npx vitest run                           # 408 passed / 17 files
 npx electron-vite build                  # exit 0
 npx electron-vite dev                    # run the app
 npm run test:browser                     # 59 checks in real Electron, http target
@@ -148,6 +148,109 @@ cmd expands those inside double quotes, so quoting is not enough.
 `src/renderer/src/**` is approved and must not be redesigned, restyled or rearranged.
 Only add UI when a genuinely new capability requires a control or result view.
 
+**Owner-authorised exception (2026-10-05):** the approval prompt was promoted to a global
+overlay ([ApprovalPrompt.tsx](src/renderer/src/components/ApprovalPrompt.tsx)) and the
+prompt composer was rebuilt as an auto-growing `<textarea>`, on the owner's explicit
+instruction ("on screen it should appear bigly… fix that global approval overlay"). Both
+reuse the existing card / field primitives rather than introducing a new visual language.
+No other part of the frozen UI changed.
+
+### Approval gating — the invariant that was violated
+
+`IpcRouter` gates any channel whose permission domain evaluates to `ask` **and** which
+does not set `requiresApproval: false`. The gate creates an `ApprovalRequest` and awaits
+`ApprovalQueue.wait`.
+
+> **A gate that fires must be visible before it waits.**
+
+`RouterContext` carries `push(event: MainEvent)`, and `dispatch` calls
+`this.ctx.push({ type: 'approval', request })` *before* awaiting. Without it the prompt is
+created in main-process memory, nobody resolves the waiter, and the call dies at the
+queue's 120 s timeout with `Not approved.` — a button that appears dead. Channels
+affected at the time: `updates:install`, `env:install`, `terminal:list`, `process:list`,
+`process:restart`. Pinned by `tests/unit/ipc-router.test.ts`; reverting the push fails 3
+of them.
+
+**When adding a channel:** set `requiresApproval: false` for anything already governed
+elsewhere, and remember the default is *gated*, not open — `gitCommit`, `fileWrite` and
+`gitCheckpoint` omit the field and are one permission-settings change away from the same
+hang.
+
+### Cross-platform packaging — `.github/workflows/release.yml`
+
+`electron-builder.yml` has always declared `mac` and `linux` targets, but nothing ran
+them: a `.dmg` cannot be cross-compiled from Windows, and `--linux` fails on this host
+with `cross-spawn ENOENT`. The targets were declarations, not deliverables.
+
+Three jobs: `verify` (typecheck + unit tests, every push and PR) → `build` (matrix over
+`windows-latest`, `macos-latest`, `ubuntu-latest`; `--publish never`; uploads artifacts)
+→ `release` (on a `v*` tag only, collects artifacts and publishes with the runner's own
+`gh` CLI, so publishing adds no third-party action to trust).
+
+Two guards worth keeping, both added because a version mismatch is silent otherwise:
+
+- The release job **fails if the tag does not match `package.json`**. `electron-builder`
+  takes the version from `package.json`, so tagging `v0.1.4` while the manifest says
+  `0.1.3` would publish 0.1.3 binaries under a v0.1.4 tag — an installed build would
+  then report the wrong thing about itself, which is exactly the class of bug the
+  updater feed work uncovered.
+- After publishing it **re-downloads `latest.yml` from the release** and asserts it
+  names the tagged version. `latest.yml` is the file `electron-updater` actually reads;
+  installers without it are not updatable however many of them there are.
+
+`npm ci` is used over `npm install` so a build cannot succeed against versions nobody
+committed. Verified locally: `npm ci --dry-run` in a clean directory exits 0 and
+resolves 652 packages from the lockfile. The stale `version` field in
+`package-lock.json` (`0.1.0` vs `0.1.4`) does not affect this — `npm ci` validates
+dependency specs, not the version field.
+
+Green on `0f18eb9`, run `37257563976`. All three platforms packaged.
+
+> **Artifacts are not a release.** The build job uploads *Actions artifacts*, which
+> are temporary storage: they expire (repo default 90 days, verified as `2026-10-19`
+> here), they never appear on the Releases page, and they are not a URL anyone can
+> share. A **Release** is the permanent versioned page with assets attached, and it is
+> what a user downloads from and what the updater reads. The `release` job is the only
+> bridge, and it is gated on a `v*` tag — so **a green CI run publishes nothing**. The
+> one command that starts publishing is `git push origin vX.Y.Z`.
+
+Two build-time failures on the way there, both invisible until a real runner executed
+the file: the `author` field was a bare string `"Cryptoric"` and `deb` requires an
+email; and a diagnostic step of mine used `ls -la` under the default PowerShell, so
+the Windows package built fine and then the step failed. Fixed with
+`author: {name, email}` and `shell: bash`.
+
+### The updater's feed translation — keep it testable
+
+`electron-updater` fills `updateInfo` from the feed whether or not an update applies, and
+flags the real answer with `isUpdateAvailable`. On a current build `updateInfo.version` is
+the **running** version, so reading it alone makes an up-to-date build offer itself.
+
+That expression lived in `updater-electron.ts`, which imports `electron` and cannot be
+unit-tested, while `UpdateService`'s tests use a fake port — so the one line deciding "is
+there an update" had zero coverage and shipped in `v0.1.3`.
+
+> The rule now lives in `updater-feed.ts`, which imports nothing, and is pinned by 8
+> tests in `tests/unit/updater.test.ts`. `updater-electron.ts` delegates to it.
+
+**When touching the updater:** if new logic cannot be loaded by a test, it belongs in
+`updater-feed.ts` (pure) rather than the transport. Verify with:
+
+```bash
+npx vitest run tests/unit/updater.test.ts   # must be green
+```
+
+### Renderer must not import zod
+
+`src/shared/ipc-schemas.ts` pulls in zod and belongs to the main process. Constants the
+renderer needs live in `src/shared/limits.ts`, which imports nothing. Importing
+`MAX_PROMPT_CHARS` from `ipc-schemas` into a pane grew the renderer bundle to 463.24 kB;
+moving it to `limits.ts` dropped it to **346.78 kB**. Check with:
+
+```bash
+npm run build:dir && grep -l zod out/renderer/assets/*.js   # must print nothing
+```
+
 ### Debug hooks (`attachDesignReviewHooks`)
 
 `CRYPTORIC_SHOT=<dir>` · `CRYPTORIC_SHOT_SIZE=WxH` · `CRYPTORIC_SHOT_PROJECT=<path>`
@@ -225,6 +328,8 @@ a8be942 Rebuild the shell around a workspace-first visual language
 Later passes, on top of `a57f4d3`:
 
 ```
+33be12e Stop telling an up-to-date user to check for updates
+9921c3e Restore Laguna XS, and keep rejected models out of the catalogue
 31de4ea Add ten more free OpenRouter models, and record the eleven that do not work
 4b57f37 Ask before downloading an update, and install it when the app closes
 16d29c9 Give the user a way to stop the agent

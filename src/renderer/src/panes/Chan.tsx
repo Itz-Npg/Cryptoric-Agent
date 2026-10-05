@@ -13,8 +13,9 @@
  * is shown is what the agent did and what it observed.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentTask, TimelineEntry, WorkspaceState } from '@shared/types'
+import { MAX_PROMPT_CHARS } from '@shared/limits'
 import { Button, Chip, Dot, Icon, SectionHead, type IconName } from '../components/primitives'
 import type { TranscriptEntry } from '../state/store'
 
@@ -44,17 +45,19 @@ export function ChanPanel({
   approvals,
   workspaceState,
   onSubmit,
-  onResolveApproval,
   onClearConversation,
   onStop
 }: {
   transcript: TranscriptEntry[]
   timeline: TimelineEntry[]
   tasks: AgentTask[]
+  /**
+   * Counted, not rendered. The cards live in the global overlay so a prompt
+   * raised from any pane is visible; see `components/ApprovalPrompt.tsx`.
+   */
   approvals: { id: string; toolId: string; title: string; detail: string; risk: string }[]
   workspaceState: WorkspaceState
   onSubmit: (prompt: string) => void
-  onResolveApproval: (id: string, approved: boolean, remember?: boolean, toolId?: string) => void
   onClearConversation: () => void
   onStop: (taskId: string) => void
 }) {
@@ -91,8 +94,7 @@ export function ChanPanel({
         <>
           <ChanConversation
             transcript={transcript}
-            approvals={approvals}
-            onResolveApproval={onResolveApproval}
+            approvalCount={approvals.length}
             onClear={onClearConversation}
           />
           <ChanTimeline timeline={timeline} activeTask={activeTask} />
@@ -105,14 +107,6 @@ export function ChanPanel({
 // -------------------------------------------------------------------- idle
 
 function ChanIdle({ onSubmit, workspaceState }: { onSubmit: (p: string) => void; workspaceState: WorkspaceState }) {
-  const [draft, setDraft] = useState('')
-  const send = (): void => {
-    const text = draft.trim()
-    if (!text) return
-    setDraft('')
-    onSubmit(text)
-  }
-
   return (
     <div className="empty-view" style={{ gap: 0 }}>
       <div style={{ display: 'grid', justifyItems: 'center', gap: 16, paddingTop: '3vh' }}>
@@ -125,22 +119,7 @@ function ChanIdle({ onSubmit, workspaceState }: { onSubmit: (p: string) => void;
           </p>
         </div>
 
-        <div style={{ display: 'flex', gap: 8, width: 'min(560px, 78vw)' }}>
-          <input
-            className="field"
-            style={{ flex: 1, height: 42 }}
-            placeholder="Describe what you want to build…"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') send()
-            }}
-            aria-label="Ask Cryptoric Chan"
-          />
-          <Button variant="primary" onClick={send} disabled={!draft.trim()} style={{ height: 42, padding: '0 20px' }}>
-            Send
-          </Button>
-        </div>
+        <PromptComposer onSubmit={onSubmit} />
 
         <ul
           style={{
@@ -149,7 +128,7 @@ function ChanIdle({ onSubmit, workspaceState }: { onSubmit: (p: string) => void;
             padding: 0,
             display: 'grid',
             gap: 9,
-            width: 'min(560px, 78vw)'
+            width: 'min(760px, 88vw)'
           }}
         >
           {CAPABILITIES.map((item) => (
@@ -167,6 +146,110 @@ function ChanIdle({ onSubmit, workspaceState }: { onSubmit: (p: string) => void;
   )
 }
 
+const COMPOSER_MAX_HEIGHT = 420
+
+/**
+ * The prompt composer.
+ *
+ * This was a single-line `<input>`, which is wrong in two independent ways for
+ * the thing people actually do here, which is paste:
+ *
+ *  1. **Chromium strips newlines when pasting into an `<input>`.** A pasted
+ *     stack trace, diff or config file silently arrived as one long line, so the
+ *     agent was asked something different from what was on the clipboard. That
+ *     is data loss at the moment of asking, which is the worst place to lose it.
+ *  2. **A fixed 42px strip cannot show what you pasted.** Even with the
+ *     newlines kept, a big prompt scrolled horizontally inside one line.
+ *
+ * So it is an auto-growing `<textarea>`: newlines survive, the box expands with
+ * the content up to a cap and then scrolls, and the live character counter is
+ * read from the same constant the IPC schema enforces — so the limit is visible
+ * *before* submission instead of arriving afterwards as a rejected argument.
+ */
+export function PromptComposer({ onSubmit }: { onSubmit: (p: string) => void }) {
+  const [draft, setDraft] = useState('')
+  const ref = useRef<HTMLTextAreaElement>(null)
+
+  const resize = useCallback((): void => {
+    const el = ref.current
+    if (!el) return
+    // Height has to be collapsed before `scrollHeight` is re-read, or the box
+    // can only ever grow and never shrink when text is deleted.
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT)}px`
+  }, [])
+
+  useEffect(resize, [draft, resize])
+
+  const over = draft.length > MAX_PROMPT_CHARS
+  const send = (): void => {
+    const text = draft.trim()
+    if (!text || over) return
+    setDraft('')
+    onSubmit(text)
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 7, width: 'min(760px, 88vw)' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+        <textarea
+          ref={ref}
+          className="field"
+          rows={1}
+          placeholder="Describe what you want to build — paste code, logs or a whole file straight in."
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter sends, Shift+Enter breaks the line. Holding Shift is the
+            // universal "I mean a newline here", and a textarea makes that
+            // possible at all — an `<input>` cannot represent the distinction.
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault()
+              send()
+            }
+          }}
+          aria-label="Ask Cryptoric Chan"
+          style={{
+            flex: 1,
+            height: 46,
+            minHeight: 46,
+            maxHeight: COMPOSER_MAX_HEIGHT,
+            // `.field` is built for a 34px single-line control; a textarea needs
+            // vertical padding and its own resize handle policy.
+            padding: '12px 12px',
+            lineHeight: 1.55,
+            resize: 'none',
+            overflowY: 'auto',
+            fontFamily: 'var(--font)',
+            fontSize: 'var(--t-sm)'
+          }}
+        />
+        <Button
+          variant="primary"
+          onClick={send}
+          disabled={!draft.trim() || over}
+          style={{ height: 46, padding: '0 20px' }}
+        >
+          Send
+        </Button>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, paddingLeft: 2 }}>
+        <span className="caption">Enter to send · Shift+Enter for a new line</span>
+        <span
+          className="caption mono"
+          // Reported honestly, and only drawn attention to when it is real.
+          // A limit that cannot be hit is noise; one that can is shown in red
+          // while the user is still editing.
+          style={{ color: over ? 'var(--err)' : undefined }}
+        >
+          {draft.length.toLocaleString()} / {MAX_PROMPT_CHARS.toLocaleString()}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 const CAPABILITIES: { icon: IconName; label: string; detail: string }[] = [
   { icon: 'environment', label: 'Detects runtimes', detail: 'reads what the project actually needs' },
   { icon: 'check', label: 'Installs what is missing', detail: 'verified, without restarting Cryptoric' },
@@ -177,19 +260,18 @@ const CAPABILITIES: { icon: IconName; label: string; detail: string }[] = [
 
 function ChanConversation({
   transcript,
-  approvals,
-  onResolveApproval,
+  approvalCount,
   onClear
 }: {
   transcript: TranscriptEntry[]
-  approvals: { id: string; toolId: string; title: string; detail: string; risk: string }[]
-  onResolveApproval: (id: string, approved: boolean, remember?: boolean, toolId?: string) => void
+  /** Count only. The cards themselves render in the global overlay. */
+  approvalCount: number
   onClear: () => void
 }) {
   const endRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' })
-  }, [transcript.length, approvals.length])
+  }, [transcript.length, approvalCount])
 
   return (
     <div className="scroll" style={{ padding: '20px 24px', flex: '1 1 0' }}>
@@ -212,48 +294,6 @@ function ChanConversation({
 
       {transcript.map((entry) => (
         <ConversationRow key={entry.id} entry={entry} />
-      ))}
-
-      {approvals.map((request) => (
-        <div
-          key={request.id}
-          className="card"
-          style={{ marginTop: 16, borderColor: 'var(--accent-line)' }}
-          role="alertdialog"
-          aria-label={request.title}
-        >
-          <div className="card-pad" style={{ display: 'grid', gap: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-              <Dot tone="accent" pulse />
-              <span style={{ fontWeight: 600 }}>{request.title}</span>
-            </div>
-            <pre
-              className="mono selectable"
-              style={{
-                margin: 0,
-                whiteSpace: 'pre-wrap',
-                color: 'var(--text-2)',
-                maxHeight: 200,
-                overflow: 'auto',
-                fontSize: 'var(--t-xs)'
-              }}
-            >
-              {request.detail}
-            </pre>
-            <span className="caption">{request.risk}</span>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <Button variant="primary" onClick={() => onResolveApproval(request.id, true)}>
-                Approve once
-              </Button>
-              {/* Granting for the session is the difference between one prompt
-                  and one prompt per file when the agent is doing a real job. */}
-              <Button onClick={() => onResolveApproval(request.id, true, true, request.toolId)}>
-                Allow for this session
-              </Button>
-              <Button onClick={() => onResolveApproval(request.id, false)}>Deny</Button>
-            </div>
-          </div>
-        </div>
       ))}
 
       <div ref={endRef} />

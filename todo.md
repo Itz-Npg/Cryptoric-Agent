@@ -260,13 +260,77 @@ and stopped it not working, I sent a big prompt for making the website."*
 - [x] Pushed to `origin/main`; release `v0.1.0` published with exe + `latest.yml` + `.blockmap`
 - [x] Codebuff attribution stripped from all 15 prior commits; GitHub's contributor
       graph shows `Itz-Npg` only
-- [ ] **A download and an install were never exercised** — needs a real newer build than
-      the running one. Path is unit-tested against a fake port only. `v0.1.1`/`v0.1.2`
-      are a real pair and `v0.1.3` is out, so the owner can exercise it directly.
-- [ ] **The Stop button and the update prompt have never been clicked by a human.**
-      Wired, typechecked, unit-tested. The scripted harness stops the task before it can
-      screenshot a running task, so live capture is impossible with the current hook.
+- [ ] **A download and an install were never exercised** — the owner has now downloaded
+      `v0.1.3` successfully, but the **install still has not been observed applying**.
+      Root cause of the install failure found and fixed this pass (see PHASE 0.10):
+      the approval gate never reached the renderer. `v0.1.4` is the first release that
+      contains the fix, so it is the first version where the install path can run at
+      all.
+- [ ] **The Stop button and the update prompt have never been clicked by a human.** —
+      **partly superseded**: the owner clicked Download and Restart & install, which is
+      what exposed the approval-gate bug. The Stop button is still unclicked, and the
+      scripted harness still cannot screenshot a running task.
 - [ ] Binaries are unsigned; SmartScreen warns. Code signing not configured.
+
+## PHASE 0.10 — Gated actions and the prompt composer *(done, verified)*
+
+Two reports: *"restart now button not working"* and *"pasting a multi-line big prompt
+lands on one line and tells me a character limit"*. Neither was the bug it looked like.
+
+- [x] **Root cause of the dead Restart button found.** `IpcRouter.dispatch` created an
+      `ApprovalRequest` for every gated channel but `RouterContext` had no `push`, so
+      the prompt was never drawn, the waiter was never resolved, and the call died at
+      the queue's **120 s timeout** returning `Not approved.` `UpdateService.install()`
+      was never reached; `quitAndInstall()` never ran.
+- [x] **Why Download worked and Restart did not** — `updates:download` is `network.read`
+      → `safe` → allowed; `updates:install` is `env.modify` → `ask` → gated.
+- [x] `RouterContext.push` added and called **before** the wait. Every gated channel
+      fixed at once: `updates:install`, `env:install`, `terminal:list`, `process:list`,
+      `process:restart`.
+- [x] **Global approval overlay** — approvals were rendered only inside the Chan pane, so
+      a prompt raised from Settings was invisible. `ApprovalPrompt.tsx` renders them over
+      every pane, newest first, reusing the existing card. Owner-authorised UI exception.
+- [x] Approval titles say what the action *is* ("replace the running app with the
+      downloaded update"), not the channel id.
+- [x] `tests/unit/ipc-router.test.ts` — **10 tests**: prompt pushed before waiting,
+      denial reported, allowed domains never prompt, untrusted sender cannot provoke a
+      prompt, large multi-line paste accepted. Reverting the push **fails 3 of them**.
+- [x] **Paste root cause 1** — the composer was a single-line `<input>`, and Chromium
+      strips newlines when pasting into one. Rebuilt as an auto-growing `<textarea>`
+      (Enter sends, Shift+Enter breaks the line). Measured: **12/12 newlines preserved**,
+      grew 46px → 266px, shrank back on submit.
+- [x] **Paste root cause 2** — `agentSubmit` capped `prompt` at 20,000 chars, so a large
+      paste was rejected at the IPC boundary with no prior warning. Now 200,000, read by
+      both the schema and a live counter via `src/shared/limits.ts`.
+- [x] **Renderer kept free of zod.** Importing the constant from `ipc-schemas` grew the
+      renderer bundle to 463.24 kB; `limits.ts` (imports nothing) brought it to
+      **346.78 kB**. `grep -l zod out/renderer/assets/*.js` prints nothing.
+- [x] `npm run typecheck` exit 0 · `npx vitest run` **408 pass / 17 files** ·
+      `npm run build:dir` exit 0
+- [ ] **A release carrying these fixes has not been built yet.** The installed app still
+      has the broken gate until then.
+- [x] **"Version 0.1.3 is available. You are on 0.1.3." — a committed fix that was never
+      shipped.** The remote tag `v0.1.3` resolves to `31de4ea`, two commits *before*
+      `33be12e`. `electron-updater` populates `updateInfo` from the feed whether or not
+      an update applies; on a current build it returns the running version with
+      `isUpdateAvailable: false`, so reading `updateInfo.version` alone made an up-to-date
+      build offer itself. Verified by reading the published source at that tag.
+- [x] **Why it shipped untested:** the expression lived in `updater-electron.ts`, which
+      imports `electron` and cannot be loaded by a unit test. `UpdateService`'s 15 tests
+      use a fake port and never reached it — the one line deciding "is there an update"
+      had zero coverage.
+- [x] **Fixed structurally:** `translateFeedResult()` extracted to `updater-feed.ts`,
+      which imports nothing; `updater-electron.ts` delegates so there is one copy of the
+      rule. **8 new tests**, including the service reaching `not-available` rather than
+      `available` for a current build. Reverting to the `v0.1.3` expression fails 2 of them.
+- [x] **Second real bug found while widening the type:** the library declares
+      `releaseNotes` as `string | ReleaseNoteInfo[] | object`, but the old code handled
+      only the first and third. The array form — the one its own types list first — was
+      silently dropped, so a per-release note list showed no notes. All three handled now,
+      newest note taken from the array.
+- [ ] **No follow-up composer once a transcript exists** (audit L13). `ChanPanel` renders
+      `PromptComposer` only in the empty state; `ChanConversation` has no input. Found
+      while fixing the paste bug, deliberately not fixed here.
 
 ## PHASE 0.9 — Real connectors *(foundation only, deliberately unsurfaced)*
 
@@ -454,3 +518,50 @@ does not. This is the next thing to build.
 - [ ] Security tests: role escalation, plan tampering, balance tampering, forged
       transactions, replay, negative spend, cross-user access, price tampering, expired
       and revoked sessions, admin endpoint access, IPC validation, path traversal
+## PHASE 0.11 — Coin balance truth and cross-platform packaging
+
+- [x] **`0 / 500` root cause found; the recorded diagnosis was wrong.** `todo.md`
+      claimed a settings migration was still needed. It was not — the migration ran
+      and was already correct (`settings.json` on disk holds `dailyAllowanceCoins: 25`).
+      `usage.dailyAllowanceCoins` was **read by nothing at runtime**; the gateway was
+      fed `Math.round(state.dailyBudgetUsd * 100)` from the legacy flat state, which is
+      still `5`, rendering 500 forever.
+- [x] Gateway now reads `settings.get().usage.dailyAllowanceCoins`; `modelsSetBudget`
+      writes back to settings instead of re-splitting the value across two stores.
+- [x] **Second bug found while writing the test for the first:** `freshFromLegacy()`
+      (no `settings.json` yet — the ordinary first launch after an upgrade) seeded
+      500 and never ran `migrateAllowance`, since that only runs inside `migrate()`.
+      The path that created the stale number never cleaned it up. The six existing
+      tests missed it because they all write a `settings.json` first.
+- [x] New end-to-end test: legacy flat state → `SettingsStore` → `ModelGateway.budget()`
+      → **25**, with the old `*100` expression pinned at 500 so the trap is visible.
+- [x] Verified against the owner's real files in a temp copy: old formula 500, new 25.
+- [x] `FREE_DAILY_COINS = 25` confirmed as the schema default (`schema.ts`) and now the
+      value actually in force.
+- [x] `.github/workflows/release.yml` — `verify` → `build` (windows/macos/ubuntu matrix)
+      → `release` (on `v*` tags). `npm ci`, `--publish never`, runner's own `gh` CLI.
+- [x] Release job **fails if the tag disagrees with `package.json`** — otherwise
+      `electron-builder` publishes 0.1.4 binaries under a v0.1.5 tag.
+- [x] After publishing, re-downloads `latest.yml` and asserts it names the tagged
+      version, because that file is what `electron-updater` actually reads.
+- [x] `npm ci --dry-run` verified locally: exit 0, 652 packages from the lockfile.
+- [x] **The workflow runs green** — run `37257563976`, `headSha 0f18eb9`, conclusion
+      `success`. macOS and Linux are now **BUILT**, and the pre-existing local
+      `cross-spawn ENOENT` does not occur on a real runner:
+      - `CryptoricAgent-0.1.3.dmg` 109,305,858 B + `-arm64.dmg` 104,694,304 B
+      - `CryptoricAgent-0.1.3.AppImage` 111,934,776 B
+      - `cryptoric-agent_0.1.3_amd64.deb` 77,298,636 B
+- [x] **"Keep it on release" resolved — artifacts expire, releases do not.** The
+      build uploads *Actions artifacts* (temporary: `expires_at 2026-10-19`, never on
+      the Releases page, not a shareable URL). The `release` job is the only bridge
+      and is gated on `refs/tags/v*`, so **a green CI run publishes nothing at all.**
+      The prior `v0.1.3` release had 3 Windows-only assets and no `latest-mac.yml`
+      (`HTTP 404`), which is why macOS/Linux installed builds could not update at all.
+- [x] **`v0.1.4` published** so the v0.1.3-shipping bugs reach installed builds: the
+      dead Restart & install (approval gate never reached the renderer), the invisible
+      global approval overlay, paste newlines dropped, and `0 / 500` instead of `0 / 25`.
+- [ ] **A download and an install have still never been observed succeeding.** The
+      root cause is fixed and unit-tested; `v0.1.4` is the first release that contains
+      the fix, so this is the first version where the install path can actually run.
+- [ ] Nothing is signed. macOS Gatekeeper will block an unquarantined `.dmg` until
+      the user clears it; Windows SmartScreen warns. No certificates exist here.

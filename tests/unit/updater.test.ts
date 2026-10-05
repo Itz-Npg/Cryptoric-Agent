@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { UpdateService, type UpdatePort, type UpdateProgress } from '../../src/main/services/updater'
+import { translateFeedResult } from '../../src/main/services/updater-feed'
 
 interface FakeOptions {
   supported?: boolean
@@ -261,3 +262,113 @@ interface UpdateStatusDtoLite {
   state: string
   percent: number | null
 }
+/**
+ * The feed translation — the bug that shipped in `v0.1.3`.
+ *
+ * `electron-updater` fills `updateInfo` from the release feed whether or not an
+ * update actually applies. On a current build it reports the *running* version
+ * with `isUpdateAvailable: false`. Reading `updateInfo.version` alone therefore
+ * tells an up-to-date build it has an update, and `v0.1.3` did exactly that:
+ * an installed `v0.1.3` was prompted with "Version 0.1.3 is available. You are
+ * on 0.1.3."
+ *
+ * This logic lived inside `updater-electron.ts`, which imports `electron` and
+ * cannot be loaded by a unit test — while `UpdateService`'s own tests exercise
+ * the service against a *fake* port and so never touched it. That is how an
+ * untested line shipped. It now lives in `updater-feed.ts`, which imports
+ * nothing, and these tests pin it.
+ */
+describe('translateFeedResult', () => {
+  it('offers nothing when the running build is already the feed', () => {
+    const result = translateFeedResult({
+      updateInfo: { version: '0.1.3', releaseNotes: 'stuff' },
+      isUpdateAvailable: false
+    })
+
+    // The exact reported symptom depended on this being non-null.
+    expect(result.version).toBeNull()
+    expect(result.releasePageUrl).toBeNull()
+  })
+
+  it('reports not-available rather than available for a current build', async () => {
+    // End to end through the service, using the real translation as the port,
+    // so the state the user sees is pinned rather than just the version string.
+    const port: UpdatePort = {
+      currentVersion: '0.1.3',
+      canCheck: () => ({ ok: true, reason: null }),
+      check: async () =>
+        translateFeedResult({
+          updateInfo: { version: '0.1.3' },
+          isUpdateAvailable: false
+        }),
+      download: async () => ({ version: null }),
+      install: () => undefined
+    }
+
+    const status = await new UpdateService({ port, checkIntervalMs: 0 }).check()
+
+    expect(status.state).toBe('not-available')
+    expect(status.availableVersion).toBeNull()
+  })
+
+  it('offers a genuinely newer version', () => {
+    const result = translateFeedResult({
+      updateInfo: { version: '0.1.4' },
+      isUpdateAvailable: true
+    })
+    expect(result.version).toBe('0.1.4')
+    expect(result.releasePageUrl).toContain('v0.1.4')
+  })
+
+  it('still offers the version when the library omits the flag', () => {
+    // Older response shapes do not set `isUpdateAvailable` at all. Treating
+    // "absent" as "nothing new" would strand users on a build forever.
+    const result = translateFeedResult({ updateInfo: { version: '0.1.4' } })
+    expect(result.version).toBe('0.1.4')
+  })
+
+  it('reports nothing for an empty or failed response', () => {
+    expect(translateFeedResult(null).version).toBeNull()
+    expect(translateFeedResult(undefined).version).toBeNull()
+    expect(translateFeedResult({}).version).toBeNull()
+    expect(translateFeedResult({ updateInfo: null, isUpdateAvailable: true }).version).toBeNull()
+  })
+
+  it('reads release notes per platform', () => {
+    expect(
+      translateFeedResult({ updateInfo: { version: '0.1.4', releaseNotes: { win32: 'windows notes' } } })
+        .releaseNotes
+    ).toBe('windows notes')
+    expect(
+      translateFeedResult({ updateInfo: { version: '0.1.4', releaseNotes: { default: 'generic' } } })
+        .releaseNotes
+    ).toBe('generic')
+    expect(
+      translateFeedResult({ updateInfo: { version: '0.1.4', releaseNotes: 'plain' } }).releaseNotes
+    ).toBe('plain')
+  })
+})
+
+describe('translateFeedResult release-note shapes', () => {
+  it('reads the array form, which the library types declare', () => {
+    const notes = translateFeedResult({
+      updateInfo: {
+        version: '0.1.4',
+        releaseNotes: [
+          { version: '0.1.2', note: 'old' },
+          { version: '0.1.4', note: 'newest note' }
+        ]
+      }
+    }).releaseNotes
+    expect(notes).toBe('newest note')
+  })
+
+  it('reports nothing for an empty or blank note list', () => {
+    expect(translateFeedResult({ updateInfo: { version: '0.1.4', releaseNotes: [] } }).releaseNotes)
+      .toBeNull()
+    expect(
+      translateFeedResult({ updateInfo: { version: '0.1.4', releaseNotes: [{ version: '0.1.4' }] } })
+        .releaseNotes
+    ).toBeNull()
+  })
+})

@@ -23,7 +23,10 @@ import {
   toCoins,
   type ModelConfig
 } from '../../src/main/services/models/gateway'
-import { parseEnv } from '../../src/main/services/models/dotenv'
+import { parseEnv, readEnvFile } from '../../src/main/services/models/dotenv'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 function config(overrides: Partial<ModelConfig> = {}): ModelConfig {
   return {
@@ -284,5 +287,46 @@ describe('.env reader', () => {
   it('skips a line it cannot parse rather than failing the whole file', () => {
     const out = parseEnv('not an assignment\nGOOD=1\n')
     expect(out).toEqual({ GOOD: '1' })
+  })
+})
+/**
+ * Key-file discovery.
+ *
+ * `readEnvFile` decides where a packaged app looks for the provider key, and
+ * had no test at all until the staged `cryptoric-keys.env` name was added — the
+ * filename had to change because electron-builder's `out` glob does not match
+ * dotfiles, so the original `.env` could be silently dropped from a package.
+ */
+describe('readEnvFile', () => {
+  const dir = (): string => mkdtempSync(join(tmpdir(), 'cryptoric-env-'))
+  const write = (d: string, name: string, body: string): void =>
+    writeFileSync(join(d, name), body, 'utf8')
+
+  it('reads a developer .env', () => {
+    const d = dir()
+    write(d, '.env', 'OPENROUTER_API_KEY=sk-or-v1-dev\n')
+    expect(readEnvFile([d]).OPENROUTER_API_KEY).toBe('sk-or-v1-dev')
+  })
+
+  it('reads the staged file a packaged build ships', () => {
+    const d = dir()
+    write(d, 'cryptoric-keys.env', 'OPENROUTER_API_KEY=sk-or-v1-staged\nAPINEX_API_KEY=ap-staged\n')
+    const out = readEnvFile([d])
+    expect(out.OPENROUTER_API_KEY).toBe('sk-or-v1-staged')
+    expect(out.APINEX_API_KEY).toBe('ap-staged')
+  })
+
+  it('prefers a real .env over the staged copy', () => {
+    // The developer's own file is the more specific intent, so it must win in
+    // the same directory rather than being silently shadowed.
+    const d = dir()
+    write(d, '.env', 'OPENROUTER_API_KEY=sk-or-v1-dev\n')
+    write(d, 'cryptoric-keys.env', 'OPENROUTER_API_KEY=sk-or-v1-staged\n')
+    expect(readEnvFile([d]).OPENROUTER_API_KEY).toBe('sk-or-v1-dev')
+  })
+
+  it('returns nothing rather than throwing when no file exists', () => {
+    const missing = join(dir(), 'does-not-exist')
+    expect(readEnvFile([missing, ''])).toEqual({})
   })
 })

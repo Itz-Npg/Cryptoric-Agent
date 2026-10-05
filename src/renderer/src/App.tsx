@@ -28,6 +28,7 @@ import {
 } from './components/primitives'
 import { HomeSurface } from './panes/Home'
 import { ChanPanel } from './panes/Chan'
+import { ApprovalOverlay } from './components/ApprovalPrompt'
 import { RuntimeManager, useRuntimeSummary } from './panes/RuntimeManager'
 import { Workspace, type WorkspaceView } from './panes/Workspace'
 import { ModelPicker, StatusBar, type BudgetSummary, type ModelSummary } from './panes/ModelPicker'
@@ -295,13 +296,6 @@ export function App() {
                 setSection('agent')
                 void actions.submitTask(p)
               }}
-              onResolveApproval={(id, approved, remember, toolId) =>
-                // The `remember` and `toolId` arguments must be forwarded. This
-                // handler used to drop them, which silently turned "Allow for
-                // this session" into "Approve once" — the button appeared to
-                // work and the agent prompted again on the very next file.
-                void actions.resolveApproval(id, approved, remember, toolId)
-              }
               onClearConversation={() => void actions.clearConversation()}
               onStop={(taskId) => void actions.stopTask(taskId)}
             />
@@ -353,6 +347,21 @@ export function App() {
       {state.notice && (
         <Toast message={state.notice} onDismiss={() => actions.notify(null)} />
       )}
+
+      {/* A permission prompt outranks every pane and every dialog below it.
+          Approvals are raised by gated IPC channels that can be triggered from
+          anywhere — Settings, the runtime list, the process tree — so a prompt
+          scoped to one pane is a prompt the user may never see. */}
+      <ApprovalOverlay
+        approvals={state.approvals}
+        onResolve={(id, approved, remember, toolId) =>
+          // The `remember` and `toolId` arguments must be forwarded. This
+          // handler used to drop them, which silently turned "Allow for this
+          // session" into "Approve once" — the button appeared to work and the
+          // agent prompted again on the very next file.
+          void actions.resolveApproval(id, approved, remember, toolId)
+        }
+      />
 
       {/* An update found in the background asks here rather than only in
           Settings, because by the time a user opens Settings they have already

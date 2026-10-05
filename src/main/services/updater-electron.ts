@@ -11,17 +11,9 @@ import { app } from 'electron'
 // so the default export is unpacked by hand.
 import electronUpdater from 'electron-updater'
 import type { UpdatePort, UpdateProgress } from './updater'
+import { translateFeedResult } from './updater-feed'
 
 const { autoUpdater } = electronUpdater
-
-/** Where a human reads what changed. Built from the feed, never hardcoded. */
-function releasePageFor(version: string | null): string | null {
-  if (!version) return null
-  return `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/tag/v${version}`
-}
-
-const REPO_OWNER = 'Itz-Npg'
-const REPO_NAME = 'Cryptoric-Agent'
 
 export function createElectronUpdatePort(): UpdatePort {
   // The library infers the owner/repo from `publish` in electron-builder.yml.
@@ -56,31 +48,10 @@ export function createElectronUpdatePort(): UpdatePort {
 
     async check() {
       const result = await autoUpdater.checkForUpdates()
-      const info = result?.updateInfo
-      // `electron-updater` returns the *feed's* version even when it is the build
-      // already running, flagging that with `isUpdateAvailable: false`. Reading
-      // `updateInfo.version` alone therefore reports the installed version as an
-      // available update - a prompt to download the build you are already
-      // running. The flag is the authoritative answer, so it is honoured first.
-      const version = result?.isUpdateAvailable === false ? null : (info?.version ?? null)
-
-      // `releaseNotes` arrives as an object keyed by platform from the feed.
-      let notes: string | null = null
-      const raw = info?.releaseNotes as unknown
-      if (typeof raw === 'string' && raw.trim()) {
-        notes = raw
-      } else if (raw && typeof raw === 'object') {
-        const bucket = raw as Record<string, string | undefined>
-        const first = bucket['win32'] ?? bucket['default'] ?? bucket['linux'] ?? bucket['darwin']
-        if (first && first.trim()) notes = first
-      }
-
-      return {
-        version,
-        releaseNotes: notes,
-        releaseDate: info?.releaseDate ?? null,
-        releasePageUrl: releasePageFor(version)
-      }
+      // The feed's shape, and the rule for what it means, live in a
+      // dependency-free module that unit tests can actually load. See
+      // `updater-feed.ts` for why that separation is load-bearing.
+      return translateFeedResult(result)
     },
 
     async download(onProgress: (progress: UpdateProgress) => void) {

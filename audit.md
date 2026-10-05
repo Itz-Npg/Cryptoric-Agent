@@ -57,11 +57,22 @@ on `master`, pushed to `origin/main`.
 - **A download and an install were never exercised.** That needs a real `v0.1.1`
   newer than the running build. The download/install path is unit-tested against a
   fake port only.
-- **macOS** — `.icns`/dmg cannot be produced on this Windows host. NOT BUILT.
-- **Linux** — `npx electron-builder --linux` still fails on this host
-  (`cross-spawn ENOENT`); undiagnosed. NOT BUILT.
+- **macOS** — **BUILT.** `CryptoricAgent-0.1.3.dmg` (x64, 109,305,858 B) and
+  `CryptoricAgent-0.1.3-arm64.dmg` (arm64, 104,694,304 B), plus `latest-mac.yml`
+  and both `.blockmap`s, from run `37257563976`. Previously impossible here —
+  electron-builder cannot cross-compile a `.dmg` from Windows.
+- **Linux** — **BUILT.** `CryptoricAgent-0.1.3.AppImage` (111,934,776 B) and
+  `cryptoric-agent_0.1.3_amd64.deb` (77,298,636 B), plus `latest-linux.yml`, from
+  run `37257563976`. The old `cross-spawn ENOENT` was a Windows-host artefact; it
+  does not occur on a Linux runner.
+- Both are produced by the `build` job as **workflow artifacts**, which expire and never
+  appear on the Releases page. They reach a GitHub Release only when a `v*` tag is
+  pushed; until then they are not downloadable by anyone. See the "keep it on release"
+  finding above.
 - **Code signing** — binaries unsigned, so SmartScreen warns and NSIS installs are
-  not verified by a signature.
+  not verified by a signature. The CI sets `CSC_IDENTITY_AUTO_DISCOVERY=false`,
+  which means macOS Gatekeeper will refuse an unquarantined `.dmg` until the user
+  clears it.
 
 ### The complaint that started this pass
 
@@ -347,6 +358,205 @@ inside a **real Electron process**, against a **real local HTTP server**:
 
 ---
 
+## Gated actions and the prompt composer — this pass
+
+Two reports arrived together: *"restart now button not working"* and *"when I paste a
+multi-line big prompt it lands on one line and tells me a character limit"*. Neither was
+the bug it looked like.
+
+### The button that did nothing
+
+`updates:install` is registered with `domain: 'env.modify'` (default `ask`) and
+`requiresApproval: true`. [router.ts](src/main/ipc/router.ts) therefore built an approval
+request and awaited a decision — but `RouterContext` had no `push`, so the request never
+reached the renderer. Every other gated call site in the codebase pushed correctly; the
+router was the only one that did not.
+
+| Step | What actually happened |
+|---|---|
+| Click **Restart & install** | `updates:install` invoked over IPC |
+| Policy gate | `env.modify` → `ask` → approval required |
+| `approvals.request(...)` | created, stored in main-process memory |
+| **push to renderer** | **never happened — no such capability existed** |
+| `approvals.wait(...)` | blocks for 120 s with nothing on screen |
+| Timeout | resolves `false` → `{ ok: false, error: 'Not approved.' }` |
+| `UpdateService.install()` | **never reached** |
+| `autoUpdater.quitAndInstall()` | **never reached** |
+
+A second, independent defect sat behind it: approval cards rendered **only** inside the
+Chan pane (`App.tsx`, under `section === 'agent'`). The button was clicked from
+**Settings**, so even a correctly-delivered prompt would have landed in a tab the user
+was not looking at.
+
+| Check | Result |
+|---|---|
+| `tests/unit/ipc-router.test.ts` | **10 pass / 0 fail** — prompt is pushed *before* the wait; denial reported; untrusted sender cannot provoke a prompt |
+| Regression proof | `push` reverted → **3 tests fail** with `approval was never pushed to the renderer: expected [] to have a length of 1 but got +0` |
+| `npm run typecheck` | exit 0 |
+| `npx vitest run` | **408 pass / 17 files** |
+| `npm run build:dir` | exit 0 |
+
+### The paste that lost its newlines
+
+Two separate causes, both real:
+
+1. The composer was a single-line `<input>`. Chromium strips newlines when pasting into
+   an `<input>`, so a pasted stack trace or file silently arrived as one line — data lost
+   at the moment of asking.
+2. `agentSubmit` validated `prompt: z.string().max(20_000)`, so a large paste was
+   rejected at the IPC boundary and surfaced as
+   `Invalid arguments: prompt: String must contain at most 20000 character(s)` — with no
+   warning before submission.
+
+Fixed by an auto-growing `<textarea>` (Enter sends, Shift+Enter breaks the line) and a
+new shared ceiling of 200,000 characters in [limits.ts](src/shared/limits.ts), read by
+both the schema and the composer's live counter so the two cannot drift.
+
+Measured in a real browser against the real components:
+
+| Property | Value |
+|---|---|
+| Newlines preserved in a pasted multi-line prompt | **12 / 12** |
+| Composer height after paste | `266px`, grew from 46px |
+| Live counter | `490 / 200,000` |
+| Shift+Enter | inserted a newline, did **not** submit |
+| Enter | submitted, composer cleared and shrank back to one line |
+
+### "Version 0.1.3 is available. You are on 0.1.3."
+
+Reported against an installed build whose status bar read `v0.1.3`. **Not a new bug — a
+committed fix that has never been shipped.**
+
+The remote tag `v0.1.3` points at **`31de4ea`**, which is two commits *before* `33be12e`.
+Confirmed by reading the published source directly:
+
+| Tree | The line that decides it |
+|---|---|
+| `31de4ea` (**what v0.1.3 shipped**) | `const version = info?.version ?? null` |
+| `33be12e` / HEAD (**what you run in dev**) | `const version = result?.isUpdateAvailable === false ? null : (info?.version ?? null)` |
+
+`electron-updater` populates `updateInfo` from the feed **whether or not an update
+applies**. On a current build it returns the running version with
+`isUpdateAvailable: false`. Reading `updateInfo.version` alone therefore reports the
+installed build as an available update, so `UpdateService` moved to `state: 'available'`
+and `UpdatePrompt` rendered "Version 0.1.3 is available. You are on 0.1.3."
+
+**Why an untested line shipped:** it lived in `updater-electron.ts`, which imports
+`electron` and `electron-updater` and therefore cannot be loaded by a unit test. Meanwhile
+`UpdateService`'s 15 tests exercise the *service* against a fake port and never touched the
+real transport's translation. The one line deciding "is there an update" had zero coverage.
+
+Fixed structurally, not by adding a test to an unreachable file:
+
+- `translateFeedResult()` extracted to [updater-feed.ts](src/main/services/updater-feed.ts),
+  which **imports nothing** and is now directly testable.
+- `updater-electron.ts` delegates to it — one copy of the rule, not two.
+- **8 new tests**, including one asserting the service reaches `not-available`, not
+  `available`, for a current build.
+- Reverting to the `v0.1.3` expression **fails 2 of them.**
+
+**A second real bug found while widening the type:** the library declares
+`releaseNotes` as `string | ReleaseNoteInfo[] | object`, but the old code handled only the
+first and third. The array form — the one the library's own types put first — was silently
+dropped, so a per-release note list showed no notes at all. All three shapes are now handled,
+with the newest note taken from the array.
+
+### "How do we keep it on Release?" — artifacts expire, releases don't
+
+Not a code bug. A mechanism question, and the answer had two wrong assumptions in it,
+both of which are easy to hold onto:
+
+| | Actions artifact | GitHub Release |
+|---|---|---|
+| Where it lives | under the run, `/actions/runs/<id>/artifacts` | `github.com/<owner>/<repo>/releases/tag/<tag>` |
+| Lifetime | **expires** — repo default 90 days | permanent |
+| Visible on the Releases page | never | yes |
+| A shareable download URL | no, API-authenticated and run-scoped | yes |
+| What `electron-updater` reads | **nothing** | `latest.yml` |
+
+Measured on the live repo before publishing: all four artifacts from run `37257563976`
+reported `expired=false expires_at=2026-10-19T0*` — roughly two weeks out, after which
+GitHub deletes them and the run's download button breaks. Everything CI had just built
+was on a timer.
+
+The `release` job in `.github/workflows/release.yml` is the only bridge, and it is gated
+on `if: startsWith(github.ref, 'refs/tags/v')`. **So a fully green CI run publishes
+nothing whatsoever.** There was no release step to add — it already exists and simply had
+never been triggered. The one command that starts publishing is `git push origin vX.Y.Z`.
+
+**The consequence was not cosmetic.** The only real release was `v0.1.3`, 3 assets, all
+Windows:
+
+```
+CryptoricAgent-0.1.3-x64.exe   83,893,493
+CryptoricAgent-0.1.3-x64.exe.blockmap
+latest.yml                     352
+```
+
+`electron-builder.yml` declares a mac and a linux target, so the CI built `.dmg`,
+AppImage and `.deb` — and put them in temporary storage. Against the live feed:
+
+```
+curl …/releases/latest/download/latest.yml      → version: 0.1.3   (Windows .exe)
+curl …/releases/latest/download/latest-mac.yml   → HTTP 404
+```
+
+A macOS or Linux installed build therefore had **no update channel at all**: the file
+`electron-updater` fetches for its platform does not exist. It reports the check as
+failing, not as up-to-date — the correct behaviour, and the reason this went unnoticed.
+`v0.1.4` is the first release whose `latest.yml`, `latest-mac.yml` and `latest-linux.yml`
+all exist.
+
+Two ordering rules that follow, both now load-bearing:
+
+- **Tag and manifest must agree.** `electron-builder` takes the version from
+  `package.json`, so tagging `v0.1.5` while the manifest says `0.1.4` publishes 0.1.4
+  binaries under a v0.1.5 tag. The release job refuses on mismatch.
+- **A release with no `latest.yml` is not updatable** however many installers it has, so
+  the job re-downloads the manifest from the *published* release and asserts
+  `^version: <tag>$` before calling it a success.
+
+### `0 / 500` — a correct number rendered from the wrong field
+
+The coin panel showed **500** while the allowance was meant to be **25**. `todo.md`
+recorded this as "a one-time settings migration is needed". That diagnosis was wrong,
+and checking the owner's actual files is what showed why.
+
+| Source of truth | On disk | Correct? |
+|---|---|---|
+| `%APPDATA%/CryptoricAgent/settings.json` | `version: 3`, `dailyAllowanceCoins: 25` | ✅ migrated correctly |
+| `%APPDATA%/CryptoricAgent/state.json` | `dailyBudgetUsd: 5` | the legacy field |
+| `index.ts` → `Math.round(state.dailyBudgetUsd * 100)` | **500** | ❌ what the UI showed |
+
+The migration had already run and was already correct — six assertions plus
+`test:migration` asserted 25 and passed. **Nothing at runtime ever read the migrated
+field.** `usage.dailyAllowanceCoins` appears only in the schema, the field catalogue
+and the two migration functions; `grep` over `src/main` and `src/renderer` finds no
+consumer. The gateway was fed the legacy USD field instead.
+
+Fixed by pointing the gateway at `settings.get().usage.dailyAllowanceCoins`, and by
+making `modelsSetBudget` write back to settings rather than re-splitting the value
+across two stores.
+
+**A second bug surfaced while writing the test for the first.** `freshFromLegacy()`
+— the path for an install with legacy flat state but **no** `settings.json` yet, i.e.
+the ordinary first launch after an upgrade — seeded `dailyAllowanceCoins` straight from
+`dailyBudgetUsd * 100` and never ran `migrateAllowance`, because that only executes
+inside `migrate()`, which requires a file that already exists. The path that *created*
+the stale number was the one path that never cleaned it up. The six existing tests
+missed it because they all write a `settings.json` first.
+
+Verified against the owner's real files: old formula → **500**, new source → **25**.
+
+### A mistake I made and corrected
+
+Importing `MAX_PROMPT_CHARS` from `ipc-schemas` into the renderer pulled **zod** — a
+main-process-only library — into the renderer bundle, growing it to 463.24 kB. Moving the
+constant to a dependency-free [limits.ts](src/shared/limits.ts) dropped it to **346.78 kB**
+and `grep zod out/renderer/assets/*.js` returns nothing.
+
+---
+
 ## KNOWN LIMITATIONS (honest)
 
 | # | Limitation | Evidence | Severity |
@@ -359,10 +569,12 @@ inside a **real Electron process**, against a **real local HTTP server**:
 | L6 | Conversation is project-scoped, but the app still runs **one project at a time**. | `ConversationStore` v2 keeps a `scopes` map keyed by project root; opening a second project swaps the workspace rather than running both. | Real gap — the persistence half of PHASE A exists; the parallel half does not. |
 | L7 | The agent loop offers the model every registered tool (~55) rather than a routed subset. | By inspection. | PHASE 12 router. The context window is 1M so this is a precision problem, not a capacity one. |
 | L8 | `run_command` live check. | **DONE** — `npm run test:command`, **12/12**: real `node -e` stdout, real exit code and stderr, `npm --version` through `cmd.exe`, `rm -rf /` and `git push --force` refused with a sentinel file proving nothing ran, cancellation kills the child, 10 invocations audited. | Closed. |
-| L9 | **A downloaded update was never installed.** | `UpdateService` is 12 unit-tested against a fake port. `v0.1.1` and `v0.1.2` are a real pair, so the owner can exercise this himself; no scripted run has observed a download complete and an install apply. | Unverified by machine. |
-| L10 | The **Stop** button and the update prompt have never been clicked by a human. | Wired, typechecked, unit-tested. The scripted harness stops the task before it can screenshot the running state, so live capture is impossible with the current hook. | Unverified by machine. |
+| L9 | **A downloaded update has still never been observed installing.** | Root cause of the "Restart now does nothing" report found and fixed: `IpcRouter.dispatch` built an `ApprovalRequest` for every gated channel but had no way to deliver it — `RouterContext` carried no `push`, so the prompt was never drawn, the waiter was never resolved, and the call died at the queue's 120 s timeout returning `Not approved.` `UpdateService.install()` was never reached and `quitAndInstall()` never ran. This is why Download worked and Restart did not: `updates:download` is `network.read` → `safe` → allowed, while `updates:install` is `env.modify` → `ask` → gated. Every channel whose domain defaults to `ask` was equally broken: `updates:install`, `env:install`, `terminal:list`, `process:list`, `process:restart`. Pinned by 10 tests in [ipc-router.test.ts](tests/unit/ipc-router.test.ts). | Reduced, still unverified by machine — download is confirmed by the owner's own screenshot; the install hand-off has still not been watched completing. |
+| L10 | The **Stop** button and the update prompt have never been clicked by a human. | The owner has now clicked **Download** and **Restart & install** on an installed build, which is what surfaced L9 — so "never clicked" is no longer true for the update prompt. The scripted harness still cannot screenshot a live prompt, and the Stop button remains unclicked. | Partly superseded. |
 | L11 | OpenRouter free models share a **50-request/day per-account cap**, separate from `GET /api/v1/key`. | Exhausted by live probing on 2026-10-05; `/chat/completions` returned HTTP 429 `free-models-per-day` while `/api/v1/key` still reported 100/100. | Environment, not product. Makes a live provider run **BLOCKED**, never `FAILED`. |
 | L12 | The agent loop offers the model every registered tool. | `routeTools()` exists in `src/main/services/tools/router.ts` but is **not wired into `runAgentLoop`** (`LoopDeps.listTools` is the seam). Its intent chains name tool ids that do not exist yet (`analyze_project`, `search_code`, `run_tests`). | PHASE 12 router. |
+| L13 | The prompt composer only exists in the **empty** Chan state. | `ChanPanel` renders `PromptComposer` only when `idle`. Once a transcript exists, `ChanConversation` renders no input, so there is no in-app way to send a follow-up prompt. Found while fixing the paste bug; not fixed here. | Real gap. |
+| L14 | A gated call that is never approved still waits the full 120 s. | `ApprovalQueue.wait` defaults to `timeoutMs = 120_000` and resolves `false`. Correct (fail-closed) but a long silence. Now visible because the prompt is actually shown. | By design. |
 
 ---
 
@@ -387,6 +599,12 @@ inside a **real Electron process**, against a **real local HTTP server**:
   **no manager, no Settings screen, no tool registration and no tests**, confirmed by
   grep across `src/main/index.ts`, `src/preload/index.ts` and `Settings.tsx`. No
   Connectors UI ships, because an empty one would read as working.
+- **Runtime installation is Windows-only.** `installTool` supports the `winget` route
+  and nothing else — every installer id is `-winget`, with no apt or brew path — so
+  on Linux and macOS the product correctly answers "No supported installation
+  route". Discovered when the acceptance suite failed on `ubuntu-latest`; that suite
+  is now gated to Windows with the reason stated in the test file. Not dressed up
+  as working.
 - Streaming replies
 - Tool routing into the agent loop
 - Real update download+install (see L9)
