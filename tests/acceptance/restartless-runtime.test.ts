@@ -44,7 +44,23 @@ let managedRoot: string
 let scratchDir: string
 const originalPath = process.env[SPEC.canonicalPathKey]
 
-describe('restartless runtime installation', () => {
+/**
+ * Windows-only, because the capability is.
+ *
+ * This suite exercises `installTool`'s **winget** route — the manifest lookup,
+ * the publisher verification, and the copy of a real `node.exe` standing in for
+ * what winget would place on disk. `winget` is the only installation route in
+ * `src/main/services/env/installer.ts`: every installer id is `-winget`, and
+ * there is no apt or brew path. On Linux and macOS the product therefore
+ * correctly answers "No supported installation route", and there is nothing
+ * here to assert.
+ *
+ * So it is skipped off Windows rather than made to pass. Asserting a Linux
+ * install that does not exist, or loosening the assertions, would be worse than
+ * saying plainly that the platform is unsupported — see `audit.md`, NOT
+ * IMPLEMENTED: runtime installation is Windows-only.
+ */
+describe.skipIf(!IS_WINDOWS)('restartless runtime installation', () => {
   let manager: EnvironmentManager
   let initialPid: number
   let installRunnerCalls: string[] = []
