@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- DayNight parent, so the app is not a white rectangle at 2am. -->
+    <style name="Theme.CryptoricCompanion" parent="Theme.AppCompat.DayNight" />
+</resources>

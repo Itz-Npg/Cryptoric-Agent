@@ -23,11 +23,10 @@
 # runner with signing disabled and packages the .app as an .ipa, which is the
 # same script the release workflow runs on a tag.
 #
-# There is no Android build here, and no Android project to build. An earlier
-# version of this comment pointed at a `mobile-android.yml` that does not
-# exist; that was a false claim about a capability, which is the one thing this
-# file exists to avoid. Producing an `.apk` needs an AndroidManifest.xml and a
-# Gradle build, and neither exists yet.
+# mobile/android is a real Gradle project: manifest, activity, OkHttp relay client and a
+# unit tested copy of the relay protocol. The `android` job builds it on an
+# Ubuntu runner and packages a debug-signed APK, which needs no keystore
+# secret because Gradle generates the debug key itself.
 
 name: Mobile companion
 
@@ -115,6 +114,38 @@ jobs:
         with:
           name: ios-ipa
           path: dist/CryptoricCompanion-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+  android:
+    name: Android companion (.apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Gradle, not a checked-in wrapper: the wrapper is a binary jar, and a
+      # 60 KB blob nobody can review in a diff is not worth it for a build this
+      # small. `setup-gradle` also caches the dependency downloads, so the job
+      # is mostly waiting on the network.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      # The same script the release workflow runs, so the APK attached to a
+      # release is built by the steps verified on every commit.
+      - name: Build and package the .apk
+        run: bash scripts/build-android-apk.sh
+
+      - name: Upload the .apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/app-debug.apk
           if-no-files-found: error
           retention-days: 30
 
