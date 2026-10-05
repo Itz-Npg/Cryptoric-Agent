@@ -64,7 +64,8 @@ import {
   type AuthAttempt
 } from './services/auth/google'
 import { AUTH_CREDENTIAL, parseSession, summarise, type SessionSummary } from './services/auth/session-store'
-import { CALLBACK_PORT, CALLBACK_URI, awaitCallback } from './services/auth/loopback'
+import { CALLBACK_PORT, CALLBACK_URI, startCallbackListener } from './services/auth/loopback'
+import { startSignIn } from './services/auth/sign-in'
 import { FileService } from './services/fs/files'
 import { GitService } from './services/git/service'
 import {
@@ -819,22 +820,25 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   router.register(CHANNELS.authStart, {
     domain: 'env.modify',
     requiresApproval: false,
+    // The sequence — bind, open, wait — lives in `startSignIn` because order is
+    // invisible to review. Opening the browser before the port is bound loses the
+    // authorization code with nothing to show for it.
     handler: async () => {
       if (clientId.length === 0) return { ok: false, error: describeMissingClientId() }
-      attempt = createAttempt()
-      const url = authorizeUrl({ clientId, redirectUri: CALLBACK_URI, attempt })
-      await shell.openExternal(url)
-
-      // Listen *before* handing control to the browser. The other order is the
-      // shape of bug this file has already produced once: the tab loads before
-      // anyone is listening and the code is lost with nothing to show for it.
-      const waiting = awaitCallback({ port: CALLBACK_PORT })
-      const arrived = await waiting
-      if (!arrived.ok) {
-        attempt = null
-        return { ok: false, error: arrived.error, url, redirectUri: CALLBACK_URI }
-      }
-      return { ...(await completeSignIn(arrived.result.code, arrived.result.state)), url, redirectUri: CALLBACK_URI }
+      return startSignIn({
+        redirectUri: CALLBACK_URI,
+        buildUrl: () => {
+          const next = createAttempt()
+          attempt = next
+          return authorizeUrl({ clientId, redirectUri: CALLBACK_URI, attempt: next })
+        },
+        listen: () => startCallbackListener({ port: CALLBACK_PORT }),
+        openBrowser: (url) => shell.openExternal(url),
+        complete: (code, state) => completeSignIn(code, state),
+        clearAttempt: () => {
+          attempt = null
+        }
+      })
     }
   })
 

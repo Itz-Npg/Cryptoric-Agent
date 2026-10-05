@@ -10,7 +10,12 @@
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { awaitCallback, CALLBACK_PORT, CALLBACK_URI } from '../../src/main/services/auth/loopback'
+import {
+  awaitCallback,
+  startCallbackListener,
+  CALLBACK_PORT,
+  CALLBACK_URI
+} from '../../src/main/services/auth/loopback'
 
 let stop: (() => void) | null = null
 
@@ -107,6 +112,67 @@ describe('receiving the redirect', () => {
       if (outcome.ok) return
       // A hang here would leave the browser staring at a spinner forever.
       expect(outcome.error).toMatch(/could not listen/i)
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()))
+    }
+  })
+})
+describe('knowing when the port is open', () => {
+  it('resolves `listening` only once the port really accepts connections', async () => {
+    // The property the whole sign-in sequence rests on. If this resolved early,
+    // "listen before opening the browser" would be a comment and not a fact.
+    const port = CALLBACK_PORT + 700 + Math.floor(Math.random() * 50)
+    const listener = startCallbackListener({ port, timeoutMs: 5_000 })
+    await listener.listening
+
+    const res = await fetch(`http://127.0.0.1:${port}/callback?code=a&state=b`)
+    expect(res.status).toBe(200)
+    const outcome = await listener.outcome
+    expect(outcome.ok).toBe(true)
+  })
+
+  it('rejects `listening` when the port cannot be bound, and says why on `outcome`', async () => {
+    const { createServer } = await import('node:http')
+    const port = CALLBACK_PORT + 820 + Math.floor(Math.random() * 40)
+    const blocker = createServer()
+    await new Promise<void>((resolve) => blocker.listen(port, '127.0.0.1', resolve))
+    try {
+      const listener = startCallbackListener({ port, timeoutMs: 2_000 })
+      await expect(listener.listening).rejects.toThrow(/could not listen/i)
+      const outcome = await listener.outcome
+      expect(outcome.ok).toBe(false)
+      if (outcome.ok) return
+      expect(outcome.error).toMatch(/could not listen/i)
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()))
+    }
+  })
+
+  it('cancels on request, releasing the port for the next attempt', async () => {
+    const port = CALLBACK_PORT + 1200 + Math.floor(Math.random() * 40)
+    const listener = startCallbackListener({ port, timeoutMs: 30_000 })
+    await listener.listening
+    listener.cancel()
+
+    const outcome = await listener.outcome
+    expect(outcome.ok).toBe(false)
+    if (outcome.ok) return
+    expect(outcome.error).toMatch(/cancelled/i)
+    const reused = await fetch(`http://127.0.0.1:${port}/callback?code=a&state=b`).catch(() => null)
+    expect(reused === null || reused.status >= 400).toBe(true)
+  })
+
+  it('does not kill the process when only `outcome` is awaited', async () => {
+    // `listening` rejects on a bind failure. If nothing had claimed that
+    // rejection, Node would treat it as unhandled and crash the main process
+    // during sign-in.
+    const { createServer } = await import('node:http')
+    const port = CALLBACK_PORT + 1500 + Math.floor(Math.random() * 40)
+    const blocker = createServer()
+    await new Promise<void>((resolve) => blocker.listen(port, '127.0.0.1', resolve))
+    try {
+      const outcome = await awaitCallback({ port, timeoutMs: 2_000 })
+      expect(outcome.ok).toBe(false)
     } finally {
       await new Promise<void>((resolve) => blocker.close(() => resolve()))
     }
