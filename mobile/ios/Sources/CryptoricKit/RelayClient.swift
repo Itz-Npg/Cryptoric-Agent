@@ -38,13 +38,19 @@ public actor RelayStore {
     /// blank, then emits on every change.
     public func stream() -> AsyncStream<RelaySnapshot> {
         let id = UUID()
-        return AsyncStream { continuation in
-            continuations[id] = continuation
-            continuation.yield(snapshot)
+        // Built as a named `var` and configured through the property form.
+        // Chaining `.onTermination { }` straight off an `AsyncStream { }`
+        // initializer does not typecheck: the trailing-closure parse wins over
+        // the leading-dot chain, so the member is looked up on the closure
+        // rather than on the stream.
+        var stream = AsyncStream<RelaySnapshot> { continuation in
+            self.continuations[id] = continuation
+            continuation.yield(self.snapshot)
         }
-        .onTermination { [weak self] _ in
+        stream.onTermination = { [weak self] _ in
             Task { await self?.removeContinuation(id) }
         }
+        return stream
     }
 
     private func removeContinuation(_ id: UUID) {

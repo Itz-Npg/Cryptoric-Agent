@@ -111,13 +111,20 @@ public struct CompanionRootView: View {
             .navigationTitle("Agents")
             .navigationDestination(for: String.self) { id in
                 TaskDetailView(task: model.task(id: id), onFollowUp: { text in
-                    model.send(.followUp(taskId: id, text: text))
+                    // SwiftUI's navigation closure is synchronous, so an async
+                    // send has to be wrapped. Calling it directly fails to
+                    // compile; the previous build attempt proved it.
+                    Task { model.send(.followUp(taskId: id, text: text)) }
                 })
             }
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                // `primaryAction` rather than `topBarTrailing`: the latter is
+                // marked unavailable on macOS, and this library builds for both
+                // platforms. It is only rejected once a macOS runner compiles
+                // it, which is why the library ships with that target.
+                ToolbarItem(placement: .primaryAction) {
                     Button {
-                        model.send(.refresh)
+                        Task { model.send(.refresh) }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
