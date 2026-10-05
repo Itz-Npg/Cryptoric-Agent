@@ -34,6 +34,7 @@
     "test:migration": "node scripts/build-live-check.mjs tests/live/migration-check.ts .review/live/migration-check.mjs && node .review/live/migration-check.mjs",
     "test:command": "node scripts/build-live-check.mjs tests/live/command-check.ts .review/live/command-check.mjs && node .review/live/command-check.mjs",
     "test:apinex": "node scripts/build-live-check.mjs tests/live/apinex-check.ts .review/live/apinex-check.mjs && node .review/live/apinex-check.mjs",
+    "test:account": "node scripts/build-live-check.mjs tests/live/account-pane-check.tsx .review/live/account-pane-check.cjs --cjs && node .review/live/account-pane-check.cjs",
     "test:agent:apinex": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs apinex",
     "test:agent:laguna": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs laguna",
     "test:agent:ling": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs ling",

@@ -64,8 +64,9 @@ import {
   type AuthAttempt
 } from './services/auth/google'
 import { AUTH_CREDENTIAL, parseSession, summarise, type SessionSummary } from './services/auth/session-store'
-import { CALLBACK_PORT, CALLBACK_URI, startCallbackListener } from './services/auth/loopback'
+import { CALLBACK_PORT, CALLBACK_URI, startCallbackListener, type CallbackListener } from './services/auth/loopback'
 import { startSignIn } from './services/auth/sign-in'
+import { describeMode, modeRequiresAccount, resolveMode } from '../shared/mode'
 import { FileService } from './services/fs/files'
 import { GitService } from './services/git/service'
 import {
@@ -778,6 +779,19 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   const clientId = readEnvFile([app.getPath('userData'), process.cwd()]).GOOGLE_CLIENT_ID ?? ''
   let attempt: AuthAttempt | null = null
   let session: SessionSummary | null = null
+  /**
+   * The listener for the attempt in flight, if any.
+   *
+   * Held so signing out (or starting again) can stop it. Without this the port
+   * stayed bound until the ten-minute timeout, and a second attempt in the
+   * meantime failed to bind for no reason the user could see.
+   */
+  let activeListener: CallbackListener | null = null
+
+  const stopListening = (): void => {
+    activeListener?.cancel()
+    activeListener = null
+  }
 
   async function loadSession(): Promise<SessionSummary | null> {
     const raw = await credentials.get(AUTH_CREDENTIAL)
@@ -832,11 +846,20 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
           attempt = next
           return authorizeUrl({ clientId, redirectUri: CALLBACK_URI, attempt: next })
         },
-        listen: () => startCallbackListener({ port: CALLBACK_PORT }),
+        listen: () => {
+          // A second attempt replaces the first rather than competing with it
+          // for the same port.
+          stopListening()
+          activeListener = startCallbackListener({ port: CALLBACK_PORT })
+          return activeListener
+        },
         openBrowser: (url) => shell.openExternal(url),
         complete: (code, state) => completeSignIn(code, state),
         clearAttempt: () => {
           attempt = null
+          // The listener for this attempt has settled or been cancelled, so
+          // there is nothing left to hold on to.
+          activeListener = null
         }
       })
     }
@@ -904,9 +927,32 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
     requiresApproval: false,
     handler: async () => {
       attempt = null
+      stopListening()
       session = null
       await credentials.delete(AUTH_CREDENTIAL)
       return { ok: true }
+    }
+  })
+
+  // ------------------------------------------------------------- mode
+  //
+  // The renderer cannot read `CRYPTORIC_MODE` itself, and guessing `local`
+  // would be a lie with a UI attached to it: a hosted build would show a local
+  // balance and ask nobody to sign in.
+  router.register(CHANNELS.modeGet, {
+    domain: 'env.detect',
+    requiresApproval: false,
+    handler: () => {
+      const resolved = resolveMode(readEnvFile([app.getPath('userData'), process.cwd()]))
+      if (!resolved.ok) return { ok: false, error: resolved.error }
+      return {
+        ok: true,
+        mode: resolved.mode,
+        serverUrl: resolved.serverUrl,
+        note: resolved.note,
+        description: describeMode(resolved.mode),
+        requiresAccount: modeRequiresAccount(resolved.mode)
+      }
     }
   })
 

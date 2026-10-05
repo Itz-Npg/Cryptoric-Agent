@@ -241,7 +241,7 @@ store once; a key already in the store always wins.
 
 - Electron 33 + Vite, TypeScript, React renderer.
 - **Zero runtime dependencies in the main process beyond `zod`.**
-- **818 tests across 35 files**, run on every push.
+- **946 tests across 43 files**, run on every push.
 - CI: **Build and Release**, **CLI**, **Mobile companion** — all green on `main`.
 
 ---
@@ -288,7 +288,7 @@ could not run, that is written down below rather than left to look like success.
 
 **Verified, with the command that proves it:**
 
-- Agent loop, stages, evidence gate and tool runtime — 818 unit tests, all green.
+- Agent loop, stages, evidence gate and tool runtime — 946 unit tests, all green.
 - **Browser** — `npm run test:browser` → **64/64 against real Chromium**, 44 tools.
 - **CLI** — builds Electron-free, and a real run with no model exits **2
   `BLOCKED`**, writes nothing, and explains why in both human and JSON output.
@@ -298,6 +298,11 @@ could not run, that is written down below rather than left to look like success.
   (the stage provably never runs), the ledger, and resume-without-a-second-charge.
 - **Signing** — a real sign/verify round trip on the real installer; one appended
   byte turns it `BAD`.
+- **Sign-in** — the loopback listener against a real socket, the *ordering* that
+  binds the port before the browser opens (a fake browser asks the port whether
+  it is open; the wrong order fails the test), the session store, and the pane
+  itself: `npm run test:account` renders it in all five states and checks the
+  right control is drawn.
 
 **Not done — stated rather than implied:**
 
@@ -319,6 +324,14 @@ could not run, that is written down below rather than left to look like success.
   switch between folders.
 - **The provider server has never been published.** It is tested against itself
   over loopback, not against a live deployment.
+- **The Google handshake has never run against Google.** Every piece around it is
+  tested, but the code exchange needs a real `GOOGLE_CLIENT_ID` — a Desktop app
+  client id whose redirect URI is `http://127.0.0.1:53123/callback` — and only
+  the maintainer can create one.
+- **`hosted` mode is read and displayed, not yet charged.** `CRYPTORIC_MODE` is
+  resolved, surfaced in the Account pane, and tested; the app still keeps its
+  balance in the local ledger. Coins are not yet spent against the server, so a
+  hosted build does not yet enforce the balance it displays.
 
 ---
 

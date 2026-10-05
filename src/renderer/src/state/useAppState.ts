@@ -22,8 +22,9 @@ import type {
   WorkspaceState
 } from '@shared/types'
 import type { BudgetSummary, ModelSummary } from '../panes/ModelPicker'
-import type { UpdateStatusDto } from '../../../preload'
+import type { AuthStatus, ModeInfo, UpdateStatusDto } from '../../../preload'
 import { describe } from './store'
+import type { SignInPhase } from '@shared/account-view'
 import type { TranscriptEntry } from './store'
 
 export interface AppStateShape {
@@ -51,6 +52,14 @@ export interface AppStateShape {
   update: UpdateStatusDto | null
   /** True once the user picks "later"; hides the prompt without forgetting it. */
   updateDismissed: boolean
+  /** Who is signed in, if anyone. Null until the first status call returns. */
+  auth: AuthStatus | null
+  /** Where the browser round-trip has got to. */
+  authPhase: SignInPhase
+  /** The last sign-in failure, shown until the next attempt. */
+  authError: string | null
+  /** Which mode this install runs in. Null until it is read. */
+  mode: ModeInfo | null
 }
 
 const initial: AppStateShape = {
@@ -76,7 +85,11 @@ const initial: AppStateShape = {
   models: [],
   budget: { usedCoins: 0, budgetCoins: 0, day: '', exceeded: false, enabled: false, model: '' },
   update: null,
-  updateDismissed: false
+  updateDismissed: false,
+  auth: null,
+  authPhase: 'idle',
+  authError: null,
+  mode: null
 }
 
 type Action =
@@ -101,6 +114,9 @@ type Action =
   | { type: 'notice'; notice: string | null }
   | { type: 'update'; update: UpdateStatusDto | null }
   | { type: 'update-dismissed'; dismissed: boolean }
+  | { type: 'auth'; status: AuthStatus | null }
+  | { type: 'auth-phase'; phase: SignInPhase; error?: string | null }
+  | { type: 'mode'; mode: ModeInfo | null }
 
 const MAX_TIMELINE = 800
 /**
@@ -181,6 +197,18 @@ function reducer(state: AppStateShape, action: Action): AppStateShape {
       return { ...state, update: action.update }
     case 'update-dismissed':
       return { ...state, updateDismissed: action.dismissed }
+    case 'auth':
+      return { ...state, auth: action.status }
+    case 'auth-phase':
+      // A fresh phase clears the previous failure: leaving an old error beside
+      // a new attempt reads as "this is what went wrong", which it is not.
+      return {
+        ...state,
+        authPhase: action.phase,
+        authError: action.error === undefined ? state.authError : action.error
+      }
+    case 'mode':
+      return { ...state, mode: action.mode }
     default:
       return state
   }
@@ -264,6 +292,10 @@ export function useAppState(): { state: AppStateShape; actions: ReturnType<typeo
         await actions.syncTerminals()
         await actions.refreshModels()
         await actions.refreshGit()
+        // Identity and mode are read at boot so the account chip is honest on
+        // the first paint rather than after a click.
+        await actions.refreshAuth()
+        await actions.refreshMode()
         for (const task of await bridge.agent.list()) dispatch({ type: 'task', task })
         // History first, so a restart shows the conversation that already
         // happened rather than an empty pane the model nonetheless remembers.
@@ -399,6 +431,18 @@ function useActions(dispatch: React.Dispatch<Action>) {
       dispatch({ type: 'models', models: snapshot.models, budget: snapshot.budget })
     } catch {
       /* the picker degrades to "no model" */
+    }
+  }, [dispatch])
+
+  const refreshAuth = useCallback(async () => {
+    if (!window.cryptoric) return null
+    try {
+      const status = await window.cryptoric.auth.status()
+      dispatch({ type: 'auth', status })
+      return status
+    } catch {
+      dispatch({ type: 'auth', status: null })
+      return null
     }
   }, [dispatch])
 
@@ -591,8 +635,84 @@ function useActions(dispatch: React.Dispatch<Action>) {
         return report
       },
 
+      /**
+       * Sign in.
+       *
+       * The main process owns the loopback listener and the code exchange; this
+       * only reports where the round-trip has got to, and re-reads the session
+       * afterwards so the chip reflects what was actually stored rather than
+       * what the browser implied.
+       */
+      refreshAuth,
+
+      startSignIn: async () => {
+        dispatch({ type: 'auth-phase', phase: 'starting', error: null })
+        try {
+          const result = await window.cryptoric.auth.start()
+          if (!result.ok) {
+            dispatch({ type: 'auth-phase', phase: 'idle', error: result.error ?? 'Sign-in did not start.' })
+            await refreshAuth()
+            return result
+          }
+          dispatch({ type: 'auth-phase', phase: 'waiting' })
+          await refreshAuth()
+          // The button returns once the redirect has been redeemed, so the
+          // phase is only left open if the call itself failed above.
+          dispatch({ type: 'auth-phase', phase: 'idle' })
+          dispatch({
+            type: 'notice',
+            notice: result.ok ? 'Signed in. Your coin balance is now tied to this account.' : null
+          })
+          return result
+        } catch (err) {
+          dispatch({ type: 'auth-phase', phase: 'idle', error: describe(err) })
+          await refreshAuth()
+          return { ok: false, error: describe(err) }
+        }
+      },
+
+      /** Finish a sign-in from a redirect the user pasted by hand. */
+      completeSignIn: async (code: string, state: string) => {
+        try {
+          const result = await window.cryptoric.auth.complete(code, state)
+          dispatch({ type: 'auth-phase', phase: 'idle', error: result.ok ? null : (result.error ?? 'Sign-in failed.') })
+          await refreshAuth()
+          if (result.ok) dispatch({ type: 'notice', notice: 'Signed in.' })
+          return result
+        } catch (err) {
+          dispatch({ type: 'auth-phase', phase: 'idle', error: describe(err) })
+          return { ok: false, error: describe(err) }
+        }
+      },
+
+      signOut: async () => {
+        try {
+          await window.cryptoric.auth.signOut()
+          // The phase is dropped here as well as in main: cancelling an
+          // in-flight attempt resolves `auth.start` with "cancelled", and a
+          // UI still claiming to wait would be wrong.
+          dispatch({ type: 'auth-phase', phase: 'idle', error: null })
+          await refreshAuth()
+          dispatch({ type: 'notice', notice: 'Signed out. The account token was deleted from this computer.' })
+        } catch (err) {
+          dispatch({ type: 'notice', notice: describe(err) })
+        }
+      },
+
+      refreshMode: async () => {
+        if (!window.cryptoric) return null
+        try {
+          const mode = await window.cryptoric.mode.get()
+          dispatch({ type: 'mode', mode })
+          return mode
+        } catch {
+          dispatch({ type: 'mode', mode: null })
+          return null
+        }
+      },
+
       routeSkills: async (prompt: string) => window.cryptoric.skill.route(prompt)
     }),
-    [refreshEnvironment, refreshGaps, refreshModels, refreshGit, syncTerminals, loadConversation, dispatch]
+    [refreshEnvironment, refreshGaps, refreshModels, refreshGit, refreshAuth, syncTerminals, loadConversation, dispatch]
   )
 }

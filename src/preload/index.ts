@@ -10,6 +10,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import { CHANNELS, type IpcResult } from '@shared/ipc-channels'
+import type { RunMode } from '@shared/mode'
 
 /** Who is signed in. No token: the UI never holds one. */
 export interface AuthAccount {
@@ -27,6 +28,19 @@ export interface AuthStatus {
   account: AuthAccount | null
   message: string | null
 }
+
+/** What this install is: local-only, or pointed at the account server. */
+export type ModeInfo =
+  | {
+      ok: true
+      mode: RunMode
+      serverUrl: string
+      note: string
+      description: string
+      /** True when the agent may not run unless someone is signed in. */
+      requiresAccount: boolean
+    }
+  | { ok: false; error: string }
 import type {
   AgentTask,
   ConversationTurn,
@@ -368,6 +382,15 @@ const api = {
     complete: (code: string, state: string) =>
       invoke<{ ok: boolean; account?: AuthAccount; error?: string }>(CHANNELS.authComplete, { code, state }),
     signOut: () => invoke<{ ok: boolean }>(CHANNELS.authSignOut, {})
+  },
+  /**
+   * Which mode this install runs in, and whether that needs an account.
+   *
+   * `ok: false` is a real outcome, not an error to swallow: half a configuration
+   * is reported rather than quietly treated as `local`.
+   */
+  mode: {
+    get: () => invoke<ModeInfo>(CHANNELS.modeGet, {})
   },
   /** Subscribe to main-process pushes. Returns an unsubscribe function. */
   onMainEvent(handler: (event: MainEvent) => void): Unsubscribe {

@@ -114,6 +114,12 @@ export const CHANNELS = {
   authComplete: 'auth:complete',
   authSignOut: 'auth:sign-out',
 
+  // --- mode
+  //
+  // `CRYPTORIC_MODE` was read, validated and tested, and then nothing asked
+  // for the answer, so a hosted build looked exactly like a local one.
+  modeGet: 'mode:get',
+
   // --- main -> renderer pushes
   push: 'push:main-event',
   pushApproval: 'push:approval',
