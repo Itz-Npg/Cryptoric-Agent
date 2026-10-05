@@ -1,0 +1,37 @@
+{
+  "name": "cryptoric-cli",
+  "version": "0.1.0",
+  "description": "Cryptoric Chan from the terminal: the same staged agent pipeline that runs inside Cryptoric Agent, headless.",
+  "type": "module",
+  "bin": {
+    "cryptoric": "dist/index.js"
+  },
+  "files": [
+    "dist/index.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "prepack": "node build.mjs"
+  },
+  "keywords": [
+    "agent",
+    "cli",
+    "ai",
+    "codex",
+    "terminal",
+    "cryptoric"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Itz-Npg/Cryptoric-Agent.git",
+    "directory": "cli"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  }
+}
