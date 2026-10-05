@@ -57,10 +57,15 @@ REPORT="$PROJECT_DIR/app/build/reports/tests/testDebugUnitTest/index.html"
 [ -f "$REPORT" ] || fail "No unit test report at $REPORT. The tests did not run."
 if [ -f "$PROJECT_DIR/app/build/test-results/testDebugUnitTest/TEST-com.itznpg.cryptoric.companion.RelayProtocolTest.xml" ]; then
   RESULT_FILE="$PROJECT_DIR/app/build/test-results/testDebugUnitTest/TEST-com.itznpg.cryptoric.companion.RelayProtocolTest.xml"
-  # grep -m1 stops by itself, so nothing downstream can close the pipe
-  # early and hand the build a SIGPIPE under `set -o pipefail`.
-  COUNT="$(grep -o -m1 'tests="[0-9]*"' "$RESULT_FILE" | tr -dc '0-9')"
-  FAILURES="$(grep -o -m1 'failures="[0-9]*"' "$RESULT_FILE" | tr -dc '0-9')"
+  # No pipes, and no reading just the first line: a JUnit XML file opens with
+  # the <?xml?> declaration, so the attributes are several lines down. The whole
+  # file goes into a variable and bash's regex pulls the numbers out, which
+  # keeps a third SIGPIPE race out of the step that decides whether these tests
+  # actually ran.
+  XML="$(cat "$RESULT_FILE")"
+  COUNT=""; FAILURES=""
+  [[ "$XML" =~ tests\="([0-9]+)" ]] && COUNT="${BASH_REMATCH[1]}"
+  [[ "$XML" =~ failures\="([0-9]+)" ]] && FAILURES="${BASH_REMATCH[1]}"
   echo "tests=$COUNT failures=$FAILURES"
   [ "${COUNT:-0}" -ge 5 ] || fail "Only ${COUNT:-0} tests ran; a partial run must not read as a pass."
   [ "${FAILURES:-1}" -eq 0 ] || fail "$FAILURES test(s) failed."
@@ -86,8 +91,11 @@ LIST="$(unzip -l "$BUILT")"
 # and under `set -o pipefail` that kills the script. sed reads the whole stream.
 printf '%s
 ' "$LIST" | sed -n '1,20p'
-echo "$LIST" | grep -q "AndroidManifest.xml" || fail "The APK has no AndroidManifest.xml."
-echo "$LIST" | grep -q "classes.dex" || fail "The APK has no classes.dex: there is no compiled code in it."
+# Bash pattern matching, not `echo "$LIST" | grep -q`: grep -q exits on the first
+# match and closes the pipe while echo is still writing, which hands the writer a
+# SIGPIPE and, under `set -o pipefail`, fails the build at random.
+[[ "$LIST" == *"AndroidManifest.xml"* ]] || fail "The APK has no AndroidManifest.xml."
+[[ "$LIST" == *"classes.dex"* ]] || fail "The APK has no classes.dex: there is no compiled code in it."
 
 log "Copying into dist/"
 rm -rf "$OUT_DIR"
