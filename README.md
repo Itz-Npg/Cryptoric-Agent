@@ -250,22 +250,31 @@ store once; a key already in the store always wins.
 
 ### Verifying a download
 
+**Today there are none.** All 23 assets across the five published releases carry
+zero `.asc` files, and this README will not pretend otherwise. The signing job
+exists and is proven against the real installer, but it needs the
+`CRYPTORIC_GPG_KEY` repository secret and a pinned fingerprint, and **fails
+loudly** rather than skipping when they are absent.
+
+Once they are set, a release will have one per asset, and you will check it like
+this:
+
 ```bash
 gpg --keyserver hkps://keys.openpgp.org --recv-keys 152873138+Itz-Npg@users.noreply.github.com
 gpg --verify cryptoric-agent_<version>_amd64.deb.asc cryptoric-agent_<version>_amd64.deb
 ```
 
-Every published asset has a detached `.asc` beside it.
+A `GOOD` line is what you are looking for. `BAD` means the file does not match
+what was signed — do not run it.
 
 ### Code signing policy
 
 - **Authenticode is not in use.** Binaries are GPG-signed, which proves
   provenance but does **not** clear SmartScreen. A SignPath Foundation grant
   would; that is an external human application.
-- **No published release has ever carried an `.asc`.** The signing job requires
-  the `CRYPTORIC_GPG_KEY` secret and a pinned fingerprint, and it **fails
-  loudly** when they are absent — which they are.
-- Contributors never receive the signing key.
+- **Contributors never receive the signing key.** The private key and its
+  passphrase exist only on the maintainer's machine, and are not backed up
+  anywhere.
 
 ### Attestation
 
