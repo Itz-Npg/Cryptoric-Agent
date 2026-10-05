@@ -124,6 +124,11 @@ jobs:
         run: npx electron-builder --publish never
 
       - name: List what was produced
+        # `shell: bash` is load-bearing. The default shell on a Windows runner is
+        # PowerShell, where `ls -la` is not a command — the packaging step
+        # itself succeeded and this diagnostic step killed the job with
+        # "A parameter cannot be found that matches parameter name 'la'".
+        shell: bash
         run: |
           echo "=== release/ contents ==="
           ls -la release/ || true

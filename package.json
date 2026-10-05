@@ -3,7 +3,10 @@
   "version": "0.1.3",
   "private": true,
   "description": "Cryptoric Agent — an AI-native desktop development environment operated by Cryptoric Chan.",
-  "author": "Cryptoric",
+  "author": {
+    "name": "Itz-Npg",
+    "email": "152873138+Itz-Npg@users.noreply.github.com"
+  },
   "license": "MIT",
   "main": "./out/main/index.js",
   "type": "module",
