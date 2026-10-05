@@ -135,9 +135,13 @@ list, commit it and point at the file in your repo.
 - **It does not detect cheating.** It records what a client's watcher reports and
   applies the ban. Detection lives on the client, and a client that has been
   patched can lie — which is why the ban is applied here rather than there.
-- **It has never been deployed.** Everything below was verified against the real
+- **It has never been deployed.** Everything here was verified against the real
   handler over a real socket and against the real `node` entry point on loopback.
   Nothing has run on Vercel.
+- **The Mongo adapter has never spoken to MongoDB.** Its URL building, request
+  shapes, `_id` mapping and error reporting are tested against a stubbed Data
+  API; the wire format itself is assumed to match Atlas's. Point it at a real
+  cluster before trusting a balance with it.
 - **It has no accounts, no passwords and no sessions.** `accountId` is an opaque
   id the client is responsible for issuing. Google sign-in is what should mint
   it, and that is not built.
