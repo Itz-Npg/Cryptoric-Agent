@@ -42,6 +42,7 @@ import { createStore, CredentialStore, type AppState } from './services/store'
 import { SettingsStore } from './services/settings/store'
 import type { SettingsSection } from './services/settings/schema'
 import { detectProject, computeGaps } from './services/project/detect'
+import { fetchCatalogue, toProviderConfigs } from './services/models/catalogue'
 import { ensureProjectWorkspace, resolveHistoryPaths } from './services/project/workspace'
 import { FileService } from './services/fs/files'
 import { GitService } from './services/git/service'
@@ -49,6 +50,7 @@ import {
   ModelGateway,
   MODEL_CATALOG,
   OPENROUTER_CREDENTIAL,
+  PROVIDER_SERVER_CREDENTIAL,
   APINEX_CREDENTIAL,
   PROVIDER_CREDENTIAL_SLOTS,
   type ModelConfig,
@@ -972,6 +974,37 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
     }
   }
 
+  /**
+   * Pull the model catalogue from the configured provider server.
+   *
+   * Additive by design: a server that is switched off, unreachable or serving
+   * something unusable leaves the built-in providers exactly as they were. The
+   * failure is reported to the log rather than swallowed, because "my models
+   * did not appear" is otherwise indistinguishable from "I misconfigured it".
+   */
+  async function refreshProviderServerCatalogue(): Promise<{ ok: boolean; models: string[]; error: string | null }> {
+    const advanced = settings.get().advanced
+    if (!advanced.providerServerEnabled || advanced.providerServerUrl.trim().length === 0) {
+      gateway.setCustomModels([])
+      return { ok: true, models: [], error: null }
+    }
+
+    const result = await fetchCatalogue(advanced.providerServerUrl, {
+      // The token lives in the credential store, never in the settings file —
+      // settings are the thing most likely to be synced or copied around.
+      token: credentials.get(PROVIDER_SERVER_CREDENTIAL),
+      allowInsecure: advanced.providerServerAllowInsecure
+    })
+
+    if (!result.ok) {
+      gateway.setCustomModels([])
+      return { ok: false, models: [], error: result.error }
+    }
+
+    gateway.setCustomModels(toProviderConfigs(result.catalogue, result.url))
+    return { ok: true, models: gateway.listCustomModels(), error: null }
+  }
+
   router.register(CHANNELS.modelsCatalog, {
     domain: 'env.detect',
     requiresApproval: false,
@@ -989,6 +1022,25 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
       gateway.setConfig(config)
       void store.set({ modelName: args.modelId, modelProvider: config.provider, modelEndpoint: config.endpoint })
       return modelSnapshot()
+    }
+  })
+  router.register(CHANNELS.providerServerRefresh, {
+    // A network read that changes local model state. Not gated on approval:
+    // the user already opted in by enabling the server in settings, and asking
+    // every refresh would train people to click through the prompt.
+    domain: 'network.read',
+    requiresApproval: false,
+    handler: async () => {
+      const outcome = await refreshProviderServerCatalogue()
+      push({
+        type: 'log',
+        level: outcome.ok ? 'info' : 'warn',
+        message: outcome.ok
+          ? `Provider server: ${outcome.models.length} model(s) available.`
+          : `Provider server: ${outcome.error}`,
+        at: new Date().toISOString()
+      })
+      return { ...outcome, snapshot: modelSnapshot() }
     }
   })
   router.register(CHANNELS.modelsAvailable, {
