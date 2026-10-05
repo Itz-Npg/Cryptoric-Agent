@@ -58,16 +58,19 @@ jobs:
 
       - name: Test
         working-directory: mobile/ios
-        # `path` points at the package directory, so `Package.swift` is found
-        # without the working-directory step masking a wrong path.
-        run: swift test --package-path mobile/ios
+        # No `--package-path` here on purpose. Passing a relative
+        # `--package-path` while `working-directory` is already mobile/ios
+        # makes Swift chdir to mobile/ios/mobile/ios and fail with a bare
+        # "chdir error", which hides the real problem. One mechanism only.
+        run: swift test
 
       - name: Confirm the tests actually ran
         # A green tick from `swift test` on a package with no test target is
         # indistinguishable from a real pass in the job summary.
+        working-directory: mobile/ios
         run: |
           set -o pipefail
-          swift test --package-path mobile/ios 2>&1 | tee /tmp/swift-test.log
+          swift test 2>&1 | tee /tmp/swift-test.log
           if ! grep -qE "Executed [0-9]+ tests?" /tmp/swift-test.log; then
             echo "::error::No 'Executed N tests' line — the suite may not have run."
             exit 1
