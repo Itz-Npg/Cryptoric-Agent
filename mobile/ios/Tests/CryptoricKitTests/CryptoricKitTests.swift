@@ -230,9 +230,12 @@ final class RelayStoreTests: XCTestCase {
         await store.setError("timed out")
         let tasks = await store.current.tasks
         let connected = await store.connected
+        // `await` cannot sit inside an XCTAssert autoclosure, so the actor
+        // hop happens first and the assertion reads a plain local.
+        let connectionError = await store.connectionError
         XCTAssertEqual(tasks.count, 1, "a connection error wiped the task list")
         XCTAssertFalse(connected)
-        XCTAssertEqual(await store.connectionError, "timed out")
+        XCTAssertEqual(connectionError, "timed out")
     }
 
     /// A view that subscribes late must not render blank.
