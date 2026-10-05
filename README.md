@@ -168,20 +168,30 @@ The same agent, in a terminal. Not a port — the desktop app and `cryptoric` ar
 two composition roots over one implementation, so a change to the pipeline
 reaches both.
 
+![A real cryptoric session: the CRYPTORIC wordmark, a task typed into the prompt box, and a BLOCKED verdict because no model provider is configured](docs/images/cli-session.svg)
+
+<sub>A real capture from `node scripts/capture-cli-svg.mjs`, with no model
+provider configured — which is why it honestly ends in BLOCKED.</sub>
+
 ```bash
-cryptoric run "add a README describing this project"
-cryptoric tools          # what this CLI can actually call
-cryptoric doctor         # environment and configuration
+cryptoric                     # prompt box: type a task, get a result
+cryptoric run "<task>"        # one shot, for scripts and CI
+cryptoric tools               # what this CLI can actually call
+cryptoric doctor              # environment and configuration
 ```
+
+Inside a session: `/tools`, `/doctor`, `/cwd`, `/exit`.
 
 State lives in `CRYPTORIC_HOME` (default `~/.cryptoric`), the API key comes from
 `CRYPTORIC_API_KEY` and is never written to disk, and gated operations prompt on
 stdin — refusing outright when stdin is not a terminal, because an absent human
 is not consent.
 
-Exit codes distinguish what the pipeline actually concluded: `0` COMPLETED,
-`1` FAILED, `2` BLOCKED, `3` CANCELLED, `4` PARTIAL, `64` bad usage. **A run
-with no observed file change is never `0`.**
+The conversation is scoped per project and written to disk, so a task you ran
+yesterday is still in the history after a restart. Exit codes distinguish what
+the pipeline actually concluded: `0` COMPLETED, `1` FAILED, `2` BLOCKED,
+`3` CANCELLED, `4` PARTIAL, `64` bad usage. **A run with no observed file change
+is never `0`.**
 
 Browser tools are absent rather than stubbed — they need a window. Full detail in
 [`cli/README.md`](cli/README.md).

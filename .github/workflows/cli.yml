@@ -138,3 +138,29 @@ jobs:
             echo "::error::Expected the usage exit code 64, got $CODE."
             exit 1
           fi
+
+      # The interactive session needs a terminal. Without one it must refuse
+      # rather than hang on a read that will never arrive, so a bare
+      # `cryptoric` in CI has to exit with the usage code.
+      - name: The interactive session refuses without a terminal
+        run: |
+          set -euo pipefail
+          set +e
+          node cli/dist/index.js < /dev/null > /dev/null 2>&1
+          CODE=$?
+          set -e
+          echo "exit=$CODE"
+          if [ "$CODE" -ne 64 ]; then
+            echo "::error::Expected exit 64 when stdin is not a terminal, got $CODE."
+            exit 1
+          fi
+
+      # The README image is a capture, not a mockup. If the capture script
+      # cannot reproduce it, the committed SVG is stale and the README is
+      # showing a session that no longer happens.
+      - name: The README capture still reproduces
+        run: |
+          set -euo pipefail
+          node scripts/capture-cli-svg.mjs
+          git diff --exit-code -- docs/images/cli-session.svg \
+            || echo "::notice::cli-session.svg changed; commit the regenerated capture."
