@@ -241,7 +241,24 @@ export const AdvancedSettingsSchema = z.object({
   logLevel: z.enum(['error', 'warn', 'info', 'debug']).default('warn'),
   /** Confirm before running a project's startup script. */
   confirmStartupScript: z.boolean().default(true),
-  discordRichPresence: z.boolean().default(false)
+  discordRichPresence: z.boolean().default(false),
+  /**
+   * Your own model provider server.
+   *
+   * Empty means the feature is off: nothing is fetched and nothing changes.
+   * Only the URL lives here — the token goes in the credential store, never in
+   * a settings file that could be synced or copied.
+   */
+  providerServerUrl: z.string().default(''),
+  providerServerEnabled: z.boolean().default(false),
+  /**
+   * Permit plain http to a non-loopback provider server.
+   *
+   * Off by default because the provider token is a bearer credential. It exists
+   * so a trusted LAN or a tunnel is possible without pretending that is safe
+   * over the open internet.
+   */
+  providerServerAllowInsecure: z.boolean().default(false)
 })
 
 // ------------------------------------------------------------------ root
@@ -332,6 +349,9 @@ export const BEHAVIOURAL_SETTINGS: SettingMeta[] = [
   { path: 'privacy.redactSecrets', scope: 'global', behavioural: true, description: 'Scrub credential-shaped values before transmission' },
   { path: 'sessions.resumeTasks', scope: 'global', behavioural: true, description: 'Restore unfinished tasks on launch' },
   { path: 'sessions.historyLocation', scope: 'global', behavioural: false, description: 'Write chat history to the app folder, the project .cryptoricagent folder, or both' },
+  { path: 'advanced.providerServerUrl', scope: 'global', behavioural: false, description: 'URL of a self-hosted model catalogue server' },
+  { path: 'advanced.providerServerEnabled', scope: 'global', behavioural: false, description: 'Fetch models from the configured provider server' },
+  { path: 'advanced.providerServerAllowInsecure', scope: 'global', behavioural: false, description: 'Allow a plain-http provider server on a non-loopback host' },
   { path: 'usage.dailyAllowanceCoins', scope: 'global', behavioural: false, description: 'Cached display ceiling; the server is authoritative' },
   { path: 'usage.signupBonusGrantedOn', scope: 'global', behavioural: false, description: 'UTC day the one-time signup bonus was granted' }
 ]

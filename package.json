@@ -41,7 +41,9 @@
     "stage:keys": "node scripts/stage-keys.mjs",
     "sign:release": "node scripts/sign-release.mjs",
     "verify:release": "node scripts/verify-release.mjs",
-    "test:agent:pipeline": "node scripts/build-live-check.mjs tests/live/pipeline-check.ts .review/live/pipeline-check.mjs && node .review/live/pipeline-check.mjs"
+    "test:agent:pipeline": "node scripts/build-live-check.mjs tests/live/pipeline-check.ts .review/live/pipeline-check.mjs && node .review/live/pipeline-check.mjs",
+    "test:provider": "vitest run tests/unit/provider-catalogue.test.ts",
+    "serve:provider": "node server/index.mjs"
   },
   "dependencies": {
     "@fontsource-variable/instrument-sans": "^5.1.0",

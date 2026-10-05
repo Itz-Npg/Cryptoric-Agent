@@ -18,6 +18,8 @@ in `docs/signing/AUDIT.md`.
 | **iOS companion** | `swift build` + `swift test` green on macos-15; the job fails unless `Executed N tests` appears with N ≥ 10 |
 | **`cryptoric` CLI** | 24 tools, one 398 KB file, no Electron; a real task run returns exit 2 `BLOCKED` and writes nothing |
 | **`.cryptoricagent/` per project** | Created on open, stable id, history in the project folder *and* the app folder; 8/8 end-to-end checks across two projects and three separate processes |
+| **Multi-project parallel execution** | 3 projects observed running concurrently; tasks inside one project still serialised, measured inside the stage, not by wall clock |
+| **Self-hosted model provider** | `server/index.mjs` serves a catalogue; 17 tests round-trip against the real server, wrong and missing tokens rejected |
 
 ### The CLI shipped, and it did not need a rewrite
 
@@ -87,8 +89,10 @@ own token. **Never send publish credentials to me.**
 One `git worktree` per agent task, so parallel runs cannot collide or dirty the
 main checkout.
 
-This changes *where the agent writes files*, so it reshapes the core. Doing it
-before the CLI exists means doing it twice.
+**The prerequisite is now done.** Multi-project execution ships, and tasks in
+separate projects run genuinely concurrently while tasks in the same project
+still serialise. Worktrees are the remaining half: they change *where* the agent
+writes, which is a different question from *when*.
 
 ### Desktop work
 
