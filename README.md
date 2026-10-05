@@ -201,9 +201,18 @@ What does *not* exist: an Xcode app target, an `.app`, an `.ipa`, an Android
 project, an `.apk`. There are no mobile artifacts in any published release, and
 there never have been.
 
-An installable `.ipa` needs a paid Apple Developer account and provisioning. An
-`.apk` needs an Android project to be written first. Neither is a packaging step
-away.
+Both are buildable, and the obstacles are different from the usual story:
+
+- **An `.ipa` needs no Apple account to *produce*.** A macOS runner can build an
+  app target with `CODE_SIGNING_ALLOWED=NO` and zip the `.app` into an `.ipa`.
+  What the paid account buys is *installing* it on a device without re-signing
+  first. The blocker here is that no app target exists — only a library.
+- **An `.apk` needs no account at all.** Gradle signs a debug build with a
+  throwaway key. The blocker here is that there is no Android project whatsoever:
+  no `AndroidManifest.xml`, no `build.gradle`, no wrapper.
+
+Neither is a packaging step away. Both are a project that has to be written
+first — which is exactly what the next thing to build is.
 
 ---
 
