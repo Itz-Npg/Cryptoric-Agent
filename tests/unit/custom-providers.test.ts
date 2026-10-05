@@ -19,6 +19,7 @@ import {
   upsertCustomProvider,
   urlLeaksSecret
 } from '../../src/main/services/models/custom-providers'
+import { SettingsSchema } from '../../src/main/services/settings/schema'
 
 const valid = {
   label: 'My provider',
@@ -233,5 +234,33 @@ describe('customModelConfigs', () => {
   it('skips a disabled provider', () => {
     const disabled = { ...provider.provider, enabled: false }
     expect(customModelConfigs([disabled])).toEqual([])
+  })
+})
+
+describe('a key cannot reach the settings file by any route', () => {
+  it('is stripped even if smuggled in through the generic settings route', () => {
+    // The custom-provider route never passes a key to `settings.update`, but
+    // `settings:update` accepts an arbitrary patch from the renderer. If the
+    // schema kept unknown keys, a renderer could persist a secret straight
+    // into a world-readable settings file and the isolation would be a
+    // convention rather than a guarantee.
+    const parsed = SettingsSchema.parse({
+      providers: [
+        {
+          id: 'mine',
+          label: 'Mine',
+          kind: 'custom',
+          baseUrl: 'https://api.example.com/v1',
+          credentialKey: 'custom-provider-mine',
+          models: ['m'],
+          byok: true,
+          enabled: true,
+          apiKey: 'sk-should-never-persist'
+        }
+      ]
+    })
+
+    expect(JSON.stringify(parsed)).not.toContain('sk-should-never-persist')
+    expect((parsed.providers[0] as Record<string, unknown>).apiKey).toBeUndefined()
   })
 })
