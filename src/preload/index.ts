@@ -298,7 +298,21 @@ const api = {
       referer?: string
     }) => invoke<ModelCatalogSnapshot>(CHANNELS.modelsSetProvider, input),
     verifyKey: () => invoke<ModelKeyReportDto>(CHANNELS.modelsVerifyKey, {}),
-    setKey: (apiKey: string) => invoke<ModelKeyReportDto>(CHANNELS.modelsSetKey, { apiKey })
+    setKey: (apiKey: string) => invoke<ModelKeyReportDto>(CHANNELS.modelsSetKey, { apiKey }),
+    /**
+     * Add or update a provider the user brought: a base URL, an API key and the
+     * model ids it serves. The key goes to the encrypted credential store in the
+     * main process and is never returned.
+     */
+    saveCustomProvider: (input: {
+      id?: string
+      label: string
+      baseUrl: string
+      apiKey?: string
+      models: string[]
+    }) => invoke<{ ok: boolean; error: string | null; id: string | null }>(CHANNELS.modelsCustomSave, input),
+    removeCustomProvider: (id: string) =>
+      invoke<{ ok: boolean; error: string | null }>(CHANNELS.modelsCustomRemove, { id })
   },
   updates: {
     status: () => invoke<UpdateStatusDto>(CHANNELS.updatesStatus, {}),

@@ -43,6 +43,13 @@ import { SettingsStore } from './services/settings/store'
 import type { SettingsSection } from './services/settings/schema'
 import { detectProject, computeGaps } from './services/project/detect'
 import { fetchCatalogue, toProviderConfigs } from './services/models/catalogue'
+import {
+  customModelConfigs,
+  normaliseCustomProvider,
+  removeCustomProvider,
+  upsertCustomProvider,
+  urlLeaksSecret
+} from './services/models/custom-providers'
 import { ensureProjectWorkspace, resolveHistoryPaths } from './services/project/workspace'
 import { FileService } from './services/fs/files'
 import { GitService } from './services/git/service'
@@ -982,10 +989,28 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
    * failure is reported to the log rather than swallowed, because "my models
    * did not appear" is otherwise indistinguishable from "I misconfigured it".
    */
+  /**
+   * Models published by the user's provider server, kept separately from the
+   * ones they added by hand.
+   *
+   * Both sources are re-applied together by `reseedCustomModels`. Keeping them
+   * apart is what makes "remove one of my providers" not silently delete the
+   * server's models as well.
+   */
+  let providerServerConfigs: ModelConfig[] = []
+
+  function reseedCustomModels(): void {
+    gateway.setCustomModels([
+      ...providerServerConfigs,
+      ...customModelConfigs(settings.get().providers)
+    ])
+  }
+
   async function refreshProviderServerCatalogue(): Promise<{ ok: boolean; models: string[]; error: string | null }> {
     const advanced = settings.get().advanced
     if (!advanced.providerServerEnabled || advanced.providerServerUrl.trim().length === 0) {
-      gateway.setCustomModels([])
+      providerServerConfigs = []
+      reseedCustomModels()
       return { ok: true, models: [], error: null }
     }
 
@@ -997,11 +1022,15 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
     })
 
     if (!result.ok) {
-      gateway.setCustomModels([])
-      return { ok: false, models: [], error: result.error }
+      // The server's models go away, but the user's own providers stay: one
+      // unreachable server must not empty the whole picker.
+      providerServerConfigs = []
+      reseedCustomModels()
+      return { ok: false, models: gateway.listCustomModels(), error: result.error }
     }
 
-    gateway.setCustomModels(toProviderConfigs(result.catalogue, result.url))
+    providerServerConfigs = toProviderConfigs(result.catalogue, result.url)
+    reseedCustomModels()
     return { ok: true, models: gateway.listCustomModels(), error: null }
   }
 
@@ -1112,6 +1141,88 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
         return { ok: false, configured: gateway.usesUserKey(), label: null, usage: null, limit: null, limitRemaining: null, isFreeTier: null, error: 'OS encryption is unavailable, so the key was not stored.' }
       }
       return gateway.describeKey()
+    }
+  })
+
+  // --- custom providers
+  //
+  // "Add my own API" is three separate things: a base URL, a key, and the model
+  // ids. The key is written straight to the credential store and never appears
+  // in settings, in the response, or back in the renderer.
+
+  router.register(CHANNELS.modelsCustomSave, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: async (args: {
+      id?: string
+      label: string
+      baseUrl: string
+      apiKey?: string
+      models: string[]
+    }) => {
+      const normalised = normaliseCustomProvider(args)
+      if (!normalised.ok) {
+        return { ok: false, error: normalised.error, id: null }
+      }
+
+      if (urlLeaksSecret(normalised.provider.baseUrl)) {
+        // A key pasted into a URL ends up in logs, in the settings file, and in
+        // any crash report. Saying so is more useful than storing it.
+        return {
+          ok: false,
+          error: 'That URL appears to contain a key. Put the key in the key field, not in the URL.',
+          id: null
+        }
+      }
+
+      const { provider, apiKey } = normalised
+      if (apiKey !== null && provider.credentialKey) {
+        const stored = await credentials.set(provider.credentialKey, apiKey)
+        if (!stored) {
+          // Refusing beats storing plaintext: the alternative is a key sitting in
+          // a world-readable file because the OS keychain was unavailable.
+          return {
+            ok: false,
+            error: 'OS encryption is unavailable, so the key was not stored.',
+            id: null
+          }
+        }
+      }
+
+      const next = upsertCustomProvider(settings.get().providers, provider)
+      const result = await settings.update({ providers: next })
+      if (!result.ok) {
+        const detail = result.issues.map((i) => i.message).join('; ')
+        return { ok: false, error: detail || 'Could not save the provider.', id: null }
+      }
+
+      // Make the new models selectable straight away rather than waiting for a
+      // restart: the user just told us what they have.
+      reseedCustomModels()
+      push({ type: 'log', level: 'info', message: `Provider "${provider.label}" saved (${provider.models.length} model(s)).`, at: new Date().toISOString() })
+
+      return { ok: true, error: null, id: provider.id }
+    }
+  })
+
+  router.register(CHANNELS.modelsCustomRemove, {
+    domain: 'env.modify',
+    requiresApproval: false,
+    handler: async (args: { id: string }) => {
+      const current = settings.get().providers
+      const { providers, removed } = removeCustomProvider(current, args.id)
+      if (!removed) return { ok: false, error: 'That provider is not in the list.' }
+
+      const result = await settings.update({ providers })
+      if (!result.ok) {
+        const detail = result.issues.map((i) => i.message).join('; ')
+        return { ok: false, error: detail || 'Could not remove the provider.' }
+      }
+
+      // Re-seed from what is left rather than subtracting, so a partially
+      // applied edit cannot leave a model pointing at a removed provider.
+      reseedCustomModels()
+      return { ok: true, error: null }
     }
   })
 
