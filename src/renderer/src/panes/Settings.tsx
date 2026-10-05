@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react'
 import type { EnvironmentGap, ProjectProfile, ToolStatus } from '@shared/types'
 import { Button, Chip, CryptoricMark, Icon, SectionHead, toneForInstallState } from '../components/primitives'
 import type { ModelSummary } from './ModelPicker'
+import { CustomProviderSection } from './CustomProvider'
 import type { AppStateShape } from '../state/useAppState'
 
 // ----------------------------------------------------------------- settings
@@ -185,6 +186,7 @@ export function SettingsSurface({
               </button>
             ))}
             <ProviderKeyRow />
+            <CustomProviderSection />
           </div>
         </section>
 

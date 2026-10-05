@@ -92,6 +92,9 @@ export const CHANNELS = {
   modelsSetProvider: 'models:set-provider',
   modelsVerifyKey: 'models:verify-key',
   modelsSetKey: 'models:set-key',
+  /** Add or update a provider the user brought themselves. */
+  modelsCustomSave: 'models:custom-save',
+  modelsCustomRemove: 'models:custom-remove',
 
   // --- updates
   updatesStatus: 'updates:status',

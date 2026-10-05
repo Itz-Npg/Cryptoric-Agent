@@ -157,6 +157,18 @@ has.
 - **The iOS app is not distributed.** It compiles and its tests pass in CI.
   App Store or TestFlight needs a paid Apple Developer account, so nothing here
   puts an app on a phone.
+### Bring your own API
+
+Settings → Models → **Your own provider**. Three separate fields, because they
+are three different things: a **base URL** (where requests go), an **API key**
+(written straight to the OS credential store, never to settings and never back
+to the renderer), and the **model ids** the endpoint serves, one per line.
+
+Any OpenAI-compatible endpoint works — a hosted service, a gateway, or a local
+Ollama. A local server is not asked for a key, editing a provider does not make
+you retype the stored one, and saving the same name again updates it rather than
+creating a duplicate.
+
 ### Your own model server
 
 Run the provider server and point installs at it; the models you publish there appear

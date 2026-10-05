@@ -133,6 +133,16 @@ export const SCHEMAS = {
   // the token is a credential. This call just re-fetches whatever is there.
   [CHANNELS.providerServerRefresh]: z.object({}),
   [CHANNELS.modelsSetBudget]: z.object({ coins: z.number().int().min(0).max(100_000) }),
+  // The API key travels here and goes straight to the credential store; it is
+  // never echoed back to the renderer and never lands in settings.
+  [CHANNELS.modelsCustomSave]: z.object({
+    id: z.string().max(64).optional(),
+    label: z.string().min(1).max(80),
+    baseUrl: z.string().min(1).max(400),
+    apiKey: z.string().max(2000).optional(),
+    models: z.array(z.string().max(120)).max(200)
+  }),
+  [CHANNELS.modelsCustomRemove]: z.object({ id: z.string().min(1).max(64) }),
   [CHANNELS.modelsSetProvider]: z.object({
     provider: z.enum(['none', 'ollama', 'openai-compatible', 'openrouter', 'apinex']),
     endpoint: z.string().max(400),
