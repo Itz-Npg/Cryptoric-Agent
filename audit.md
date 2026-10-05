@@ -747,3 +747,95 @@ and `grep zod out/renderer/assets/*.js` returns nothing.
 4. Never claim something was tested when it was not — use `NOT_RUN` / `NOT_APPLICABLE` / `BLOCKED`.
 5. Never report a fake balance, a fake test result, or a tool that does not do the real operation.
 6. Every claim in a summary must trace to a row in this file.
+---
+
+## "Task complete — no files were changed." — the no-op agent
+
+> Request: *"Build a Nepal travel landing page…"*. Result: **"Task complete — no
+> files were changed."** Every stage ticked green, all five reading `0 ms`.
+
+This is the second agent bug this session and its cause is the more embarrassing
+of the two. Not a display problem, and not a slow model.
+
+### The chain, in order
+
+1. **`implementStage` returned `continue: true` when the model answered in prose.**
+   `const used = outcome.tools.length` — then `if (used === 0)` it emitted an
+   **info** note and carried on. An answer with no tool call behind it was treated
+   as a successful implementation.
+
+2. **It returned `continue: true` when no provider was configured at all.** The
+   branch's own message said *"I could not make changes: no model provider is
+   configured"* — and then continued as though it had.
+
+3. **`reviewStage` reported `COMPLETED` when nothing changed.**
+   ```js
+   if (changed.length === 0)
+     return { continue: false, status: 'COMPLETED', summary: 'Task complete — no files were changed.' }
+   ```
+
+Every stage **ran**. None of them checked whether the **task** had been done. A
+stage completing proves the stage executed — that is all it ever proved. The
+pipeline walked analyze → plan → implement → verify → review, all five returned
+normally, and the run finished `COMPLETED` having changed nothing.
+
+### Why the `0 ms` was itself evidence
+
+`Math.max(0, Date.parse(finished) - Date.parse(started))` printed a duration
+whenever both timestamps existed. A stage that started and stopped in the same
+millisecond has both, so it printed `0 ms` — five times. `0 ms` was the honest
+number for five stages that had done no work; the lie was the green tick beside it.
+
+### `changedPaths` was trusting narration
+
+`changedPathOf` matched the tool id against `WRITING_TOOLS` and read
+`result.data.path` — the path the tool *claimed*. Wrong in both directions: a tool
+can report a path it never wrote, and a tool that *did* write something but is not
+on the four-name allowlist contributes nothing. The second is the dangerous one; it
+makes real work invisible.
+
+### What replaced it
+
+| Requirement | Where |
+|---|---|
+| Classify the request before doing anything | `evidence.ts` `classifyIntent` → READ_ONLY / IMPLEMENTATION / … |
+| Mutation required only for some intents | `evidence.ts` `requiresMutation` |
+| Real change detection | `snapshot.ts` `takeSnapshot` → SHA-256 per file |
+| Compare before/after | `evidence.ts` `diffSnapshots` |
+| Why nothing changed | `evidence.ts` `explainNoChange` |
+| "I've implemented…" is not proof | `evidence.ts` `looksLikeUnbackedClaim` |
+| COMPLETED means the work happened | `evidence.ts` `judgeFinalStatus` |
+| NOT_RUN instead of 0 ms | `shared/execution-display.ts` |
+
+`implementStage` now snapshots the project, runs the model, snapshots again, and
+**blocks** if the request required change and the diff is empty — naming which of
+the six reasons applies. `reviewStage` returns `BLOCKED` rather than `COMPLETED`
+when an implementation request produced no diff. `NO_MODEL` is `BLOCKED`, not a
+green tick.
+
+Content hashes, not timestamps, and not tool arguments. An agent that rewrites a
+file with identical bytes has changed nothing, and must not be able to manufacture
+evidence for itself by touching a file.
+
+### Verification
+
+`tests/unit/agent-evidence.test.ts`, **42 tests**, mapped to the 18 required
+scenarios.
+
+The end-to-end one is real: a temp directory, the real `write_file` tool through
+the real `ToolRuntime` and `PermissionPolicy`, approval answered by a stand-in
+human exactly as the existing filesystem suite does. It creates
+`CRYPTORIC_AGENT_TEST.md`, then asserts the file exists on disk, that
+`evidence.changedFiles` contains it, that it is classified as *created*, and that
+review reports `1 created`.
+
+**Reverted, 4 of them fail** — the prose-only case, the failed-write case, the
+claimed-but-not-written case, and the review stage's false `COMPLETED`. Restored,
+42 pass. They are not tests that were written to pass.
+
+`npm run typecheck` exit 0 · `npx vitest run` **495 passed / 19 files** ·
+`npm run build` exit 0.
+
+**Not verified:** no live provider run. The Nepal-landing-page prompt has not been
+driven through the real app end to end, so the fix is proven at the unit and
+stage level rather than in a full session.

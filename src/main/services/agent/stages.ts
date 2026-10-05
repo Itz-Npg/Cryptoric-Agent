@@ -16,6 +16,15 @@ import type { AgentRole } from '@shared/types'
 import type { Stage, StageContext, StageOutcome, StageToolApi } from './pipeline-types'
 import { computeGaps } from '../project/detect'
 import type { ProjectProfile } from '@shared/types'
+import {
+  classifyIntent,
+  diffSnapshots,
+  explainNoChange,
+  looksLikeUnbackedClaim,
+  requiresMutation,
+  type TaskIntent
+} from './evidence'
+import { isProjectWritable, takeSnapshot } from './snapshot'
 
 export interface PipelineDeps {
   /** Tool invocation surface supplied by the runtime. */
@@ -35,7 +44,16 @@ export interface PipelineDeps {
   model?(
     ctx: StageContext,
     phase: 'plan' | 'implement'
-  ): Promise<{ ok: boolean; text: string; error: string | null; tools: string[] }>
+  ): Promise<{
+    ok: boolean
+    text: string
+    error: string | null
+    tools: string[]
+    /** Tools actually executed, as opposed to tools merely mentioned. */
+    toolCalls: number
+    failedToolCalls: number
+    modelCalls: number
+  }>
 }
 
 const TERMINAL_MISSING_RE =
@@ -202,20 +220,53 @@ function implementStage(deps: PipelineDeps): Stage {
         return { continue: false, status: 'CANCELLED', summary: 'Stopped before implementation.' }
       }
 
+      const intent = classifyIntent(ctx.task.prompt)
+      const needsChange = requiresMutation(intent)
+      const root = ctx.task.projectRoot ?? deps.getProject()?.root ?? null
+
+      ctx.note(`request classified as ${intent}`, 'info')
+
       if (!deps.model) {
         // Said because it is true, and only when it is true. The previous
         // version of this branch printed the same sentence unconditionally,
         // which is how a configured model ended up reported as absent.
         ctx.note('No model provider is configured, so no file changes were attempted.', 'error')
+        // BLOCKED, not `continue: true`. Returning true here let the pipeline
+        // walk on through verification and review and finish with a green tick
+        // and "Task complete" for a run that never had a model at all.
         return {
-          continue: true,
+          continue: false,
+          status: 'BLOCKED',
           summary:
-            'I could not make changes: no model provider is configured for this session. Set one in Settings, then add your API key.'
+            'Blocked: no model provider is configured, so nothing was implemented. ' +
+            'Set one in Settings and add your API key, then ask again. ' +
+            'Nothing in this project was changed.'
         }
       }
 
+      const before = root ? takeSnapshot(root) : { files: {}, truncated: 0, unreadable: true }
+
       const outcome = await deps.model(ctx, 'implement')
-      const used = outcome.tools.length
+
+      const after = root ? takeSnapshot(root) : { files: {}, truncated: 0, unreadable: true }
+      const diff = diffSnapshots(before.files, after.files)
+
+      recordEvidence(ctx, intent, before.files, after.files, diff, {
+        toolCalls: outcome.toolCalls,
+        failedToolCalls: outcome.failedToolCalls,
+        modelCalls: outcome.modelCalls
+      })
+
+      const observed = !diff.isEmpty
+      if (observed) {
+        ctx.note(
+          `${diff.changed.length} file(s) changed on disk: ${diff.changed.slice(0, 5).join(', ')}` +
+            (diff.changed.length > 5 ? ` … +${diff.changed.length - 5} more` : ''),
+          'ok'
+        )
+      } else {
+        ctx.note('No file on disk changed during this stage.', 'error')
+      }
 
       if (!outcome.ok) {
         return {
@@ -225,13 +276,78 @@ function implementStage(deps: PipelineDeps): Stage {
         }
       }
 
-      if (used === 0) {
-        ctx.note('The model answered without calling a tool, so nothing was changed.', 'info')
-      } else {
-        ctx.note(`${used} tool call(s) executed`, 'ok')
+      // An unbacked claim is a signal to keep going, not a result.
+      if (observed && looksLikeUnbackedClaim(outcome.text) && outcome.toolCalls === 0) {
+        ctx.note('The answer described work without a tool call behind it; treating it as unproven.', 'error')
       }
-      return { continue: true, summary: outcome.text || 'Done.' }
+
+      if (needsChange && !observed) {
+        const verdict = explainNoChange({
+          modelText: outcome.text,
+          toolCalls: outcome.toolCalls,
+          failedToolCalls: outcome.failedToolCalls,
+          filesAlreadyPresent: [],
+          projectWritable: root ? isProjectWritable(root) : false
+        })
+        return {
+          continue: false,
+          status: 'BLOCKED',
+          summary: `Blocked — nothing was implemented. ${verdict.message}`
+        }
+      }
+
+      if (outcome.toolCalls > 0) {
+        ctx.note(`${outcome.toolCalls} tool call(s) executed`, 'ok')
+      }
+
+      return {
+        continue: true,
+        summary: observed
+          ? `Implemented: ${diff.changed.length} file(s) changed.${outcome.text ? `\n\n${outcome.text}` : ''}`
+          : outcome.text || 'No change was required.'
+      }
     }
+  }
+}
+
+/** Fold what was observed into the task's evidence record. */
+function recordEvidence(
+  ctx: StageContext,
+  classification: string,
+  before: Record<string, string>,
+  after: Record<string, string>,
+  diff: { created: string[]; modified: string[]; deleted: string[]; changed: string[] },
+  counts: { toolCalls: number; failedToolCalls: number; modelCalls: number }
+): void {
+  const previous = ctx.task.evidence
+  const testsExecuted = previous?.testsExecuted ?? []
+  const created = diff.created
+  const modified = diff.modified
+  const deleted = diff.deleted
+
+  // Union with anything a prior stage recorded, so `testsExecuted` survives.
+  const union = (a: string[], b: string[]): string[] => [...new Set([...a, ...b])].sort()
+
+  ctx.task.evidence = {
+    classification,
+    filesBefore: Object.keys(before).length,
+    filesAfter: Object.keys(after).length,
+    createdFiles: union(previous?.createdFiles ?? [], created),
+    modifiedFiles: union(previous?.modifiedFiles ?? [], modified),
+    deletedFiles: union(previous?.deletedFiles ?? [], deleted),
+    changedFiles: union(previous?.changedFiles ?? [], diff.changed),
+    toolCalls: (previous?.toolCalls ?? 0) + counts.toolCalls,
+    failedToolCalls: (previous?.failedToolCalls ?? 0) + counts.failedToolCalls,
+    modelCalls: (previous?.modelCalls ?? 0) + counts.modelCalls,
+    testsExecuted,
+    finalStatus: previous?.finalStatus ?? 'IN_PROGRESS',
+    reason: previous?.reason ?? ''
+  }
+
+  // The review stage reads `changedPaths`; keep it aligned with what was actually
+  // observed rather than with what a tool claimed.
+  for (const path of diff.changed) {
+    if (!ctx.task.changedPaths.includes(path)) ctx.task.changedPaths.push(path)
   }
 }
 
@@ -292,6 +408,31 @@ function verifyStage(deps: PipelineDeps): Stage {
       const pm = project.packageManager ?? 'npm'
       const declared = project.scripts ?? {}
       const results: CheckResult[] = []
+      const executed: string[] = []
+
+      // A check that actually ran is evidence. A check that was skipped is not,
+      // and must not be able to become one by accident.
+      const markExecuted = (label: string): void => {
+        executed.push(label)
+        if (!ctx.task.evidence) {
+          ctx.task.evidence = {
+            classification: classifyIntent(ctx.task.prompt),
+            filesBefore: 0,
+            filesAfter: 0,
+            createdFiles: [],
+            modifiedFiles: [],
+            deletedFiles: [],
+            changedFiles: [...ctx.task.changedPaths],
+            toolCalls: 0,
+            failedToolCalls: 0,
+            modelCalls: 0,
+            testsExecuted: [],
+            finalStatus: 'IN_PROGRESS',
+            reason: ''
+          }
+        }
+        ctx.task.evidence.testsExecuted = [...new Set(executed)].sort()
+      }
 
       for (const check of JS_CHECKS) {
         if (ctx.signal.aborted) {
@@ -310,6 +451,7 @@ function verifyStage(deps: PipelineDeps): Stage {
 
         const { command, args } = check.argv(pm)
         ctx.note(`running ${pm} ${args.join(' ')}`, 'info')
+        markExecuted(check.label)
 
         const run = await ctx.call('run_command', { command, args, cwd: project.root })
         const code = exitCodeOf(run)
@@ -350,6 +492,22 @@ function verifyStage(deps: PipelineDeps): Stage {
         ),
         `- browser: NOT RUN — ${browserNote.replace('Browser verification ', '')}`
       ]
+
+      // "No checks applied" is its own outcome and is reported as such. It is
+      // NOT_APPLICABLE, which is not a pass and must not read like one.
+      if (results.length === 0 || results.every((r) => r.outcome === 'skip')) {
+        ctx.note('NO_TEST_SUITE_FOUND — this project declares none of the known checks.', 'info')
+        return {
+          continue: true,
+          summary:
+            `Verification: NO_TEST_SUITE_FOUND — ${results.map((r) => r.label).join(', ') || 'no known checks'} ` +
+            'are not defined by this project, so nothing was executed. This is not a pass.'
+        }
+      }
+
+      if (ctx.task.evidence) {
+        ctx.task.evidence.finalStatus = failed.length > 0 ? 'FAILED' : 'COMPLETED'
+      }
 
       if (failed.length > 0) {
         // A failing check is a real outcome. The task ends here rather than
@@ -392,6 +550,8 @@ function tailOf(result: { data?: unknown; summary?: string }, max: number): stri
 // ---------------------------------------------------------------------------
 // 5. REVIEWER
 // ---------------------------------------------------------------------------
+// 5. REVIEWER
+// ---------------------------------------------------------------------------
 
 function reviewStage(_deps: PipelineDeps): Stage {
   return {
@@ -399,10 +559,33 @@ function reviewStage(_deps: PipelineDeps): Stage {
     name: 'review',
     maxTier: 'safe',
     async run(ctx: StageContext): Promise<StageOutcome> {
-      const changed = ctx.task.changedPaths
+      const evidence = ctx.task.evidence
+      const changed = evidence?.changedFiles ?? ctx.task.changedPaths
+      const intent = (evidence?.classification as TaskIntent | undefined) ?? classifyIntent(ctx.task.prompt)
+      const needsChange = requiresMutation(intent)
+
       if (changed.length === 0) {
-        ctx.note('No files were modified, so there is nothing to review.', 'info')
-        return { continue: false, status: 'COMPLETED', summary: 'Task complete — no files were changed.' }
+        // The old line here was `status: 'COMPLETED', summary: 'Task complete —
+        // no files were changed.'` A stage that reviews nothing completing
+        // successfully is how a no-op run reported as a finished task.
+        if (!needsChange) {
+          ctx.note('Nothing changed, and this request did not ask for a change.', 'info')
+          return {
+            continue: false,
+            status: 'COMPLETED',
+            summary:
+              'Answered from inspection of the project. This request did not ask for a change, ' +
+              'so nothing was modified.'
+          }
+        }
+        ctx.note('Nothing was changed, so there is nothing to review.', 'error')
+        return {
+          continue: false,
+          status: 'BLOCKED',
+          summary:
+            'Blocked — this was an implementation request and no file changed. ' +
+            'The task is not complete.'
+        }
       }
 
       const shown = changed.slice(0, 20)
@@ -412,12 +595,23 @@ function reviewStage(_deps: PipelineDeps): Stage {
         ctx.note(`  … and ${changed.length - shown.length} more`, 'info')
       }
 
+      if (evidence) {
+        evidence.finalStatus = 'COMPLETED'
+        evidence.reason = `${changed.length} file(s) changed and reviewed.`
+      }
+
+      const created = evidence?.createdFiles ?? []
+      const deleted = evidence?.deletedFiles ?? []
+
       return {
         continue: false,
         status: 'COMPLETED',
-        summary: `Task complete. ${changed.length} file(s) changed:\n${shown.map((p) => `- ${p}`).join('\n')}${
-          changed.length > shown.length ? `\n… and ${changed.length - shown.length} more` : ''
-        }`
+        summary:
+          `Task complete. ${changed.length} file(s) changed` +
+          `${created.length ? ` (${created.length} created)` : ''}` +
+          `${deleted.length ? `, ${deleted.length} deleted` : ''}:\n` +
+          `${shown.map((p) => `- ${p}`).join('\n')}` +
+          `${changed.length > shown.length ? `\n… and ${changed.length - shown.length} more` : ''}`
       }
     }
   }

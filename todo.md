@@ -628,3 +628,48 @@ task forever. Full write-up in `audit.md`; the invariants in `work.md`.
       not user-tunable.
 - [ ] Browser tooling still does not exist, so the browser portion of the testing
       stage reports NOT RUN. That is honest, not implemented.
+
+## PHASE 0.13 — The no-op / false-completion agent *(done, verified)*
+
+*"Task complete — no files were changed."* with five green stages at `0 ms`.
+
+- [x] **Root cause traced, not guessed.** `implementStage` returned
+      `continue: true` when the model answered in prose (`used === 0`), and again
+      when no provider was configured. `reviewStage` then returned `COMPLETED`
+      because `changedPaths` was empty. Every stage ran; none checked the task.
+- [x] **Intent classification** before execution — READ_ONLY / ANALYSIS_ONLY /
+      IMPLEMENTATION / DEBUGGING / REFACTOR / TESTING / RESEARCH / CONFIGURATION /
+      MIXED. Only the mutating ones require change.
+- [x] **Real change detection by content hash**, before and after, replacing
+      `changedPathOf`'s trust in `result.data.path`.
+- [x] **`implementStage` blocks** when a mutating request produced no diff, naming
+      which of six reasons applies (misunderstood / needs clarification / tools
+      failed / read-only project / already present / nothing required).
+- [x] **No model configured is BLOCKED**, not a green tick.
+- [x] **`reviewStage` cannot report COMPLETED** without changed files behind an
+      implementation request.
+- [x] **Unbacked claims detected** — "I've implemented…" is a claim, not a result.
+- [x] **`judgeFinalStatus`** — COMPLETED only with observed change or a
+      correctly-diagnosed read-only request. Otherwise FAILED / BLOCKED / PARTIAL /
+      CANCELLED.
+- [x] **NOT_RUN instead of `0 ms`** for a phase that never executed.
+- [x] **NO_TEST_SUITE_FOUND** reported when a project declares no known checks —
+      explicitly not a pass.
+- [x] **Execution evidence record** on the task: classification, file counts,
+      created/modified/deleted, tool/model call counts, tests executed, final
+      status. Surfaced as chips in the header. Visual language unchanged.
+- [x] 42 regression tests covering all 18 required scenarios, including a real
+      end-to-end run: real `write_file` through the real `ToolRuntime`, real
+      approval gate answered by a stand-in human, real file on a real disk.
+- [x] **Reverted, 4 tests fail.** Restored, 42 pass.
+- [x] `npm run typecheck` exit 0 · `npx vitest run` **495 passed / 19 files** ·
+      `npm run build` exit 0.
+- [ ] **No live provider run.** The exact Nepal-landing-page prompt has not been
+      driven through the real app, so this is verified at the stage/unit level
+      rather than in a full session.
+- [ ] The model must be observed genuinely refusing to call tools. If a provider
+      returns prose for an implementation request, the engine now blocks — but
+      retrying with a stricter tool prompt before blocking has not been tried.
+- [ ] `run_command` exits are read from `data.exitCode`; a tool that returns
+      neither an exit code nor a parseable summary counts as a pass. Tightened for
+      the filesystem tools, not yet enforced across the whole registry.

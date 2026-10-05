@@ -509,6 +509,33 @@ export interface TimelineEntry {
   ref?: string
 }
 
+/**
+ * What an execution actually did.
+ *
+ * Recorded per task so the final sentence can be generated from observation
+ * rather than from narration. The defect this exists to prevent: an agent that
+ * changed nothing reported "Task complete — no files were changed." while every
+ * stage displayed as finished.
+ */
+export interface ExecutionEvidence {
+  /** READ_ONLY | IMPLEMENTATION | … as classified from the request. */
+  classification: string
+  filesBefore: number
+  filesAfter: number
+  createdFiles: string[]
+  modifiedFiles: string[]
+  deletedFiles: string[]
+  /** Every difference, which is the only proof any work happened. */
+  changedFiles: string[]
+  toolCalls: number
+  failedToolCalls: number
+  modelCalls: number
+  /** Labels of checks that actually executed, e.g. `typecheck`, `test`. */
+  testsExecuted: string[]
+  finalStatus: string
+  reason: string
+}
+
 export interface AgentTask {
   id: string
   title: string
@@ -524,6 +551,8 @@ export interface AgentTask {
   changedPaths: string[]
   error: string | null
   usage: UsageRecord
+  /** Observed effect of the run. Absent until a stage measures it. */
+  evidence?: ExecutionEvidence
 }
 
 export interface UsageRecord {

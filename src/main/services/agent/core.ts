@@ -314,7 +314,12 @@ export class AgentRuntime {
           data: { stage: stage.name }
         })
         if (!outcome.continue) {
-          task.status = outcome.status ?? 'COMPLETED'
+          // A stage may end PARTIAL — work done, verification not finished.
+          // `TaskStatus` has no PARTIAL, and collapsing it to COMPLETED would
+          // claim the run finished. BLOCKED already exists for the same reason:
+          // "the agent stopped" is not "the agent succeeded".
+          task.status =
+            outcome.status === 'PARTIAL' ? 'BLOCKED' : (outcome.status ?? 'COMPLETED')
           if (outcome.summary) this.deps.events.say(outcome.summary)
           break
         }

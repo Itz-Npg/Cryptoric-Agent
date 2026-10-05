@@ -381,3 +381,41 @@ Later passes, on top of `a57f4d3`:
 5a041c0 Stop the Execution panel from being crushed to a sliver
 ed9294d Record what was verified, and what was not
 ```
+### A stage completing is not a task completing
+
+> A phase reports that it ran. Only **observed change** reports that the work
+> happened. Conflating the two is how an agent reports "Task complete" for a run
+> that changed nothing.
+
+Found the hard way: `implementStage` returned `continue: true` when the model
+answered in prose instead of calling a tool, and again when no provider was
+configured. `reviewStage` then returned `COMPLETED` because nothing had changed.
+All five stages ran, all five reported success, and the user got *"Task complete
+— no files were changed."*
+
+The rules that follow:
+
+- **Never continue on a no-op.** A stage that did not do the work must end the
+  run in `FAILED`, `BLOCKED` or `PARTIAL` — not fall through to a stage that has
+  nothing left to do.
+- **Measure the filesystem, do not believe the tool.** `result.data.path` is what
+  a tool *claims*. Snapshot before and after and hash the contents. This also
+  stops an agent from manufacturing evidence by rewriting a file with identical
+  bytes.
+- **Classify the request first.** A read-only question must not be blocked for
+  making no edits, and an implementation request must not be allowed to finish
+  without them.
+- **A stage label is a promise** (again, and the recurrence is the point): a stage
+  called *verify* that reports a process count is the same defect as a stage
+  called *implement* that reports prose.
+- **Zero is not a duration.** A phase that never ran has nothing to measure.
+  `NOT_RUN` is the truthful rendering; `Math.max(0, …)` manufactures a plausible
+  number for work that never happened.
+- **`COMPLETED` is a claim that must be earned.** Only observed change, or a
+  correctly-diagnosed request that genuinely needed none, may produce it.
+
+Pure rules live in [agent/evidence.ts](../src/main/services/agent/evidence.ts);
+the filesystem walk is [agent/snapshot.ts](../src/main/services/agent/snapshot.ts).
+Renderer-visible formatting is in `shared/execution-display.ts` because
+`tsconfig.web.json` cannot reach `src/main/**` — that constraint has already
+forced one avoidable copy-paste and is worth knowing about.

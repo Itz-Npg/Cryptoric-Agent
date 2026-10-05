@@ -35,7 +35,13 @@ export interface StageContext {
 
 export interface StageOutcome {
   continue: boolean
-  status?: 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'WAITING_FOR_USER'
+  /**
+   * `BLOCKED` and `PARTIAL` exist because "the agent stopped" is not the same as
+   * "the agent succeeded". A run that ended without doing the work must be able
+   * to say so; forcing it into FAILED or COMPLETED is how a no-op reported as
+   * done in the first place.
+   */
+  status?: 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'BLOCKED' | 'PARTIAL' | 'WAITING_FOR_USER'
   summary?: string
 }
 
