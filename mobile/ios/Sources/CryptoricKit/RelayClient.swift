@@ -24,7 +24,11 @@ public actor RelayStore {
     private var snapshot = RelaySnapshot(tasks: [])
     private var lastError: String?
     private var isConnected = false
-    private var continuations: [UUID: AsyncStream<RelaySnapshot>.Continuation] = [:]
+    // One subscriber at a time. The UI has a single observer, and keeping a
+    // registry alive across view lifetimes means needing `onTermination` to
+    // prune it - which is the API this toolchain will not resolve. Replacing
+    // instead of appending cannot leak, and matches how the app is used.
+    private var subscriber: AsyncStream<RelaySnapshot>.Continuation?
 
     public init() {}
 
@@ -35,26 +39,20 @@ public actor RelayStore {
     /// Stream of snapshots for the UI to render.
     ///
     /// Replays the current state first so a view that subscribes late is never
-    /// blank, then emits on every change.
+    /// blank, then emits on every change. A second caller replaces the first:
+    /// two live screens both watching one desktop is not a shape this app has.
     public func stream() -> AsyncStream<RelaySnapshot> {
-        let id = UUID()
-        // Built as a named `var` and configured through the property form.
-        // Chaining `.onTermination { }` straight off an `AsyncStream { }`
-        // initializer does not typecheck: the trailing-closure parse wins over
-        // the leading-dot chain, so the member is looked up on the closure
-        // rather than on the stream.
-        var stream = AsyncStream<RelaySnapshot> { continuation in
-            self.continuations[id] = continuation
+        AsyncStream<RelaySnapshot> { continuation in
+            self.subscriber = continuation
             continuation.yield(self.snapshot)
         }
-        stream.onTermination = { [weak self] _ in
-            Task { await self?.removeContinuation(id) }
-        }
-        return stream
     }
 
-    private func removeContinuation(_ id: UUID) {
-        continuations[id] = nil
+    /// Stop sending to the current subscriber. Called when the view goes away,
+    /// so a finished view is not written to.
+    public func endSubscription() {
+        subscriber?.finish()
+        subscriber = nil
     }
 
     /// Apply a snapshot and notify watchers.
@@ -63,9 +61,7 @@ public actor RelayStore {
         // means visible flicker on every heartbeat.
         guard next != snapshot else { return }
         snapshot = next
-        for continuation in continuations.values {
-            continuation.yield(next)
-        }
+        subscriber?.yield(next)
     }
 
     public func setConnected(_ value: Bool) {

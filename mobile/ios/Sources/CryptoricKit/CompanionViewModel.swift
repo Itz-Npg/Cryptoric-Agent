@@ -114,7 +114,7 @@ public struct CompanionRootView: View {
                     // SwiftUI's navigation closure is synchronous, so an async
                     // send has to be wrapped. Calling it directly fails to
                     // compile; the previous build attempt proved it.
-                    Task { model.send(.followUp(taskId: id, text: text)) }
+                    Task { await model.send(.followUp(taskId: id, text: text)) }
                 })
             }
             .toolbar {
@@ -124,7 +124,7 @@ public struct CompanionRootView: View {
                 // it, which is why the library ships with that target.
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        Task { model.send(.refresh) }
+                        Task { await model.send(.refresh) }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
