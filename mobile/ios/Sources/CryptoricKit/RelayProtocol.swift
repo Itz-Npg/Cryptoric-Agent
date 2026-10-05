@@ -101,7 +101,7 @@ public struct AgentTask: Codable, Identifiable, Equatable, Sendable {
 }
 
 /// A message from the phone to the desktop.
-public enum RelayCommand: Codable, Sendable {
+public enum RelayCommand: Codable, Equatable, Sendable {
     /// Follow-up text for a running task.
     case followUp(taskId: String, text: String)
     /// Cancel a task.
