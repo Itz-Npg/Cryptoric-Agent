@@ -109,7 +109,7 @@ jobs:
             -target CryptoricCompanion \
             -sdk iphoneos \
             -configuration Release \
-            -derivedDataPath "$RUNNER_TEMP/dd" \
+            SYMROOT="$RUNNER_TEMP/products" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -126,10 +126,10 @@ jobs:
             tail -40 "$RUNNER_TEMP/xcodebuild.log"
             exit 1
           fi
-          APP="$(find "$RUNNER_TEMP/dd/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' -print -quit)"
+          APP="$(find "$RUNNER_TEMP/products/Release-iphoneos" -maxdepth 1 -name '*.app' -print -quit)"
           if [ -z "$APP" ]; then
             echo "::error::No .app in Release-iphoneos. A library cannot produce one."
-            ls -la "$RUNNER_TEMP/dd/Build/Products" || true
+            ls -la "$RUNNER_TEMP/products" || true
             exit 1
           fi
           echo "app=$APP"
@@ -144,7 +144,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p dist
-          APP="$(find "$RUNNER_TEMP/dd/Build/Products/Release-iphoneos" -maxdepth 1 -name '*.app' -print -quit)"
+          APP="$(find "$RUNNER_TEMP/products/Release-iphoneos" -maxdepth 1 -name '*.app' -print -quit)"
           ( cd "$(dirname "$APP")" && zip -qry "$GITHUB_WORKSPACE/dist/CryptoricCompanion-unsigned.ipa" "$(basename "$APP")" )
           ls -la dist/
           SIZE=$(wc -c < dist/CryptoricCompanion-unsigned.ipa)
