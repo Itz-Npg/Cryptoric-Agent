@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { join, resolve, sep } from 'node:path'
 import { classifyCommand, checkPath, matchScope, PermissionPolicy, ApprovalQueue } from '../../src/main/services/permissions/policy'
 
 describe('classifyCommand', () => {
@@ -217,12 +218,20 @@ describe('relative paths resolve against the workspace, not the app', () => {
   // and every call came back "Path escapes the allowed workspace roots",
   // because `resolve()` was anchoring to the app's own working directory
   // rather than to the open project.
-  const roots = ['C:\\projects\\site']
+  // Built from the platform rather than hardcoded.
+  //
+  // These used to read `C:\projects\site`. On POSIX a backslash is an ordinary
+  // filename character, so that string is a *relative* path there — `resolve()`
+  // anchored it to the app's own working directory and all three assertions
+  // below failed on Linux while passing on Windows. The suite now runs in CI on
+  // three operating systems, so a literal Windows path is a portability bug.
+  const workspace = resolve(sep, 'projects', 'site')
+  const roots = [workspace]
 
   it('accepts a bare relative path inside the workspace', () => {
     const verdict = checkPath('index.html', roots)
     expect(verdict.allowed).toBe(true)
-    if (verdict.allowed) expect(verdict.absolute).toBe('C:\\projects\\site\\index.html')
+    if (verdict.allowed) expect(verdict.absolute).toBe(join(workspace, 'index.html'))
   })
 
   it('accepts the current-directory shorthand', () => {
@@ -232,7 +241,7 @@ describe('relative paths resolve against the workspace, not the app', () => {
   it('accepts a nested relative path', () => {
     const verdict = checkPath('src/app.ts', roots)
     expect(verdict.allowed).toBe(true)
-    if (verdict.allowed) expect(verdict.absolute).toBe('C:\\projects\\site\\src\\app.ts')
+    if (verdict.allowed) expect(verdict.absolute).toBe(join(workspace, 'src', 'app.ts'))
   })
 
   it('still refuses a relative path that climbs out', () => {
@@ -241,7 +250,7 @@ describe('relative paths resolve against the workspace, not the app', () => {
   })
 
   it('still refuses an absolute path outside the workspace', () => {
-    expect(checkPath('C:\\Windows\\System32\\config', roots).allowed).toBe(false)
+    expect(checkPath(resolve(sep, 'Windows', 'System32', 'config'), roots).allowed).toBe(false)
   })
 
   it('still refuses device paths and null bytes', () => {
