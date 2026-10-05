@@ -250,7 +250,7 @@ describe('budget', () => {
     expect(g.budget().exceeded).toBe(true)
     const r = await g.complete({ messages: [{ role: 'user', content: 'hi' }] })
     expect(r.ok).toBe(false)
-    expect(r.error).toContain('Daily budget reached')
+    expect(r.error).toMatch(/no coins left/i)
   })
 
   it('still allows a BYOK call at a zero ceiling — the ceiling is not the user\'s money', async () => {
@@ -258,7 +258,7 @@ describe('budget', () => {
     // Not exercised against the network: the point is that checkBudget passes,
     // so the request is allowed to leave and only then fail on the endpoint.
     const r = await g.complete({ messages: [{ role: 'user', content: 'hi' }], signal: AbortSignal.timeout(1) })
-    expect(r.error ?? '').not.toContain('Daily budget reached')
+    expect(r.error ?? '').not.toMatch(/no coins left/i)
   })
 })
 

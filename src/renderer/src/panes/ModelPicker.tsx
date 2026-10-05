@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { FREE_DAILY_COINS, SIGNUP_BONUS_COINS } from '@shared/coins'
 import { Button, Chip, Icon, SectionHead } from '../components/primitives'
 
 export interface ModelSummary {
@@ -118,9 +119,15 @@ export function ModelPicker({
               />
             </span>
             {budget.exceeded ? (
-              <Chip tone="error">Daily budget reached</Chip>
+              // "Daily budget reached" is a phrase about a system. The user
+              // needs to know their position and their options, so the chip
+              // carries the same wording the refusal does.
+              <Chip tone="error">No coins left today</Chip>
             ) : (
               <span className="caption">
+                {budget.budgetCoins > FREE_DAILY_COINS
+                  ? `${budget.budgetCoins} today (includes your ${SIGNUP_BONUS_COINS}-coin signup bonus) · `
+                  : ''}
                 Resets at midnight UTC · {Math.max(0, budget.budgetCoins - budget.usedCoins)} coins remaining
               </span>
             )}

@@ -40,7 +40,7 @@ describe('settings defaults and validation', () => {
     expect(settings.privacy.redactSecrets).toBe(true)
     expect(settings.notifications.agentCompleted).toBe(true)
     expect(settings.updates.channel).toBe('stable')
-    expect(settings.usage.dailyAllowanceCoins).toBe(25)
+    expect(settings.usage.dailyAllowanceCoins).toBe(20)
     expect(settings.advanced.logLevel).toBe('warn')
     expect(settings.sessions.resumeTasks).toBe(true)
     expect(settings.environment.autoInstallRuntimes).toBe(true)
@@ -463,7 +463,7 @@ describe('coin allowance migration', () => {
     const store = new SettingsStore({ userDataDir: dir })
     writeFileSync(join(dir, 'settings.json'), legacyFile({ dailyAllowanceCoins: 500, lowBalanceWarningAt: 50 }))
     return store.load().then(() => {
-      expect(store.get().usage.dailyAllowanceCoins).toBe(25)
+      expect(store.get().usage.dailyAllowanceCoins).toBe(20)
       expect(store.get().usage.lowBalanceWarningAt).toBe(5)
     })
   })
@@ -482,7 +482,7 @@ describe('coin allowance migration', () => {
     const store = new SettingsStore({ userDataDir: dir })
     writeFileSync(join(dir, 'settings.json'), legacyFile({ dailyAllowanceCoins: 500, lowBalanceWarningAt: 3 }))
     return store.load().then(() => {
-      expect(store.get().usage.dailyAllowanceCoins).toBe(25)
+      expect(store.get().usage.dailyAllowanceCoins).toBe(20)
       expect(store.get().usage.lowBalanceWarningAt).toBe(3)
     })
   })
@@ -496,7 +496,7 @@ describe('coin allowance migration', () => {
         data: { usage: { dailyAllowanceCoins: number } }
       }
       expect(persisted.version).toBe(SETTINGS_VERSION)
-      expect(persisted.data.usage.dailyAllowanceCoins).toBe(25)
+      expect(persisted.data.usage.dailyAllowanceCoins).toBe(20)
     })
   })
 
@@ -543,7 +543,7 @@ describe('the coin balance shown to the user', () => {
     expect(Math.round(legacyState.dailyBudgetUsd * 100)).toBe(500)
 
     // The migrated field is the one that is correct.
-    expect(settings.usage.dailyAllowanceCoins).toBe(25)
+    expect(settings.usage.dailyAllowanceCoins).toBe(20)
 
     // And this is the number the user must see. Configured the way
     // `src/main/index.ts` configures it.
@@ -556,16 +556,60 @@ describe('the coin balance shown to the user', () => {
         dailyBudgetCoins: settings.usage.dailyAllowanceCoins
       },
       getApiKey: () => null,
-      onUsage: () => undefined
+      onUsage: () => undefined,
+      // Wired exactly as `src/main/index.ts` wires it.
+      signupBonusGrantedOn: () => settings.usage.signupBonusGrantedOn
     })
 
     const budget = gateway.budget()
+    // 25, not 20: this is a first-run store, the bonus was granted today, and
+    // the signup amount replaces the daily allowance for that one day.
     expect(budget.budgetCoins).toBe(25)
     expect(budget.usedCoins).toBe(0)
     expect(budget.budgetCoins - budget.usedCoins).toBe(25)
   })
 
-  it('is 25 by default on a clean install', () => {
-    expect(defaultSettings().usage.dailyAllowanceCoins).toBe(25)
+  it('drops to 20 the day after signup', async () => {
+    const settings2 = await store.load()
+    const gateway = new ModelGateway({
+      config: {
+        provider: 'openrouter',
+        endpoint: OPENROUTER_ENDPOINT,
+        model: 'stealth/space-bunny-alpha',
+        credentialKey: OPENROUTER_CREDENTIAL,
+        dailyBudgetCoins: settings2.usage.dailyAllowanceCoins
+      },
+      getApiKey: () => null,
+      onUsage: () => undefined,
+      // Yesterday, so the bonus no longer applies.
+      signupBonusGrantedOn: () => '2020-01-01'
+    })
+
+    expect(gateway.budget().budgetCoins).toBe(20)
+  })
+
+  it('is 20 a day by default on a clean install', () => {
+    expect(defaultSettings().usage.dailyAllowanceCoins).toBe(20)
+  })
+
+  it('has not granted the signup bonus yet on a fresh install', () => {
+    expect(defaultSettings().usage.signupBonusGrantedOn).toBeNull()
+  })
+
+  it('grants the signup bonus exactly once, on first load', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cryptoric-signup-'))
+    try {
+      const store = new SettingsStore({ userDataDir: dir })
+      await store.load()
+      const granted = store.get().usage.signupBonusGrantedOn
+      expect(granted).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+
+      // A second store over the same file must not re-grant it.
+      const reopened = new SettingsStore({ userDataDir: dir })
+      await reopened.load()
+      expect(reopened.get().usage.signupBonusGrantedOn).toBe(granted)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

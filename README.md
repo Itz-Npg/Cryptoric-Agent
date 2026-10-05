@@ -89,6 +89,7 @@ raise a tool's tier. Permissions are visible per domain in Settings
 
 - Agent loop with real tools — `npm run test:agent` → **13/13**
 - Full stage pipeline incl. the evidence gate — `npm run test:agent:pipeline` → **8/8**
+- Coin allowance rules — 14 tests in `tests/unit/coins.test.ts`
 - Watchdogs on every model call, tool call and stage. No unbounded `await`.
 - Hard ceilings: 30 iterations, 40 model calls, 100 tool calls, 30 min — each
   reported, never silently extended.
@@ -145,9 +146,24 @@ npm run dist:win      # Windows NSIS installer
 >
 > This is fine for an installer you use yourself and **unacceptable for anything
 > you hand to someone else**. CI deliberately never runs this step, which is why
-> published releases carry no key. If you fork this, keep it that way: build in
-> CI, or call `npx electron-builder --publish never` directly instead of
-> `npm run dist`.
+> published releases carry no key.
+>
+> **The staged file lives inside the packaged directory.** `electron-builder`
+> copies `out/`, so a `out/cryptoric-keys.env` left behind by an earlier
+> `npm run dist` will be baked into the *next* build too — including one that
+> never asked for a key. That is not hypothetical: it happened here, and the key
+> was recovered from a package built by `npx electron-builder` with no staging
+> step in the command at all.
+>
+> So before packaging anything you intend to give away:
+>
+> ```bash
+> rm -f out/cryptoric-keys.env     # or run `npm run build`, which recreates out/
+> npx electron-builder --publish never
+> ```
+>
+> `stage-keys.mjs` now also deletes a stale copy when there is no `.env`, so
+> `npm run dist` cannot leave one behind by accident.
 
 ---
 
@@ -174,6 +190,25 @@ development; see the warning above before packaging it.
 
 **3. A local model.** Point the endpoint at Ollama or LM Studio and leave the key
 blank. Local models are never metered.
+
+### Coins
+
+If you have no key of your own, Cryptoric-funded usage draws on a coin allowance:
+
+- **25 coins** on the first day, granted once to a new profile.
+- **20 coins** on every day after that.
+
+When the allowance runs out, the call is refused with a message that says so and
+names both ways out — tomorrow, or adding your own key. A user's own provider key
+is **never** charged: `metered` is false when a key is present, so this ceiling
+simply does not apply to you.
+
+> **Honest caveat:** coins currently meter almost nothing. They only apply to
+> usage Cryptoric pays for, and there is no Cryptoric-funded provider yet — so in
+> practice a user with their own key never sees the limit, and a user without one
+> is refused for a missing credential first. The arithmetic and the messaging are
+> real and tested ([`shared/coins.ts`](src/shared/coins.ts), 14 tests); the
+> balance behind them is local, not server-authoritative.
 
 ### Providers
 
@@ -212,7 +247,7 @@ ones that shipped wrong twice. Both are reachable by a test.
 
 ```bash
 npm run typecheck   # 0 errors
-npm test            # 500 tests / 19 files
+npm test            # 518 tests / 20 files
 npm run build
 ```
 

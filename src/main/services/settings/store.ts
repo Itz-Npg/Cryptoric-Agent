@@ -21,6 +21,12 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
+import { shouldGrantSignupBonus } from '@shared/coins'
+
+/** UTC day string, matching the format the signup bonus is stored in. */
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10)
+}
 import {
   defaultSettings,
   SETTINGS_SECTIONS,
@@ -109,9 +115,27 @@ export class SettingsStore {
     }
 
     this.loaded = true
+
+    // Grant the one-time signup bonus the first time this profile is seen.
+    //
+    // It is recorded the moment it is granted rather than being recomputed from
+    // a timestamp later, because "has this profile ever been granted it" has to
+    // survive a reinstall, a file copy, and a schema migration. The day string
+    // is what makes it expire from the allowance after one day.
+    let granted = false
+    if (shouldGrantSignupBonus(this.cache.usage.signupBonusGrantedOn)) {
+      this.cache = {
+        ...this.cache,
+        usage: { ...this.cache.usage, signupBonusGrantedOn: todayUtc() }
+      }
+      granted = true
+    }
+
     // Rewrite when the file was absent or older than the current schema, so an
     // upgrade actually lands on disk instead of being re-migrated every launch.
-    if (!parsed || parsed.version !== SETTINGS_VERSION) await this.persist()
+    // Also when the bonus was just granted, or the grant would be made again on
+    // every single launch.
+    if (!parsed || parsed.version !== SETTINGS_VERSION || granted) await this.persist()
     return this.cache
   }
 
