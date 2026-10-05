@@ -19,6 +19,7 @@
  */
 
 import { z } from 'zod'
+import { FREE_DAILY_COINS } from '@shared/coins'
 
 /**
  * Bumped whenever the persisted shape changes.
@@ -214,7 +215,14 @@ export const UsageSettingsSchema = z.object({
    * account service; this is the cached ceiling used for the offline view and
    * must never be treated as a grant.
    */
-  dailyAllowanceCoins: z.number().int().min(0).max(1_000_000).default(25),
+  dailyAllowanceCoins: z.number().int().min(0).max(1_000_000).default(FREE_DAILY_COINS),
+  /**
+   * UTC day the one-time signup bonus was granted, or null if it never was.
+   *
+   * A day string rather than an instant so the comparison in `coins.ts` cannot
+   * drift across a timezone boundary.
+   */
+  signupBonusGrantedOn: z.string().nullable().default(null),
   streakEnabled: z.boolean().default(false),
   lowBalanceWarningAt: z.number().int().min(0).default(5)
 })
@@ -314,7 +322,8 @@ export const BEHAVIOURAL_SETTINGS: SettingMeta[] = [
   { path: 'privacy.externalResearch', scope: 'global', behavioural: true, description: 'Permit fetching external documentation' },
   { path: 'privacy.redactSecrets', scope: 'global', behavioural: true, description: 'Scrub credential-shaped values before transmission' },
   { path: 'sessions.resumeTasks', scope: 'global', behavioural: true, description: 'Restore unfinished tasks on launch' },
-  { path: 'usage.dailyAllowanceCoins', scope: 'global', behavioural: false, description: 'Cached display ceiling; the server is authoritative' }
+  { path: 'usage.dailyAllowanceCoins', scope: 'global', behavioural: false, description: 'Cached display ceiling; the server is authoritative' },
+  { path: 'usage.signupBonusGrantedOn', scope: 'global', behavioural: false, description: 'UTC day the one-time signup bonus was granted' }
 ]
 
 export function defaultSettings(): Settings {

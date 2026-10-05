@@ -247,6 +247,9 @@ async function boot(): Promise<Services> {
       dailyBudgetCoins: settings.get().usage.dailyAllowanceCoins
     },
     getApiKey: (key) => credentialsRef.get(key),
+    // Read live rather than snapshotted, so a reload that records the grant is
+    // visible immediately instead of the bonus appearing to be unspent forever.
+    signupBonusGrantedOn: () => settings.get().usage.signupBonusGrantedOn,
     onUsage: () => undefined
   })
   // Declared after `boot` closes over `credentials`; resolved lazily.

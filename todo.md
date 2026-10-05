@@ -706,3 +706,64 @@ task forever. Full write-up in `audit.md`; the invariants in `work.md`.
       commit, fixed at the cause rather than by relaxing the assertion.
 - [x] 5 new tests asserting created vs modified vs deleted vs read through the
       real runtime. **500 tests / 19 files**, typecheck 0, build 0.
+
+## PHASE 0.14 — Coin allowance, and a key-leak trap found while packaging
+
+### Coin model
+
+- [x] **20 coins a day, 25 on the signup day.** The signup amount *replaces* that
+      day's allowance rather than adding to it — "25 at first, then 20 a day"
+      means 25 then 20, not 45. A raised Settings allowance is never lowered back
+      to 25 on the grant day.
+- [x] **Granted once, recorded on disk** as `usage.signupBonusGrantedOn` (a UTC day
+      string, so the comparison cannot drift across a timezone). Granted during
+      `SettingsStore.load()` and persisted immediately, or it would be re-granted
+      on every launch.
+- [x] **A clear "no coins" message**, shared between the gateway refusal and the
+      tests so the wording cannot drift: states the position, and names both ways
+      out — tomorrow, or add your own key.
+- [x] **`shared/coins.ts`**, pure and import-free, so both the main process and
+      the renderer read one source of truth. It began under `src/main/` and had to
+      move because `tsconfig.web.json` cannot reach `src/main/**`.
+- [x] ModelPicker chip reads **"No coins left today"** rather than "Daily budget
+      reached", and shows when the signup amount is part of today's total.
+- [x] 14 new tests in `tests/unit/coins.test.ts`; 518 total across 20 files.
+- [x] Honest caveat recorded: coins meter Cryptoric-funded usage, and there is no
+      Cryptoric-funded provider yet, so in practice this ceiling rarely applies.
+      Stated in the README rather than implied to be a working economy.
+
+### The key-leak trap
+
+- [x] **Found by building the packaged `.exe` instead of trusting the build log.**
+      `npx electron-builder --win --dir` — run *specifically to avoid* staging a
+      key — produced an asar containing
+      `sk-or-v1-4e4fc127…`.
+- [x] **Cause:** `stage-keys.mjs` warned when there was no `.env` but did not
+      remove a stale `out/cryptoric-keys.env`. `electron-builder` copies `out/`,
+      so a file left by an earlier `npm run dist` was packaged by a build that
+      never asked for one. The README's advice to "call electron-builder directly
+      instead of `npm run dist`" was therefore **unsafe as written**.
+- [x] **Fixed at the cause:** the no-`.env` branch now deletes the stale file and
+      says it did. Verified: staged file present, `.env` moved away, script exits 0
+      and the file is gone; with `.env` present it still stages normally.
+- [x] Verified clean end to end after the fix: fresh build, direct
+      `electron-builder`, `grep -ac "sk-or-v1-"` on the asar → **0**.
+- [x] README rewritten with the trap and the exact commands to package safely.
+- [x] **A verification of my own was wrong first.** `if grep … | head -2` reported
+      "key still present" because `head` exits 0 on empty input. The asar was
+      clean. Re-checked with `grep -ac` and an explicit exit status.
+- [x] I reintroduced the `out/**/*`-in-a-block-comment bug in `stage-keys.mjs`
+      while documenting the fix — the comment self-terminates. Reworded.
+
+### Screenshots
+
+- [x] Recaptured from the **packaged `cryptoricagent.exe`**, not a source run.
+      The first set came from `npx electron .`, which is a development binary and
+      not what the README claimed to show.
+- [x] Captured against a clean `--user-data-dir`, so no credential could appear.
+      The harness's text dump confirms the Settings pane renders only
+      "Provider key — Stored in the OS-encrypted credential store"; 0 key-shaped
+      strings in the whole log.
+- [ ] **Visual rendering was never inspected.** Image reading is unavailable to
+      the tooling used here, so layout and styling are unverified even though the
+      content is. Worth an eyeball before the README is shared widely.

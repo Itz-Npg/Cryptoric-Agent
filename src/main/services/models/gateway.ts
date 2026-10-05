@@ -20,6 +20,7 @@
  */
 
 import type { UsageRecord } from '@shared/types'
+import { availableCoins, describeExhaustion } from '@shared/coins'
 
 export type ProviderKind = 'none' | 'ollama' | 'openai-compatible' | 'openrouter' | 'apinex'
 
@@ -603,6 +604,14 @@ export interface ModelGatewayDeps {
    */
   note?: (message: string) => void
   /**
+   * UTC day the one-time signup bonus was granted, or null.
+   *
+   * A getter rather than a value because settings are reloaded at runtime, and a
+   * snapshot taken at construction would keep reporting the bonus as unspent
+   * long after it was granted.
+   */
+  signupBonusGrantedOn?: () => string | null
+  /**
    * Deadline for one POST, in ms. Defaults to 120s.
    *
    * Injectable so the bound can be tested in milliseconds rather than waited
@@ -666,11 +675,18 @@ export class ModelGateway {
     }
     const metered = !this.usesUserKey()
     const usedCoins = metered ? toCoins(this.usedTodayUsd) : 0
+    // The one-time signup bonus counts on the day it was granted and never
+    // again, so "25 at signup, then 20 a day" is actually true.
+    const budgetCoins = availableCoins({
+      dailyAllowanceCoins: this.deps.config.dailyBudgetCoins,
+      bonusGrantedOn: this.deps.signupBonusGrantedOn?.() ?? null,
+      today
+    })
     return {
       usedCoins,
-      budgetCoins: this.deps.config.dailyBudgetCoins,
+      budgetCoins,
       day: today,
-      exceeded: metered && usedCoins >= this.deps.config.dailyBudgetCoins,
+      exceeded: metered && usedCoins >= budgetCoins,
       metered,
       spendUsd: Number(this.usedTodayUsd.toFixed(6))
     }
@@ -801,9 +817,17 @@ export class ModelGateway {
     }
     const state = this.budget()
     if (state.exceeded) {
+      // The shared wording lives in `coins.ts` so the message the user reads
+      // when refused is the same one the tests assert, and so it names both ways
+      // out — tomorrow, or their own key.
       return {
         allowed: false,
-        reason: `Daily budget reached (${state.usedCoins} / ${state.budgetCoins} coins). Raise it in Settings or wait for the next day.`
+        reason:
+          describeExhaustion({
+            usedCoins: state.usedCoins,
+            budgetCoins: state.budgetCoins,
+            metered: state.metered
+          }) ?? 'No coins remaining.'
       }
     }
     return { allowed: true, reason: null }

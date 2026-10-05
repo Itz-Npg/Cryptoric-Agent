@@ -15,6 +15,11 @@
  * source tree, and this repository is public. A value committed once is public
  * forever, so the only thing that ever leaves the machine is the *artifact*.
  *
+ * **The staged file lives inside the packaged directory**, so anything that
+ * packages `out/` afterwards will include it whether or not this script ran.
+ * That is why the no-`.env` branch below *deletes* a stale copy rather than
+ * just warning: electron-builder's glob over the `out` directory has no idea
+ * whether a key was meant to be there.
  * Why the filename is not `.env`: electron-builder's `out` glob does not match
  * dotfiles, so a `.env` placed in `out/` could be silently dropped from the
  * package.
@@ -25,7 +30,8 @@
  * Runs after `electron-vite build`, which recreates `out/` from scratch.
  */
 
-import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import { basename } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -35,6 +41,18 @@ const outDir = join(root, 'out')
 const target = join(outDir, 'cryptoric-keys.env')
 
 if (!existsSync(source)) {
+  // A stale staged file here would be baked into the next package by
+  // electron-builder's `out/**/*` glob — even a build that never asked for a
+  // key. That is exactly what happened once already: a `npm run dist` left
+  // `out/cryptoric-keys.env` behind, and a later `npx electron-builder` shipped
+  // the key with no staging step in the command at all.
+  //
+  // So removing it is the correct behaviour, not tidiness. A build that says it
+  // has no key must genuinely have no key.
+  if (existsSync(target)) {
+    rmSync(target, { force: true })
+    console.warn(`[stage-keys] removed stale ${basename(target)} — a previous build left it behind.`)
+  }
   console.warn('[stage-keys] no .env at the repo root — packaging without provider keys.')
   console.warn('[stage-keys] the build will run, and hosted models will ask for a key in Settings.')
   process.exit(0)
