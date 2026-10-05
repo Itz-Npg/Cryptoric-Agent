@@ -1,6 +1,6 @@
 {
   "name": "cryptoric-agent",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "Cryptoric Agent — an AI-native desktop development environment operated by Cryptoric Chan.",
   "author": {

@@ -12,7 +12,7 @@ android {
         minSdk = 24
         targetSdk = 34
         versionCode = 1
-        versionName = "0.1.4"
+        versionName = "0.1.5"
     }
 
     // The APK published from CI is the *debug* build, and that is a deliberate
