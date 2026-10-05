@@ -187,43 +187,43 @@ With no model configured it exits **2** and reports `BLOCKED` with a reason.
 
 ## The mobile companion
 
-**An `.ipa` now builds on every push and ships with every release. There is no Android app.**
+**An `.ipa` and an `.apk` both build on every push, and both ship with every release.**
 
-What exists, all of it verified on a GitHub macOS runner:
+What exists, all of it verified on GitHub runners:
 
 - `mobile/ios` — a Swift package (`CryptoricKit`) holding the relay protocol,
-  client and SwiftUI views. It compiles and its tests pass, and the job **fails**
-  unless the suite reports `Executed N tests` with N ≥ 10.
+  client and SwiftUI views. The job **fails** unless the suite reports
+  `Executed N tests` with N ≥ 10.
 - `mobile/ios-app` — the Xcode **app target** that turns that library into an
-  `.app`: a SwiftUI entry point plus a `URLSessionWebSocketTask` transport. It
-  is the only part of the phone build that is not unit tested, because a socket
-  and a screen are the two things a library cannot cover.
-- `scripts/build-ios-ipa.sh` — one script, run by `mobile.yml` on every push
-  **and** by `release.yml` on a tag, so the published artifact is built by the
-  same steps that were verified on every commit rather than by a second
-  implementation that could drift.
+  `.app`: a SwiftUI entry point plus a `URLSessionWebSocketTask` transport.
+- `mobile/android` — a real Gradle project: manifest, one activity, an OkHttp
+  relay client, and its **7 unit tests** against the same relay protocol cases
+  the JavaScript and Swift suites use.
+- `scripts/build-ios-ipa.sh` and `scripts/build-android-apk.sh` — one script
+  each, run by `mobile.yml` on every push **and** by `release.yml` on a tag, so
+  a published artifact is built by the steps that were verified on every commit
+  rather than by a second implementation that could drift.
 - `mobile/relay` — a zero-dependency Node relay, **17/17** tests.
 
-The build asserts `BUILD SUCCEEDED`, that an `.app` exists, that the archive is
-over 100 KB, and that it really contains `CryptoricCompanion.app/Info.plist` and
-the `CryptoricCompanion` executable. A green tick from a build that quietly
-produced nothing is the failure this repository keeps correcting for, so it is
-asserted rather than assumed.
+Both builds assert more than an exit code. The iOS job checks `BUILD SUCCEEDED`,
+that an `.app` exists, that the archive is over 100 KB, and that it really
+contains `Info.plist` and the arm64 executable. The Android job runs the unit
+tests first and reads the JUnit XML, then checks the APK has `AndroidManifest.xml`
+and `classes.dex`. A green tick from a build that quietly produced nothing is
+the failure this repository keeps correcting for, so it is asserted.
 
-### Installing the `.ipa`
+### Installing them
 
-It is **unsigned**, and it has to be. Producing one needs no Apple Developer
-account; *installing* one needs a signature. Use Sideloadly, AltStore or
-SideStore with your own Apple ID — they re-sign the bundle on the way in. It is
-not an App Store or TestFlight submission, and this repository holds no Apple
-credentials.
+- **The `.apk` installs as it is.** It is signed with the debug key Gradle
+  generates automatically, so Android accepts it with no account, no settings
+  change and no extra step. Sideload it, and Android will ask once whether to
+  allow installing from outside the Play Store.
+- **The `.ipa` is unsigned**, and it has to be. Producing one needs no Apple
+  Developer account; *installing* one needs a signature. Use Sideloadly,
+  AltStore or SideStore with your own Apple ID — they re-sign on the way in.
 
-### Android
-
-There is no Android project at all: no `AndroidManifest.xml`, no `build.gradle`,
-no Gradle wrapper, and therefore no `.apk` in any release. An `.apk` needs no
-account to produce — Gradle signs a debug build with a throwaway key — so this
-is purely unbuilt work, not a blocked one. It is the obvious next thing.
+Neither is a Play Store or App Store submission, and this repository holds no
+store or signing credentials.
 
 ---
 
@@ -330,11 +330,13 @@ could not run, that is written down below rather than left to look like success.
 
 **Not done — stated rather than implied:**
 
-- **The iOS companion has never run on a device.** The `.ipa` builds and is
-  published, but nothing here has installed it on a phone or simulator, so the
-  app target's own code is unexercised. The library underneath it is not.
-- **There is no Android app.** No `.apk`, no manifest, no Gradle project. See
-  [The mobile companion](#the-mobile-companion).
+- **Neither companion has ever run on a device.** Both artifacts build and both
+  are published; nothing here has installed them on a phone. The relay protocol
+  underneath them is unit tested on all three sides — JavaScript, Swift and
+  Kotlin — and the screens and sockets above it are not.
+- **The `.apk` is debug-signed and the `.ipa` is unsigned.** Both install with
+  the one step above, but neither is a store build, and a release key for each
+  is the maintainer's to create.
 - **The browser check does not run in CI.** It passes 64/64 on a desktop, but
   under `xvfb` the tools needing a real pointer path or a composited surface
   fail. Software-rendering switches were tried and rejected. There is no

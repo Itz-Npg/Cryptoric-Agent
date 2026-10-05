@@ -215,10 +215,10 @@ jobs:
       # `download-artifact` above pulls in every artifact in the run, which now
       # includes the .ipa. A GPG signature over an Apple bundle means nothing,
       # so it leaves the signing set here and is published separately.
-      - name: Keep the .ipa out of the signing set
+      - name: Keep the mobile artifacts out of the signing set
         run: |
-          ls artifacts/*.ipa 2>/dev/null || echo "No .ipa in this set."
-          rm -f artifacts/*.ipa
+          ls artifacts/*.ipa artifacts/*.apk 2>/dev/null || echo "No mobile artifacts in this set."
+          rm -f artifacts/*.ipa artifacts/*.apk
 
       - name: List collected artifacts
         run: ls -la artifacts/
@@ -297,6 +297,33 @@ jobs:
           path: dist/CryptoricCompanion-unsigned.ipa
           if-no-files-found: error
 
+  android-apk:
+    name: Android companion (.apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      # Same script as the push build, so the APK attached to a release is the
+      # one that was verified on every commit.
+      - name: Build and package the .apk
+        run: bash scripts/build-android-apk.sh
+
+      - name: Upload the .apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/app-debug.apk
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
     needs: [build, sign]
@@ -341,6 +368,11 @@ jobs:
           name: ios-ipa
           path: mobile-artifacts
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: mobile-artifacts
+
       - name: List collected artifacts
         run: |
           ls -la artifacts/
@@ -380,10 +412,20 @@ jobs:
               echo "- ${f#mobile-artifacts/}"
             done
             echo
+            echo "### Android companion"
+            for f in mobile-artifacts/*.apk; do
+              [ -e "$f" ] || continue
+              echo "- ${f#mobile-artifacts/}"
+            done
+            echo
             echo "The .ipa is unsigned. iOS will not install an unsigned bundle,"
             echo "so it needs re-signing first - Sideloadly, AltStore or SideStore"
             echo "will do it with your own Apple ID. No Apple Developer membership"
             echo "was used to produce it, and it is not an App Store submission."
+            echo
+            echo "The .apk is signed with Gradle's generated debug key. Android installs"
+            echo "it as it is, with no account and no extra step. A release key is the"
+            echo "maintainer's to create; this is not a Play Store build."
           } > "$NOTES"
 
           # Replace the release if it exists, so re-running a tag fixes a partial
@@ -391,9 +433,13 @@ jobs:
           # An unmatched glob expands to itself, so both lists are built
           # explicitly and neither may reach gh as a literal "*".
           DESKTOP=$(ls artifacts/* 2>/dev/null || true)
-          MOBILE=$(ls mobile-artifacts/*.ipa 2>/dev/null || true)
+          MOBILE=$(ls mobile-artifacts/*.ipa mobile-artifacts/*.apk 2>/dev/null || true)
           [ -n "$DESKTOP" ] || { echo "::error::No desktop artifacts to publish."; exit 1; }
-          [ -n "$MOBILE" ] || { echo "::error::No .ipa to publish; the iOS build should have failed the job."; exit 1; }
+          [ -n "$MOBILE" ] || { echo "::error::No mobile artifacts to publish; those jobs should have failed the run."; exit 1; }
+          # Both phone artifacts are required. A release that silently ships one
+          # of them is a release whose install instructions are half wrong.
+          ls mobile-artifacts/*.ipa >/dev/null 2>&1 || { echo "::error::The .ipa is missing."; exit 1; }
+          ls mobile-artifacts/*.apk >/dev/null 2>&1 || { echo "::error::The .apk is missing."; exit 1; }
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" $DESKTOP $MOBILE --clobber
