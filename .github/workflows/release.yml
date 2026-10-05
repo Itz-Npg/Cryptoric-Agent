@@ -212,6 +212,14 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # `download-artifact` above pulls in every artifact in the run, which now
+      # includes the .ipa. A GPG signature over an Apple bundle means nothing,
+      # so it leaves the signing set here and is published separately.
+      - name: Keep the .ipa out of the signing set
+        run: |
+          ls artifacts/*.ipa 2>/dev/null || echo "No .ipa in this set."
+          rm -f artifacts/*.ipa
+
       - name: List collected artifacts
         run: ls -la artifacts/
 
@@ -270,6 +278,25 @@ jobs:
           retention-days: 14
           path: artifacts/*
 
+  ios-ipa:
+    name: iOS companion (.ipa)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same script the push build runs, so the artifact attached to a
+      # release is built by the steps verified on every commit rather than by a
+      # second implementation that could drift.
+      - name: Build and package the .ipa
+        run: bash scripts/build-ios-ipa.sh
+
+      - name: Upload the .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: dist/CryptoricCompanion-unsigned.ipa
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
     needs: [build, sign]
@@ -306,8 +333,19 @@ jobs:
           name: signed
           path: artifacts
 
+      # A separate directory on purpose: the iOS bundle is unsigned, and
+      # merging it into `artifacts/` would put it inside the "every installer
+      # here is GPG-signed" claim the release notes make.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ios-ipa
+          path: mobile-artifacts
+
       - name: List collected artifacts
-        run: ls -la artifacts/
+        run: |
+          ls -la artifacts/
+          echo "=== mobile ==="
+          ls -la mobile-artifacts/
 
       # Uses the `gh` CLI that ships with the runner rather than a third-party
       # action, so the publishing path adds no new dependency to trust.
@@ -335,15 +373,33 @@ jobs:
               [ -e "$f" ] || continue
               echo "- ${f#artifacts/}"
             done
+            echo
+            echo "### iOS companion"
+            for f in mobile-artifacts/*.ipa; do
+              [ -e "$f" ] || continue
+              echo "- ${f#mobile-artifacts/}"
+            done
+            echo
+            echo "The .ipa is unsigned. iOS will not install an unsigned bundle,"
+            echo "so it needs re-signing first - Sideloadly, AltStore or SideStore"
+            echo "will do it with your own Apple ID. No Apple Developer membership"
+            echo "was used to produce it, and it is not an App Store submission."
           } > "$NOTES"
 
           # Replace the release if it exists, so re-running a tag fixes a partial
           # publish instead of failing on "already_exists".
+          # An unmatched glob expands to itself, so both lists are built
+          # explicitly and neither may reach gh as a literal "*".
+          DESKTOP=$(ls artifacts/* 2>/dev/null || true)
+          MOBILE=$(ls mobile-artifacts/*.ipa 2>/dev/null || true)
+          [ -n "$DESKTOP" ] || { echo "::error::No desktop artifacts to publish."; exit 1; }
+          [ -n "$MOBILE" ] || { echo "::error::No .ipa to publish; the iOS build should have failed the job."; exit 1; }
+
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" artifacts/* --clobber
+            gh release upload "$TAG" $DESKTOP $MOBILE --clobber
             gh release edit "$TAG" --notes-file "$NOTES"
           else
-            gh release create "$TAG" artifacts/* \
+            gh release create "$TAG" $DESKTOP $MOBILE \
               --title "$TAG" \
               --notes-file "$NOTES" \
               --latest
