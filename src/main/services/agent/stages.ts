@@ -25,6 +25,15 @@ import {
   type TaskIntent
 } from './evidence'
 import { isProjectWritable, takeSnapshot } from './snapshot'
+import {
+  browserAvailability,
+  browserFailed,
+  evaluateBrowserObservation,
+  formatBrowserLine,
+  isBrowserRelevant,
+  readBrowserObservation,
+  type BrowserCheckResult
+} from './browser-verify'
 
 export interface PipelineDeps {
   /** Tool invocation surface supplied by the runtime. */
@@ -476,21 +485,20 @@ function verifyStage(deps: PipelineDeps): Stage {
       const failed = results.filter((r) => r.outcome === 'fail' || r.outcome === 'error')
       const skipped = results.filter((r) => r.outcome === 'skip')
 
-      // Browser verification is reported as not applicable unless browser tools
-      // exist. There are none in this build, so claiming a visual pass would be
-      // the exact fabrication this stage is meant to stop.
-      const browserApplicable = false
-      const browserNote = browserApplicable
-        ? 'Browser checks ran.'
-        : 'Browser verification not run — no browser tools are registered in this build.'
-      ctx.note(browserNote, 'info')
+      // Browser verification used to be hard-coded to "no browser tools are
+      // registered in this build". That was false: `buildBrowserTools`
+      // registers 43 of them. The stage is now asked what the registry actually
+      // holds, and reports one of five distinct outcomes. Collapsing them to a
+      // single "NOT RUN" is what let a stage deny a capability the build has.
+      const browser = await verifyInBrowser(ctx, project.root)
+      ctx.note(browser.detail, browserFailed(browser) ? 'error' : 'info')
 
       const lines = [
         ...results.map(
           (r) =>
             `- ${r.label}: ${r.outcome === 'pass' ? 'passed' : r.outcome === 'skip' ? 'SKIPPED' : 'FAILED'} (${r.detail})`
         ),
-        `- browser: NOT RUN — ${browserNote.replace('Browser verification ', '')}`
+        formatBrowserLine(browser)
       ]
 
       // "No checks applied" is its own outcome and is reported as such. It is
@@ -499,25 +507,36 @@ function verifyStage(deps: PipelineDeps): Stage {
         ctx.note('NO_TEST_SUITE_FOUND — this project declares none of the known checks.', 'info')
         return {
           continue: true,
+          // The browser line is included here too. Whether the project declares
+          // npm scripts says nothing about whether it renders anything, and
+          // dropping a browser result that was actually computed is how a real
+          // observation disappears from the summary.
           summary:
             `Verification: NO_TEST_SUITE_FOUND — ${results.map((r) => r.label).join(', ') || 'no known checks'} ` +
-            'are not defined by this project, so nothing was executed. This is not a pass.'
+            'are not defined by this project, so nothing was executed. This is not a pass.\n' +
+            formatBrowserLine(browser)
         }
       }
 
       if (ctx.task.evidence) {
-        ctx.task.evidence.finalStatus = failed.length > 0 ? 'FAILED' : 'COMPLETED'
+        ctx.task.evidence.finalStatus =
+          failed.length > 0 || browserFailed(browser) ? 'FAILED' : 'COMPLETED'
       }
 
-      if (failed.length > 0) {
+      if (failed.length > 0 || browserFailed(browser)) {
         // A failing check is a real outcome. The task ends here rather than
-        // continuing to a review that would report success.
+        // continuing to a review that would report success. A failing browser
+        // check counts the same way: a page that throws on load is not
+        // verified, whatever the command-line checks said about it.
+        const browserClause = browserFailed(browser)
+          ? `, and the browser check FAILED (${browser.detail.replace(/^FAILED — /, '')})`
+          : ''
         return {
           continue: false,
           status: 'FAILED',
           summary:
             `Verification failed — ${failed.length} of ${results.length} checks did not pass ` +
-            `(${passed.length} passed, ${skipped.length} skipped):\n${lines.join('\n')}`
+            `(${passed.length} passed, ${skipped.length} skipped)${browserClause}:\n${lines.join('\n')}`
         }
       }
 
@@ -528,6 +547,129 @@ function verifyStage(deps: PipelineDeps): Stage {
       }
     }
   }
+}
+
+/**
+ * Entry HTML files to try, most specific first.
+ *
+ * Order matters: opening `index.html` in a project that also has
+ * `dist/index.html` or `public/index.html` verifies the wrong artifact, and a
+ * green result from the wrong file is worse than no result.
+ */
+const BROWSER_ENTRY_CANDIDATES: readonly string[] = Object.freeze([
+  'index.html',
+  'public/index.html',
+  'dist/index.html',
+  'src/index.html'
+])
+
+/**
+ * Join a project root and a relative entry path into a `file://` URL.
+ *
+ * Written by hand rather than with `pathToFileURL` so this file keeps no Node
+ * dependency it does not already have, and so the slash convention is explicit:
+ * a Windows path with backslashes is not a valid URL.
+ *
+ * @param root absolute project root
+ * @param relative entry path using forward slashes
+ */
+export function fileUrlFor(root: string, relative: string): string {
+  const normalised = root.replace(/\\/g, '/').replace(/\/+$/, '')
+  const tail = relative.replace(/^\/+/, '')
+  return `file:///${normalised}/${tail}`.replace(/([^:])\/{3,}/g, '$1//')
+}
+
+/**
+ * Actually open a changed page in a real browser and report what happened.
+ *
+ * Returns one of five outcomes and never invents a pass:
+ *
+ *   - tools missing              -> `skip`, naming what is missing
+ *   - nothing web-related changed -> `not_applicable`
+ *   - page opened, no errors     -> `pass`
+ *   - page opened, console/network problems -> `fail`
+ *   - browser applicable but unusable (no window, tool error) -> `error`
+ *
+ * The `error` case is the one that matters most. When this stage cannot reach a
+ * browser it must say so. Silently degrading to "no browser checks" is how the
+ * previous hard-coded `NOT RUN` survived so long.
+ */
+async function verifyInBrowser(ctx: StageContext, projectRoot: string | null): Promise<BrowserCheckResult> {
+  const availability = browserAvailability((id) => ctx.hasTool(id))
+  const relevant = isBrowserRelevant(ctx.task.changedPaths, ctx.task.prompt ?? '')
+  if (!availability.available || !relevant) {
+    return evaluateBrowserObservation(availability, relevant, null)
+  }
+  if (!projectRoot) {
+    return {
+      outcome: 'error',
+      detail: 'ERROR — browser verification applies, but there is no project root to open',
+      reason: 'browser verification applies, but there is no project root to open'
+    }
+  }
+
+  let observation = null as ReturnType<typeof readBrowserObservation> | null
+  let tabId: string | null = null
+  try {
+    const entry = await firstExistingEntry(projectRoot)
+    if (!entry) {
+      return {
+        outcome: 'skip',
+        detail: 'NOT RUN — web files changed, but no entry HTML file was found to open',
+        reason: 'web files changed, but no entry HTML file was found to open'
+      }
+    }
+
+    const created = await ctx.call('browser_create_tab', { url: fileUrlFor(projectRoot, entry) })
+    if (!created.ok) {
+      return {
+        outcome: 'error',
+        detail: `ERROR — could not open a browser tab: ${created.error ?? created.summary}`,
+        reason: 'the browser tab could not be opened'
+      }
+    }
+    const tab = created.data as { tabId?: unknown } | undefined
+    tabId = typeof tab?.tabId === 'string' ? tab.tabId : null
+
+    // Give the page a moment to run its own scripts before reading diagnostics;
+    // an empty console at t=0 says nothing about what happens once it loads.
+    await ctx.call('browser_wait', { tabId, ms: 1_200 })
+
+    const logs = await ctx.call('browser_console_logs', { tabId, level: 'error' })
+    const network = await ctx.call('browser_network_failures', { tabId })
+    observation = readBrowserObservation(logs.data, network.data)
+  } catch (error) {
+    return {
+      outcome: 'error',
+      detail: `ERROR — browser verification could not run: ${messageOf(error)}`,
+      reason: 'browser verification could not run'
+    }
+  } finally {
+    // The tab is cleaned up whether or not the check succeeded; a leaked tab
+    // would outlive the task and hold a Chromium renderer open.
+    if (tabId) await ctx.call('browser_close_tab', { tabId }).catch(() => undefined)
+  }
+
+  return evaluateBrowserObservation(availability, relevant, observation)
+}
+
+/** First entry HTML that exists under the project root, relative to it. */
+async function firstExistingEntry(root: string): Promise<string | null> {
+  const { access } = await import('node:fs/promises')
+  for (const candidate of BROWSER_ENTRY_CANDIDATES) {
+    try {
+      await access(`${root}/${candidate}`)
+      return candidate
+    } catch {
+      // Not this one; try the next.
+    }
+  }
+  return null
+}
+
+/** Best-effort message from an unknown thrown value. */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /** Exit code out of a tool result, or null when the tool did not report one. */

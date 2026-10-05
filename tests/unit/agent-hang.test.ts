@@ -478,7 +478,7 @@ function project(scripts: Record<string, string>): never {
 function verifyRun(scripts: Record<string, string>, exitFor: (cmd: string) => number) {
   const ran: string[] = []
   const pipeline = buildPipeline({
-    tools: { call: async () => ({ ok: true, summary: 'unused' }) },
+    tools: { call: async () => ({ ok: true, summary: 'unused' }), hasTool: () => false },
     getProject: () => project(scripts),
     probeRuntime: async () => ({ state: 'present', version: '1', detail: '' })
   })
@@ -496,6 +496,9 @@ function verifyRun(scripts: Record<string, string>, exitFor: (cmd: string) => nu
         const code = exitFor(JSON.stringify(args.args ?? []))
         return { ok: true, summary: `exit ${code}`, data: { exitCode: code, stdout: code === 0 ? '' : 'boom' } }
       },
+      // No browser in this fake. Saying so honestly is what the verify stage
+      // needs in order to report NOT RUN rather than invent a pass.
+      hasTool: () => false,
       workspaceRoots: [],
       skillContext: '',
       selectedSkills: []
@@ -542,7 +545,7 @@ describe('verification runs real checks', () => {
 
   it('refuses to claim success when there is no project at all', async () => {
     const pipeline = buildPipeline({
-      tools: { call: async () => ({ ok: true, summary: 'unused' }) },
+      tools: { call: async () => ({ ok: true, summary: 'unused' }), hasTool: () => false },
       getProject: () => null,
       probeRuntime: async () => ({ state: 'present', version: '1', detail: '' })
     })
@@ -554,6 +557,7 @@ describe('verification runs real checks', () => {
         maxTier: 'ask',
         note: () => undefined,
         call: async () => ({ ok: true, summary: '' }),
+        hasTool: () => false,
         workspaceRoots: [],
         skillContext: '',
         selectedSkills: []

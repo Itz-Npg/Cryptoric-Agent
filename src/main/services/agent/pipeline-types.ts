@@ -11,6 +11,15 @@ import type { ToolResult } from '../tools/registry'
 /** The tool invocation surface handed to a stage. */
 export interface StageToolApi {
   call(toolId: string, args: Record<string, unknown>): Promise<ToolResult>
+  /**
+   * Is a tool actually registered?
+   *
+   * Exists so a stage can tell "this build has no browser" apart from "this
+   * build has a browser and the task did not need it". Inferring that by calling
+   * a tool and catching the failure builds a confident answer on an error
+   * message — which is how a stage ends up denying a capability the build has.
+   */
+  hasTool(toolId: string): boolean
 }
 
 export interface Stage {
@@ -27,6 +36,8 @@ export interface StageContext {
   maxTier: 'safe' | 'ask' | 'elevated' | 'destructive'
   note(message: string, status?: TimelineEntry['status']): void
   call(toolId: string, args: Record<string, unknown>): Promise<ToolResult>
+  /** @see StageToolApi.hasTool */
+  hasTool(toolId: string): boolean
   workspaceRoots: string[]
   /** Assembled once per task from the routed skills. */
   skillContext: string

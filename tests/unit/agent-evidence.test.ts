@@ -99,7 +99,7 @@ function pipeline(options: {
   }
   const notes: string[] = []
   const stages = buildPipeline({
-    tools: { call: async () => ({ ok: true, summary: 'unused' }) },
+    tools: { call: async () => ({ ok: true, summary: 'unused' }), hasTool: () => false },
     getProject: () => project as never,
     probeRuntime: async () => ({ state: 'present', version: '1', detail: '' }),
     model: options.model as never
@@ -112,6 +112,9 @@ function pipeline(options: {
     note: (m: string) => notes.push(m),
     call: (async (id: string, args: Record<string, unknown>) =>
       options.call ? options.call(id, args) : { ok: true, summary: '', data: {} }) as never,
+    // No browser in this harness. Reporting that honestly is exactly what the
+    // verify stage needs in order to say NOT RUN instead of inventing a pass.
+    hasTool: () => false,
     workspaceRoots: [root],
     skillContext: '',
     selectedSkills: []

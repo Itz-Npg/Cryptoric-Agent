@@ -276,6 +276,10 @@ export class AgentRuntime {
       maxTier: 'safe',
       note: (message, status) => this.note(task, 'SYSTEM', 'progress', message, status ?? 'info'),
       call: async (toolId, args) => this.invoke(task, toolId, args, controller.signal, ceiling),
+      // Read straight from the registry rather than from a cached capability
+      // flag: the registry is the truth about what this build can do, and a
+      // cached flag is one more thing that can disagree with it.
+      hasTool: (toolId) => this.deps.tools.has(toolId),
       workspaceRoots: task.projectRoot ? [task.projectRoot] : [],
       skillContext,
       selectedSkills: routing.skillIds
