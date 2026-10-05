@@ -35,12 +35,14 @@ import { runAgentLoop, describeExecution } from './services/agent/loop'
 import { formatExecutionLog, heartbeatLine } from './services/agent/execution'
 import { chanSystemPrompt, planSystemPrompt } from './services/agent/prompts'
 import { ConversationStore, deriveTitle } from './services/agent/conversation'
+import { MirroredConversation } from './services/agent/mirrored-conversation'
 import type { StageContext } from './services/agent/pipeline-types'
 import { IpcRouter } from './ipc/router'
 import { createStore, CredentialStore, type AppState } from './services/store'
 import { SettingsStore } from './services/settings/store'
 import type { SettingsSection } from './services/settings/schema'
 import { detectProject, computeGaps } from './services/project/detect'
+import { ensureProjectWorkspace, resolveHistoryPaths } from './services/project/workspace'
 import { FileService } from './services/fs/files'
 import { GitService } from './services/git/service'
 import {
@@ -82,7 +84,7 @@ interface Services {
   router: IpcRouter
   store: ReturnType<typeof createStore>
   credentials: CredentialStore
-  conversation: ConversationStore
+  conversation: MirroredConversation
   getProject(): ProjectProfile | null
 }
 
@@ -211,7 +213,18 @@ async function boot(): Promise<Services> {
   // The transcript is owned by the main process and written to disk. Keeping it
   // here rather than in renderer state is what makes it survive a restart and
   // gives the model something to remember.
-  const conversation = new ConversationStore(join(userDataDir, 'conversation.json'))
+  const conversation = new MirroredConversation(
+    resolveHistoryPaths(
+      {
+        appDir: userDataDir,
+        // Replaced the moment a project is opened; until then the project copy
+        // resolves to nothing and the app copy carries the session.
+        projectDir: '',
+        location: settings.get().sessions.historyLocation
+      },
+      'no-project'
+    ).writes
+  )
   // Restore the scope of the project that was open last session. The project
   // itself is not auto-opened, but without this its transcript would sit in the
   // file while the chat pane showed the empty "no project" scope — history that
@@ -506,6 +519,34 @@ async function boot(): Promise<Services> {
     setProject: async (root) => {
       const detected = await detectProject(root)
       project = detected
+
+      // Opening a folder gives it a workspace: a stable project id, and a place
+      // for its history that travels with the folder. The folder ignores itself
+      // in git, so this never shows up as untracked noise in the user's repo.
+      const workspace = ensureProjectWorkspace(detected.root, detected.name)
+      if (workspace.error) {
+        // Reported rather than swallowed: a project whose folder cannot be
+        // created still works, but the user should know their history is going
+        // somewhere they did not expect.
+        push({
+          type: 'log',
+          level: 'warn',
+          message: `Could not create .cryptoricagent in ${detected.root}: ${workspace.error}. History is kept in the app folder only.`,
+          at: new Date().toISOString()
+        })
+      }
+
+      conversation.retarget(
+        resolveHistoryPaths(
+          {
+            appDir: userDataDir,
+            projectDir: workspace.dir,
+            location: settings.get().sessions.historyLocation
+          },
+          workspace.manifest.id
+        ).writes
+      )
+
       // Scope the transcript to this project *before* anything can append, so a
       // turn can never land in the previous project's history.
       conversation.setProject(detected.root)
@@ -573,8 +614,8 @@ interface RouteDeps {
   gateway: ModelGateway
   updates: UpdateService
   credentials: CredentialStore
-  conversation: ConversationStore
-  recordTurn(turn: Parameters<ConversationStore['append']>[0]): void
+  conversation: MirroredConversation
+  recordTurn(turn: Parameters<MirroredConversation['append']>[0]): void
   getProject(): ProjectProfile | null
   setProject(root: string): Promise<ProjectProfile>
   push(event: MainEvent): void
@@ -1533,7 +1574,15 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
+/**
+ * Second pass guard.
+ *
+ * `before-quit` is deferred once so the flush can be awaited; without this the
+ * second pass would defer again and the app would never actually quit.
+ */
+let shutdownComplete = false
+
+app.on('before-quit', (event) => {
   // Deny every outstanding approval so no task is left waiting on a dialog that
   // can no longer be answered.
   services?.approvals.denyAll()
@@ -1542,7 +1591,24 @@ app.on('before-quit', () => {
   services?.terminals.closeAll()
   // The transcript is the one piece of state that must outlive the process, so
   // it is flushed rather than left to whatever the queue gets around to.
-  void services?.conversation.flush()
+  //
+  // This used to be `void ...flush()`, which started the write and let the
+  // process exit underneath it — the last turn of a conversation could simply
+  // not be there on the next launch, with nothing to indicate why. Quitting is
+  // now deferred until the flush resolves, and `shutdownComplete` lets the
+  // second pass through.
+  if (!shutdownComplete) {
+    shutdownComplete = true
+    event.preventDefault()
+    void (async () => {
+      try {
+        await services?.conversation.flush()
+      } finally {
+        app.quit()
+      }
+    })()
+    return
+  }
   // Tear down tabs before the window goes away: a live WebContentsView keeps
   // its Chromium process alive, and temporary tabs delete their profile as they
   // close so nothing is left in the cache directory.

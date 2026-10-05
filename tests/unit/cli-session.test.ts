@@ -14,7 +14,7 @@
  *   - and the conversation survives being closed and reopened.
  */
 
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
@@ -159,27 +159,49 @@ describe('interactive session', () => {
 })
 
 describe('persistence across restarts', () => {
-  it('keeps the conversation written by the previous session', async () => {
-    const file = join(stateDir, 'conversation.json')
+  /** Turns from a conversation file, whichever schema version it uses. */
+  const turnsOf = (file: string): string[] => {
+    const data = JSON.parse(readFileSync(file, 'utf8')) as {
+      scopes: Record<string, { turns: { text: string }[] }>
+    }
+    return Object.values(data.scopes).flatMap((s) => s.turns.map((t) => t.text))
+  }
 
-    // First session: one task.
+  it('writes history into the project folder and keeps it after a restart', async () => {
+    const projectFile = join(work, '.cryptoricagent', 'conversation.json')
+
+    // First session.
     await drive(['remember that the sky is blue', '/exit'])
-    const first = JSON.parse(readFileSync(file, 'utf8')) as {
-      scopes: Record<string, { turns: { text: string }[] }>
-    }
-    const firstTurns = Object.values(first.scopes).flatMap((s) => s.turns)
-    expect(firstTurns.map((t) => t.text)).toContain('remember that the sky is blue')
+    expect(existsSync(projectFile)).toBe(true)
+    expect(turnsOf(projectFile)).toContain('remember that the sky is blue')
 
-    // Second session: a brand new Session and host over the same state dir.
+    // Second session: a new Session and host over the same directories.
     await drive(['what did I just tell you', '/exit'])
-    const second = JSON.parse(readFileSync(file, 'utf8')) as {
-      scopes: Record<string, { turns: { text: string }[] }>
-    }
-    const allText = Object.values(second.scopes).flatMap((s) => s.turns.map((t) => t.text))
+    const after = turnsOf(projectFile)
+    // Both tasks survive: this is the whole point of persisting history.
+    expect(after).toContain('remember that the sky is blue')
+    expect(after).toContain('what did I just tell you')
+  })
 
-    // The first task's text is still there: history survives the restart.
-    expect(allText).toContain('remember that the sky is blue')
-    expect(allText).toContain('what did I just tell you')
+  it('also keeps a copy in the app folder, so a deleted project is survivable', async () => {
+    await drive(['a task worth keeping', '/exit'])
+    const dir = join(stateDir, 'conversations')
+    expect(existsSync(dir)).toBe(true)
+    const files = readdirSync(dir).filter((f) => f.endsWith('.json'))
+    expect(files).toHaveLength(1)
+
+    const copied = turnsOf(join(dir, files[0] as string))
+    expect(copied).toContain('a task worth keeping')
+  })
+
+  it('gives the same project the same id across sessions', async () => {
+    const manifest = join(work, '.cryptoricagent', 'project.json')
+    await drive(['first', '/exit'])
+    const first = JSON.parse(readFileSync(manifest, 'utf8')) as { id: string }
+    await drive(['second', '/exit'])
+    const second = JSON.parse(readFileSync(manifest, 'utf8')) as { id: string }
+    // A new id each open would silently split the history into a new file.
+    expect(second.id).toBe(first.id)
   })
 
   it('scopes history per project, so two projects do not share a transcript', async () => {
@@ -190,17 +212,13 @@ describe('persistence across restarts', () => {
       await drive(['task for project A', '/exit'])
       await drive(['task for project B'], { cwd: other })
 
-      const file = join(stateDir, 'conversation.json')
-      const data = JSON.parse(readFileSync(file, 'utf8')) as {
-        scopes: Record<string, { turns: { text: string }[] }>
-      }
-      expect(Object.keys(data.scopes).length).toBeGreaterThanOrEqual(2)
+      const a = turnsOf(join(work, '.cryptoricagent', 'conversation.json'))
+      const b = turnsOf(join(other, '.cryptoricagent', 'conversation.json'))
 
-      for (const scope of Object.values(data.scopes)) {
-        const texts = scope.turns.map((t) => t.text)
-        // No scope may contain both projects' tasks.
-        expect(texts.includes('task for project A') && texts.includes('task for project B')).toBe(false)
-      }
+      expect(a).toContain('task for project A')
+      expect(a).not.toContain('task for project B')
+      expect(b).toContain('task for project B')
+      expect(b).not.toContain('task for project A')
     } finally {
       rmSync(other, { recursive: true, force: true })
     }

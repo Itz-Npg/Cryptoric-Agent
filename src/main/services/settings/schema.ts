@@ -199,7 +199,16 @@ export const NotificationSettingsSchema = z.object({
 export const SessionSettingsSchema = z.object({
   resumeTasks: z.boolean().default(true),
   restoreWorkspace: z.boolean().default(true),
-  restoreApprovals: z.boolean().default(false)
+  restoreApprovals: z.boolean().default(false),
+  /**
+   * Where chat history is written.
+   *
+   * `both` is the default because the two locations serve different needs: the
+   * app folder is private to this install, while `.cryptoricagent/` travels
+   * with the folder. Writing both means losing the app folder is survivable
+   * and so is losing the folder.
+   */
+  historyLocation: z.enum(['app', 'project', 'both']).default('both')
 })
 
 export const UpdateSettingsSchema = z.object({
@@ -322,6 +331,7 @@ export const BEHAVIOURAL_SETTINGS: SettingMeta[] = [
   { path: 'privacy.externalResearch', scope: 'global', behavioural: true, description: 'Permit fetching external documentation' },
   { path: 'privacy.redactSecrets', scope: 'global', behavioural: true, description: 'Scrub credential-shaped values before transmission' },
   { path: 'sessions.resumeTasks', scope: 'global', behavioural: true, description: 'Restore unfinished tasks on launch' },
+  { path: 'sessions.historyLocation', scope: 'global', behavioural: false, description: 'Write chat history to the app folder, the project .cryptoricagent folder, or both' },
   { path: 'usage.dailyAllowanceCoins', scope: 'global', behavioural: false, description: 'Cached display ceiling; the server is authoritative' },
   { path: 'usage.signupBonusGrantedOn', scope: 'global', behavioural: false, description: 'UTC day the one-time signup bonus was granted' }
 ]

@@ -28,7 +28,6 @@ import type { StageContext } from '../../src/main/services/agent/pipeline-types'
 import { chanSystemPrompt, planSystemPrompt } from '../../src/main/services/agent/prompts'
 import { formatExecutionLog, heartbeatLine } from '../../src/main/services/agent/execution'
 import type { FinalVerdict } from '../../src/main/services/agent/evidence'
-import { ConversationStore } from '../../src/main/services/agent/conversation'
 import { describeExecution, runAgentLoop } from '../../src/main/services/agent/loop'
 
 import { ToolRegistry } from '../../src/main/services/tools/registry'
@@ -50,6 +49,12 @@ import { SkillRegistry, DEFAULT_SKILL_ROOTS } from '../../src/main/services/skil
 import { ModelGateway, PROVIDER_CREDENTIAL_SLOTS } from '../../src/main/services/models/gateway'
 import type { ModelConfig } from '../../src/main/services/models/gateway'
 import { detectProject } from '../../src/main/services/project/detect'
+import {
+  ensureProjectWorkspace,
+  resolveHistoryPaths,
+  type HistoryLocation
+} from '../../src/main/services/project/workspace'
+import { MirroredConversation } from '../../src/main/services/agent/mirrored-conversation'
 import type { ProjectProfile } from '../../src/shared/types'
 
 import type { ApprovalMode } from './args'
@@ -120,6 +125,19 @@ export function resolveModelConfig(
   }
 }
 
+/**
+ * Where history is written, from the environment.
+ *
+ * An unrecognised value falls back to `both` rather than throwing: a typo in a
+ * variable should not stop the CLI from starting, and `both` is the setting
+ * that loses the least.
+ */
+export function readHistoryLocation(env: NodeJS.ProcessEnv): HistoryLocation {
+  const raw = env.CRYPTORIC_HISTORY_LOCATION
+  if (raw === 'app' || raw === 'project' || raw === 'both') return raw
+  return 'both'
+}
+
 /** First string that is not empty after trimming. */
 function firstNonEmpty(...candidates: (string | null | undefined)[]): string | null {
   for (const candidate of candidates) {
@@ -168,7 +186,7 @@ export function verdictFor(task: AgentTask): FinalVerdict {
 export class CliHost {
   private readonly tools: ToolRegistry
   private readonly gateway: ModelGateway | null
-  private readonly conversation: ConversationStore
+  private readonly conversation: MirroredConversation
   private project: ProjectProfile | null
   private lastAnswer: string | null = null
   /** Attached after construction: the runtime's deps close over this host. */
@@ -177,7 +195,7 @@ export class CliHost {
   private constructor(init: {
     tools: ToolRegistry
     gateway: ModelGateway | null
-    conversation: ConversationStore
+    conversation: MirroredConversation
     project: ProjectProfile | null
   }) {
     this.tools = init.tools
@@ -268,7 +286,21 @@ export class CliHost {
         )
     })
 
-    const conversation = new ConversationStore(join(stateDir, 'conversation.json'))
+    // Opening a folder creates `.cryptoricagent/` in it, exactly as the desktop
+    // app does, so the two surfaces cannot disagree about where a project's
+    // state lives or what its id is.
+    const workspace = ensureProjectWorkspace(cwd, project?.name)
+    const conversation = new MirroredConversation(
+      resolveHistoryPaths(
+        {
+          appDir: stateDir,
+          projectDir: workspace.dir,
+          location: readHistoryLocation(env)
+        },
+        workspace.manifest.id
+      ).writes
+    )
+    conversation.setProject(cwd)
 
     const config = resolveModelConfig(env, {
       provider: null,
@@ -392,6 +424,10 @@ export class CliHost {
     this.conversation.appendAssistant(
       firstNonEmpty(this.lastAnswer, reason) ?? `${verdict}: no response was produced.`
     )
+    // Durable before the process can exit. `cryptoric run` returns straight
+    // after this, and the store writes on a queued promise, so skipping the
+    // flush would race the exit and occasionally lose the last turn.
+    await this.conversation.flush()
 
     return {
       verdict,

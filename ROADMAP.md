@@ -17,6 +17,7 @@ in `docs/signing/AUDIT.md`.
 | Honest browser verification in the pipeline | 5 distinct outcomes; a build can no longer deny a browser it has |
 | **iOS companion** | `swift build` + `swift test` green on macos-15; the job fails unless `Executed N tests` appears with N ≥ 10 |
 | **`cryptoric` CLI** | 24 tools, one 398 KB file, no Electron; a real task run returns exit 2 `BLOCKED` and writes nothing |
+| **`.cryptoricagent/` per project** | Created on open, stable id, history in the project folder *and* the app folder; 8/8 end-to-end checks across two projects and three separate processes |
 
 ### The CLI shipped, and it did not need a rewrite
 
