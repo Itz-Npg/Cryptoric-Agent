@@ -46,31 +46,62 @@ log "Java version"
 java -version 2>&1 | sed -n '1,3p'
 
 log "Unit tests (the relay protocol)"
+# `--rerun` because a restored cache entry is a report of a run that happened in
+# some earlier job. The count below exists to prove *these* tests ran here, and a
+# number read out of someone else's build directory does not prove that.
 # `--no-daemon` because a daemon left behind by a finished job is a daemon that
 # holds a directory the next job will want.
-( cd "$PROJECT_DIR" && "$GRADLE" --no-daemon --console=plain testDebugUnitTest )
+( cd "$PROJECT_DIR" && "$GRADLE" --no-daemon --console=plain testDebugUnitTest --rerun )
 
 # A green `test` on a project with no tests looks exactly like a pass, so the
 # report is read rather than trusted — the same shape as the Swift test count
 # assertion in mobile.yml.
 REPORT="$PROJECT_DIR/app/build/reports/tests/testDebugUnitTest/index.html"
 [ -f "$REPORT" ] || fail "No unit test report at $REPORT. The tests did not run."
-if [ -f "$PROJECT_DIR/app/build/test-results/testDebugUnitTest/TEST-com.itznpg.cryptoric.companion.RelayProtocolTest.xml" ]; then
-  RESULT_FILE="$PROJECT_DIR/app/build/test-results/testDebugUnitTest/TEST-com.itznpg.cryptoric.companion.RelayProtocolTest.xml"
-  # No pipes, and no reading just the first line: a JUnit XML file opens with
-  # the <?xml?> declaration, so the attributes are several lines down. The whole
-  # file goes into a variable and bash's regex pulls the numbers out, which
-  # keeps a third SIGPIPE race out of the step that decides whether these tests
-  # actually ran.
-  XML="$(cat "$RESULT_FILE")"
-  COUNT=""; FAILURES=""
-  [[ "$XML" =~ tests\="([0-9]+)" ]] && COUNT="${BASH_REMATCH[1]}"
-  [[ "$XML" =~ failures\="([0-9]+)" ]] && FAILURES="${BASH_REMATCH[1]}"
-  echo "tests=$COUNT failures=$FAILURES"
-  [ "${COUNT:-0}" -ge 5 ] || fail "Only ${COUNT:-0} tests ran; a partial run must not read as a pass."
-  [ "${FAILURES:-1}" -eq 0 ] || fail "$FAILURES test(s) failed."
-else
-  fail "No JUnit XML for RelayProtocolTest. The suite did not run."
+
+RESULTS_DIR="$PROJECT_DIR/app/build/test-results/testDebugUnitTest"
+# Every result file, not one hardcoded class name. A test class that gets renamed
+# or split should change the count, not quietly make this check read zero and
+# then blame the tests for it.
+shopt -s nullglob
+RESULT_FILES=("$RESULTS_DIR"/TEST-*.xml)
+shopt -u nullglob
+[ "${#RESULT_FILES[@]}" -gt 0 ] || fail "No JUnit XML in $RESULTS_DIR. The suite did not run."
+
+# When a count comes out wrong the log has to say what was actually on disk,
+# otherwise the next person is guessing at a file they cannot see.
+dump_results() {
+  local f
+  for f in "${RESULT_FILES[@]}"; do
+    printf -- '--- %s (%s bytes)\n' "$f" "$(wc -c < "$f" | tr -d ' ')"
+    sed -n '1,20p' "$f"
+  done
+}
+
+COUNT=0
+FAILURES=0
+for RESULT_FILE in "${RESULT_FILES[@]}"; do
+  # `grep -m1` stops by itself, so nothing downstream can close the pipe early
+  # and hand the build a SIGPIPE under `set -o pipefail`. `|| true` because a
+  # result file with no `tests=` attribute has to be reported as zero, not abort
+  # the step before it can print the file that caused it.
+  FILE_TESTS="$(grep -o -m1 'tests="[0-9]*"' "$RESULT_FILE" | tr -dc '0-9' || true)"
+  FILE_FAILURES="$(grep -o -m1 'failures="[0-9]*"' "$RESULT_FILE" | tr -dc '0-9' || true)"
+  FILE_TESTS="${FILE_TESTS:-0}"
+  FILE_FAILURES="${FILE_FAILURES:-0}"
+  echo "$RESULT_FILE tests=$FILE_TESTS failures=$FILE_FAILURES"
+  COUNT=$((COUNT + FILE_TESTS))
+  FAILURES=$((FAILURES + FILE_FAILURES))
+done
+echo "total tests=$COUNT failures=$FAILURES"
+
+if [ "$COUNT" -lt 5 ]; then
+  dump_results
+  fail "Only $COUNT tests ran; a partial run must not read as a pass."
+fi
+if [ "$FAILURES" -ne 0 ]; then
+  dump_results
+  fail "$FAILURES test(s) failed."
 fi
 
 log "Assembling the debug APK"
