@@ -44,6 +44,42 @@ export interface CustomProviderInput {
   apiKey?: string
   models: string[]
   kind?: ProviderConfig['kind']
+  /** User-declared context window, in tokens. A budget, not a capability. */
+  contextWindow?: number | null
+  /** Ceiling on one reply, in tokens. */
+  maxOutputTokens?: number | null
+}
+
+/**
+ * Largest limits worth accepting.
+ *
+ * A context window of a hundred million tokens is not a real model, it is a
+ * typo in a text box. Rejecting it here keeps the gateway's arithmetic honest
+ * instead of storing a number nothing can ever reach.
+ */
+export const MAX_CONTEXT_WINDOW = 10_000_000
+export const MAX_OUTPUT_TOKENS = 1_000_000
+
+/**
+ * Read one optional positive-integer limit.
+ *
+ * `undefined`, `null` and an empty box all mean "not declared", which is the
+ * honest default: a provider we know nothing about must not be silently capped
+ * at a number someone else guessed.
+ */
+export function readTokenLimit(
+  value: unknown,
+  max: number,
+  label: string
+): { ok: true; value: number | undefined } | { ok: false; error: string } {
+  if (value === undefined || value === null || value === '') return { ok: true, value: undefined }
+  const n = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(n)) return { ok: false, error: `${label} must be a number of tokens.` }
+  if (!Number.isInteger(n) || n <= 0) {
+    return { ok: false, error: `${label} must be a whole number above zero, or left blank.` }
+  }
+  if (n > max) return { ok: false, error: `${label} above ${max.toLocaleString('en-US')} is not a real model.` }
+  return { ok: true, value: n }
 }
 
 export type NormaliseResult =
@@ -110,6 +146,20 @@ export function normaliseCustomProvider(input: CustomProviderInput): NormaliseRe
 
   const id = (input.id && input.id.trim().length > 0 ? input.id.trim() : slug(label)) || `provider-${Date.now()}`
 
+  const context = readTokenLimit(input.contextWindow, MAX_CONTEXT_WINDOW, 'Context window tokens')
+  if (!context.ok) return { ok: false, error: context.error }
+  const output = readTokenLimit(input.maxOutputTokens, MAX_OUTPUT_TOKENS, 'Maximum output tokens')
+  if (!output.ok) return { ok: false, error: output.error }
+  // A reply longer than the whole window is arithmetically impossible, so one
+  // of the two numbers is wrong. Saying which combination is impossible is more
+  // useful than clamping silently and letting the provider reject it later.
+  if (context.value !== undefined && output.value !== undefined && output.value > context.value) {
+    return {
+      ok: false,
+      error: 'Maximum output tokens cannot be larger than the context window.'
+    }
+  }
+
   return {
     ok: true,
     provider: {
@@ -123,7 +173,11 @@ export function normaliseCustomProvider(input: CustomProviderInput): NormaliseRe
       credentialKey: needsKey || apiKey.length > 0 ? credentialSlotFor(id) : null,
       models,
       byok: true,
-      enabled: true
+      enabled: true,
+      // Omitted rather than null when undeclared, so a settings file only ever
+      // carries a limit the user actually typed.
+      ...(context.value !== undefined ? { contextWindow: context.value } : {}),
+      ...(output.value !== undefined ? { maxOutputTokens: output.value } : {})
     },
     apiKey: apiKey.length > 0 ? apiKey : null
   }
@@ -168,7 +222,11 @@ export function customModelConfigs(providers: readonly ProviderConfig[]): ModelC
         endpoint: provider.baseUrl,
         model,
         credentialKey: provider.credentialKey,
-        dailyBudgetCoins: 25
+        dailyBudgetCoins: 25,
+        // Carried so the gateway can enforce what the user declared. Without
+        // this the two numbers in the settings form would be decoration.
+        ...(provider.contextWindow !== undefined ? { contextWindow: provider.contextWindow } : {}),
+        ...(provider.maxOutputTokens !== undefined ? { maxOutputTokens: provider.maxOutputTokens } : {})
       })
     }
   }

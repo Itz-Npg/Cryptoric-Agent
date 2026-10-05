@@ -29,6 +29,9 @@ interface SavedProvider {
   baseUrl: string
   models: string[]
   enabled: boolean
+  /** User-declared budgets in tokens. Absent when the user left them blank. */
+  contextWindow?: number
+  maxOutputTokens?: number
 }
 
 function parseModels(text: string): string[] {
@@ -36,6 +39,24 @@ function parseModels(text: string): string[] {
     .split(/[\n,]/)
     .map((m) => m.trim())
     .filter((m) => m.length > 0)
+}
+
+/**
+ * A limit typed into a box, or undefined when the box is blank.
+ *
+ * `NaN` is passed through rather than swallowed: someone who types "32k" gets
+ * told it is not a number, instead of quietly getting an unlimited provider.
+ * The main process owns the wording of that message, so there is one rule, not
+ * two that can disagree.
+ */
+function parseLimit(text: string): number | undefined {
+  const trimmed = text.trim()
+  if (trimmed.length === 0) return undefined
+  return Number(trimmed)
+}
+
+function formatLimit(value: number | undefined): string | null {
+  return typeof value === 'number' ? value.toLocaleString('en-US') : null
 }
 
 function Field(props: {
@@ -68,6 +89,8 @@ export function CustomProviderSection(): React.ReactElement {
   const [modelId, setModelId] = useState('')
   const [moreModels, setMoreModels] = useState('')
   const [name, setName] = useState('')
+  const [contextWindow, setContextWindow] = useState('')
+  const [maxOutputTokens, setMaxOutputTokens] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const [busy, setBusy] = useState(false)
@@ -112,6 +135,8 @@ export function CustomProviderSection(): React.ReactElement {
     setModelId('')
     setMoreModels('')
     setName('')
+    setContextWindow('')
+    setMaxOutputTokens('')
     setShowAdvanced(false)
     setReport(null)
   }
@@ -126,6 +151,8 @@ export function CustomProviderSection(): React.ReactElement {
     setPresetId(match?.id ?? 'custom')
     setModelId(provider.models[0] ?? '')
     setMoreModels(provider.models.slice(1).join('\n'))
+    setContextWindow(provider.contextWindow !== undefined ? String(provider.contextWindow) : '')
+    setMaxOutputTokens(provider.maxOutputTokens !== undefined ? String(provider.maxOutputTokens) : '')
     // The stored key never leaves the main process, so this stays blank and
     // leaving it blank keeps the key.
     setApiKey('')
@@ -147,7 +174,9 @@ export function CustomProviderSection(): React.ReactElement {
         label: name.trim().length > 0 ? name.trim() : (preset?.label ?? 'Custom provider'),
         baseUrl: baseUrl.trim(),
         ...(apiKey.trim().length > 0 ? { apiKey: apiKey.trim() } : {}),
-        models
+        models,
+        contextWindow: parseLimit(contextWindow) ?? null,
+        maxOutputTokens: parseLimit(maxOutputTokens) ?? null
       })
       if (result.ok) {
         setReport({ ok: true, tone: 'ok', text: `Saved. Its models are selectable now.` })
@@ -359,22 +388,26 @@ export function CustomProviderSection(): React.ReactElement {
         >
           <span style={{ transform: showAdvanced ? 'rotate(90deg)' : 'none', transition: 'transform 120ms' }}>▶</span>
           <span style={{ fontWeight: 550 }}>Advanced settings</span>
-          <span className="caption">Name and extra models</span>
+          <span className="caption">Name and model limits</span>
         </button>
 
         {showAdvanced && (
           <div style={{ display: 'grid', gap: 14, paddingTop: 12 }}>
-            <Field id="cp-name" label="Name" hint="Shown in the provider list. Defaults to the provider you picked.">
+            <Field id="cp-name" label="Connection name" hint="Optional. Defaults to the provider you picked.">
               <input
                 id="cp-name"
                 className="palette-input"
-                placeholder={preset?.label ?? 'My provider'}
+                placeholder={preset?.label ?? 'For example, Personal'}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
               />
             </Field>
 
-            <Field id="cp-more" label="Extra models" hint={`One per line. ${extraModels.length} added.`}>
+            <Field
+              id="cp-more"
+              label="Extra models"
+              hint={`One per line. ${extraModels.length} added.`}
+            >
               <textarea
                 id="cp-more"
                 className="palette-input"
@@ -385,6 +418,42 @@ export function CustomProviderSection(): React.ReactElement {
                 onChange={(e) => setMoreModels(e.target.value)}
               />
             </Field>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  <label className="caption" htmlFor="cp-context" style={{ fontWeight: 550 }}>
+                    Context window tokens
+                  </label>
+                  <input
+                    id="cp-context"
+                    className="palette-input"
+                    inputMode="numeric"
+                    placeholder="32768"
+                    value={contextWindow}
+                    onChange={(e) => setContextWindow(e.target.value)}
+                  />
+                </div>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  <label className="caption" htmlFor="cp-output" style={{ fontWeight: 550 }}>
+                    Maximum output tokens
+                  </label>
+                  <input
+                    id="cp-output"
+                    className="palette-input"
+                    inputMode="numeric"
+                    placeholder="4096"
+                    value={maxOutputTokens}
+                    onChange={(e) => setMaxOutputTokens(e.target.value)}
+                  />
+                </div>
+              </div>
+              <span className="caption">
+                Use limits supported by your model. These are budgets, not detected capabilities: the
+                output ceiling clamps every reply, and a conversation longer than the window is stopped
+                with the numbers instead of being sent and rejected.
+              </span>
+            </div>
           </div>
         )}
       </div>
@@ -429,7 +498,16 @@ function SavedList(props: {
           <div className="row-label" style={{ display: 'grid', minWidth: 0 }}>
             <span style={{ fontWeight: 550 }}>{provider.label}</span>
             <span className="caption">
-              {provider.baseUrl} · {provider.models.length} model{provider.models.length === 1 ? '' : 's'}
+              {[
+                provider.baseUrl,
+                `${provider.models.length} model${provider.models.length === 1 ? '' : 's'}`,
+                ...(provider.contextWindow !== undefined
+                  ? [`${formatLimit(provider.contextWindow)} ctx`]
+                  : []),
+                ...(provider.maxOutputTokens !== undefined
+                  ? [`${formatLimit(provider.maxOutputTokens)} out`]
+                  : [])
+              ].join(' · ')}
             </span>
           </div>
           <Chip tone="ok">key saved</Chip>

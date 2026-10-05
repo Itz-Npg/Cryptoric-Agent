@@ -145,6 +145,103 @@ describe('normaliseCustomProvider', () => {
   })
 })
 
+describe('token limits', () => {
+  it('stores both when the user declares them', () => {
+    const result = normaliseCustomProvider({ ...valid, contextWindow: 32768, maxOutputTokens: 4096 })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.provider.contextWindow).toBe(32768)
+    expect(result.provider.maxOutputTokens).toBe(4096)
+  })
+
+  it('leaves the limits out entirely when the boxes are blank', () => {
+    const result = normaliseCustomProvider({ ...valid })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    // Absent, not zero: a provider nobody described must stay uncapped, and a
+    // stored 0 would silently refuse every prompt.
+    expect(result.provider.contextWindow).toBeUndefined()
+    expect(result.provider.maxOutputTokens).toBeUndefined()
+  })
+
+  it('treats an empty box and an explicit null as undeclared', () => {
+    for (const blank of ['', null, undefined]) {
+      const result = normaliseCustomProvider({
+        ...valid,
+        contextWindow: blank as number | null | undefined,
+        maxOutputTokens: blank as number | null | undefined
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(result.provider.contextWindow).toBeUndefined()
+    }
+  })
+
+  it('rejects a limit that is not a whole number above zero', () => {
+    for (const bad of [0, -1, 1.5]) {
+      const result = normaliseCustomProvider({ ...valid, contextWindow: bad })
+      expect(result.ok).toBe(false)
+      if (result.ok) continue
+      expect(result.error).toMatch(/whole number above zero/)
+    }
+  })
+
+  it('rejects text typed into a token box instead of ignoring it', () => {
+    const result = normaliseCustomProvider({ ...valid, maxOutputTokens: Number('32k') })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toMatch(/must be a number of tokens/)
+  })
+
+  it('rejects a limit no real model could have', () => {
+    const result = normaliseCustomProvider({ ...valid, contextWindow: 100_000_000 })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toMatch(/not a real model/)
+  })
+
+  it('rejects a reply larger than the whole window', () => {
+    const result = normaliseCustomProvider({ ...valid, contextWindow: 4096, maxOutputTokens: 8192 })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toMatch(/cannot be larger than the context window/)
+  })
+
+  it('survives the settings round trip, which strips unknown keys', () => {
+    const result = normaliseCustomProvider({ ...valid, contextWindow: 32768, maxOutputTokens: 4096 })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const parsed = SettingsSchema.parse({
+      providers: [result.provider],
+      projectOverrides: {},
+      onboardingComplete: true
+    })
+    expect(parsed.providers[0]?.contextWindow).toBe(32768)
+    expect(parsed.providers[0]?.maxOutputTokens).toBe(4096)
+  })
+
+  it('carries the limits into the gateway config for every model', () => {
+    const result = normaliseCustomProvider({ ...valid, contextWindow: 32768, maxOutputTokens: 4096 })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const configs = customModelConfigs([result.provider])
+    expect(configs).toHaveLength(2)
+    for (const config of configs) {
+      expect(config.contextWindow).toBe(32768)
+      expect(config.maxOutputTokens).toBe(4096)
+    }
+  })
+
+  it('leaves a model uncapped when no limit was declared', () => {
+    const result = normaliseCustomProvider(valid)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const [config] = customModelConfigs([result.provider])
+    expect(config?.contextWindow).toBeUndefined()
+    expect(config?.maxOutputTokens).toBeUndefined()
+  })
+})
+
 describe('urlLeaksSecret', () => {
   it('spots a key pasted into a URL', () => {
     expect(urlLeaksSecret('https://api.example.com/v1?api_key=sk-abc')).toBe(true)

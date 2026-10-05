@@ -310,6 +310,8 @@ const api = {
       baseUrl: string
       apiKey?: string
       models: string[]
+      contextWindow?: number | null
+      maxOutputTokens?: number | null
     }) => invoke<{ ok: boolean; error: string | null; id: string | null }>(CHANNELS.modelsCustomSave, input),
     removeCustomProvider: (id: string) =>
       invoke<{ ok: boolean; error: string | null }>(CHANNELS.modelsCustomRemove, { id })

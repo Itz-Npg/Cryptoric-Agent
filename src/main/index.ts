@@ -1159,6 +1159,9 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
       baseUrl: string
       apiKey?: string
       models: string[]
+      /** User-declared budgets in tokens. Blank or absent means undeclared. */
+      contextWindow?: number | null
+      maxOutputTokens?: number | null
     }) => {
       const normalised = normaliseCustomProvider(args)
       if (!normalised.ok) {

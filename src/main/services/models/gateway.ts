@@ -507,6 +507,21 @@ export interface ModelConfig {
   dailyBudgetCoins: number
   /** Optional `HTTP-Referer` for OpenRouter's public attribution headers. */
   referer?: string
+  /**
+   * Context window in tokens, when known.
+   *
+   * Either declared in a model descriptor or typed by the user for their own
+   * provider. It is a budget, not a capability this app detected: the gateway
+   * compares the estimated prompt against it and refuses an over-long one with
+   * both numbers, which beats a provider's opaque 400.
+   */
+  contextWindow?: number | null
+  /**
+   * Ceiling on one reply, in tokens. Clamps whatever the caller asked for
+   * rather than replacing it, so a stage asking for a short summary is not
+   * handed a model's full budget.
+   */
+  maxOutputTokens?: number | null
 }
 
 export interface BudgetState {
@@ -567,6 +582,31 @@ export interface RawToolCall {
   id: string
   type: 'function'
   function: { name: string; arguments: string }
+}
+
+/**
+ * Rough token count for a whole prompt.
+ *
+ * No tokenizer is available for an arbitrary OpenAI-compatible endpoint, so this
+ * uses the usual ~4-characters-per-token rule over the content *and* the tool
+ * call arguments. Tool arguments matter: a single `write_file` of a large file
+ * is mostly argument text, and a guard that only counted `content` would wave
+ * through exactly the request that overflows.
+ *
+ * Coarse on purpose. The only decision it feeds is whether to refuse a prompt
+ * that is obviously over the window, so erring low is the safe direction.
+ */
+export function estimateMessageTokens(messages: readonly ChatMessage[]): number {
+  let chars = 0
+  for (const message of messages) {
+    chars += message.content.length
+    if (message.tool_calls) {
+      for (const call of message.tool_calls) {
+        chars += call.function.name.length + call.function.arguments.length
+      }
+    }
+  }
+  return Math.ceil(chars / 4)
 }
 
 export interface CompletionRequest {
@@ -928,13 +968,37 @@ export class ModelGateway {
     const headers = this.headers({ json: true })
     if (provider === 'ollama') headers['X-Return-Format'] = 'openai'
 
+    // The user's declared ceiling wins over the caller's ask, but only as a
+    // ceiling: a stage that wants a short summary must not be handed the whole
+    // budget, and a caller asking for more than the provider allows is the
+    // request that comes back as an unexplained 400.
+    const requested = request.maxTokens ?? 2048
+    const ceiling = this.deps.config.maxOutputTokens
+    const maxTokens = typeof ceiling === 'number' && ceiling > 0 ? Math.min(requested, ceiling) : requested
+
+    // Refuse an over-long prompt instead of sending it. `estimateTokens` is
+    // coarse (~4 characters per token), so this errs toward letting a prompt
+    // through rather than blocking a request that would have worked.
+    const window = this.deps.config.contextWindow
+    if (typeof window === 'number' && window > 0) {
+      const needed = estimateMessageTokens(request.messages)
+      if (needed > window) {
+        return failed(
+          this.getUsage(),
+          model,
+          `This conversation needs about ${needed.toLocaleString('en-US')} tokens, but ${model} is limited to ${window.toLocaleString('en-US')}. ` +
+            'Raise the context window in this provider\'s settings, or start a new task.'
+        )
+      }
+    }
+
     // Tools are only advertised when the caller actually wants them. Sending an
     // empty `tools` array is rejected by several OpenAI-compatible servers.
     const payload: Record<string, unknown> = {
       model,
       messages: request.messages,
       temperature: request.temperature ?? 0.2,
-      max_tokens: request.maxTokens ?? 2048,
+      max_tokens: maxTokens,
       stream: false
     }
     if (request.tools && request.tools.length > 0) {
@@ -1173,7 +1237,13 @@ export class ModelGateway {
         provider: custom.provider,
         endpoint: custom.endpoint,
         model: custom.model,
-        credentialKey: custom.credentialKey ?? this.deps.config.credentialKey
+        credentialKey: custom.credentialKey ?? this.deps.config.credentialKey,
+      // Set unconditionally, including to null. `deps.config` is the previously
+      // selected model, so spreading it would hand that model's limits to this
+      // one: pick a capped model, then an uncapped one, and the new model would
+      // silently inherit caps the user never set for it.
+      contextWindow: typeof custom.contextWindow === 'number' ? custom.contextWindow : null,
+      maxOutputTokens: typeof custom.maxOutputTokens === 'number' ? custom.maxOutputTokens : null
       }
     }
 
@@ -1184,7 +1254,10 @@ export class ModelGateway {
       provider: model.servedBy,
       endpoint: model.endpoint ?? this.deps.config.endpoint,
       model: model.providerModelId ?? model.id,
-      credentialKey: PROVIDER_CREDENTIAL_SLOTS[model.servedBy] ?? this.deps.config.credentialKey ?? null
+      credentialKey: PROVIDER_CREDENTIAL_SLOTS[model.servedBy] ?? this.deps.config.credentialKey ?? null,
+      // Same reason as above: a descriptor with no declared window declares
+      // none, rather than keeping whatever the last selection carried.
+      contextWindow: typeof model.contextWindow === 'number' ? model.contextWindow : null
     }
   }
 }

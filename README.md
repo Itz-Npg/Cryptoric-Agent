@@ -174,9 +174,23 @@ of thing:
 - **Model ID** — copy it from the provider rather than guessing; a wrong id
   fails as a 404 with nothing useful in it.
 
-Extra models and a custom name sit under **Advanced settings**. Editing a
-provider never makes you retype its stored key, and saving the same name again
-updates it rather than creating a duplicate.
+Extra models and a custom name sit under **Advanced settings**, alongside two
+optional token budgets:
+
+- **Context window tokens** — a conversation longer than this is stopped with
+  both numbers in the message, instead of being sent and coming back as an
+  opaque 400.
+- **Maximum output tokens** — a ceiling on every reply. It clamps what a stage
+  asked for rather than replacing it, so a stage wanting a short summary still
+  gets one.
+
+Both are limits *you* declare, not capabilities the app detects — the field
+says so, and leaving them blank leaves the model uncapped rather than guessing a
+number. The output ceiling cannot exceed the window, because that combination is
+arithmetically impossible.
+
+Editing a provider never makes you retype its stored key, and saving the same
+name again updates it rather than creating a duplicate.
 
 ### Your own model server
 
