@@ -53,6 +53,28 @@ import { redactArgs, redactText, summarizeArgs } from './redact'
  */
 export interface NormalizedToolResult extends ToolResult {
   durationMs: number
+  /**
+   * The effect the tool reports on the filesystem, as paths.
+   *
+   * This exists because `changedPathOf` in the agent used to match tool ids
+   * against a four-name allowlist and read `data.path`. That is wrong in both
+   * directions — a tool can name a path it never touched, and a tool that really
+   * wrote something but is not on the list contributes nothing, which makes real
+   * work invisible to the engine.
+   *
+   * These are still the *tool's* report, not an observation. The observation is
+   * the before/after snapshot diff in `agent/snapshot.ts`; this is the cheap
+   * per-call signal the model is shown so it reasons over the same facts the
+   * engine checks.
+   */
+  filesChanged: string[]
+  filesCreated: string[]
+  filesDeleted: string[]
+  filesRenamed: string[]
+  /** What the tool did, for the execution log: `write`, `read`, `exec`, … */
+  operation: string
+  /** ISO timestamp the call settled at. */
+  timestamp: string
   artifacts: ToolArtifact[]
   warnings: string[]
   metadata: Record<string, unknown>
@@ -137,6 +159,7 @@ export class ToolRuntime {
           category: info?.category ?? 'files',
           risk: info?.risk ?? 'medium'
         },
+        ...describeEffect(toolId, null),
         ...extra
       }
       this.record({
@@ -328,17 +351,18 @@ export class ToolRuntime {
 
     // 9. Output contract.
     const result: NormalizedToolResult = {
-      ok: raw.ok,
-      summary: redactText(raw.summary ?? (raw.ok ? 'Done' : 'Failed')),
-      ...(raw.data !== undefined ? { data: raw.data } : {}),
-      ...(raw.error ? { error: redactText(raw.error) } : {}),
-      ...(raw.exitCode !== undefined ? { exitCode: raw.exitCode } : {}),
-      artifacts: raw.artifacts ?? [],
-      warnings: (raw.warnings ?? []).map(redactText),
-      metadata: { category, risk, timeoutMs, ...(raw.metadata ?? {}) },
-      durationMs: this.now() - started,
-      ...(raw.failureKind ? { failureKind: raw.failureKind } : {})
-    }
+        ok: raw.ok,
+        summary: redactText(raw.summary ?? (raw.ok ? 'Done' : 'Failed')),
+        ...(raw.data !== undefined ? { data: raw.data } : {}),
+        ...(raw.error ? { error: redactText(raw.error) } : {}),
+        ...(raw.exitCode !== undefined ? { exitCode: raw.exitCode } : {}),
+        artifacts: raw.artifacts ?? [],
+        warnings: (raw.warnings ?? []).map(redactText),
+        metadata: { category, risk, timeoutMs, ...(raw.metadata ?? {}) },
+        durationMs: this.now() - started,
+        ...describeEffect(toolId, raw),
+        ...(raw.failureKind ? { failureKind: raw.failureKind } : {})
+      }
 
     // 10. Audit.
     this.record({
@@ -417,3 +441,114 @@ export function riskForTier(tier: PermissionTier): ToolRiskLevel {
 }
 
 export { redactArgs, redactText, summarizeArgs }
+/**
+ * Tools that write, by id.
+ *
+ * Used only to classify the operation name and to read the effect a tool reports.
+ * It is deliberately not an allowlist for *whether* something changed — the
+ * engine decides that from a filesystem snapshot — and `delete_file` and
+ * `move_file` are here for the first time, which is the class of tool the old
+ * four-name list silently ignored.
+ */
+const MUTATING_TOOL_IDS = new Set([
+  'write_file',
+  'append_file',
+  'edit_file',
+  'patch_file',
+  'create_file',
+  'delete_file',
+  'move_file',
+  'rename_file',
+  'create_directory',
+  'run_command'
+])
+
+function operationOf(toolId: string): string {
+  if (toolId.startsWith('read_') || toolId.startsWith('list_') || toolId.startsWith('search_')) return 'read'
+  if (toolId === 'run_command') return 'exec'
+  if (toolId.startsWith('install_') || toolId.startsWith('refresh_')) return 'provision'
+  if (MUTATING_TOOL_IDS.has(toolId)) return 'write'
+  return 'query'
+}
+
+/**
+ * The filesystem effect a tool reports, read from its own return value.
+ *
+ * Every array is empty unless the tool actually said so. An absent field is not
+ * evidence of anything, so it produces an empty list rather than a guess — the
+ * snapshot diff remains the authority on what really changed.
+ */
+function describeEffect(
+  toolId: string,
+  raw: { data?: unknown } | null
+): Pick<NormalizedToolResult, 'filesChanged' | 'filesCreated' | 'filesDeleted' | 'filesRenamed' | 'operation' | 'timestamp'> {
+  const operation = operationOf(toolId)
+  const base = {
+    filesChanged: [] as string[],
+    filesCreated: [] as string[],
+    filesDeleted: [] as string[],
+    filesRenamed: [] as string[],
+    operation,
+    timestamp: new Date().toISOString()
+  }
+  // Only a tool that writes may report a change. `read_file` returns a `path`
+  // like every other tool, and treating that as a modification made a pure read
+  // report `filesChanged: [...]` — the exact false positive this whole exercise
+  // exists to eliminate, introduced by the fix for it.
+  if (!raw || operation !== 'write') return base
+
+  const data = raw.data as
+    | {
+        path?: unknown
+        to?: unknown
+        from?: unknown
+        created?: unknown
+        deleted?: unknown
+        paths?: unknown
+      }
+    | undefined
+  if (!data) return base
+
+  const asPath = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null)
+
+  const created: string[] = []
+  const modified: string[] = []
+  const deleted: string[] = []
+  const renamed: string[] = []
+
+  const to = asPath(data.to)
+  const from = asPath(data.from)
+  if (to) {
+    // A move is a rename, not two independent edits: counting it as a create
+    // plus a delete loses the fact that the file survived.
+    if (from) renamed.push(to)
+    else if (data.created === true) created.push(to)
+    else modified.push(to)
+  }
+
+  const path = asPath(data.path)
+  if (path && path !== to) {
+    if (data.created === true) created.push(path)
+    else if (data.deleted === true) deleted.push(path)
+    // A write tool that names a path it did not create or delete overwrote it.
+    // `write_file` reports `created: false` for exactly that case.
+    else modified.push(path)
+  }
+
+  if (Array.isArray(data.paths)) {
+    for (const p of data.paths) {
+      const one = asPath(p)
+      if (one && !modified.includes(one) && !created.includes(one) && !deleted.includes(one)) {
+        modified.push(one)
+      }
+    }
+  }
+
+  return {
+    ...base,
+    filesCreated: created,
+    filesDeleted: deleted,
+    filesRenamed: renamed,
+    filesChanged: [...new Set([...created, ...modified, ...deleted, ...renamed])].sort()
+  }
+}

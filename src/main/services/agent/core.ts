@@ -369,7 +369,16 @@ export class AgentRuntime {
         durationMs: 0,
         artifacts: [],
         warnings: [],
-        metadata: {}
+        metadata: {},
+        // A tool that never ran changed nothing. Saying so explicitly matters:
+        // an empty list here is what stops a cancelled call being read as a
+        // successful no-op further up.
+        filesChanged: [],
+        filesCreated: [],
+        filesDeleted: [],
+        filesRenamed: [],
+        operation: 'cancelled',
+        timestamp: new Date().toISOString()
       }
     }
 
@@ -505,19 +514,20 @@ function sepOf(root: string): string {
 /**
  * The path a tool actually wrote, if it wrote one.
  *
- * Only the tools that genuinely mutate the workspace are consulted, and the
- * path has to be one the tool itself reported — deriving it from the
- * arguments instead would record a path the tool never touched, which is
- * exactly the kind of plausible-looking wrong answer this agent must not give.
+ * Read from the runtime's structured `filesChanged`, which the runtime fills in
+ * from what the tool reported. It used to match the tool id against a
+ * four-name allowlist and read `data.path` — wrong in both directions, because
+ * `delete_file`, `move_file`'s source and any tool outside that list
+ * contributed nothing, and a tool could name a path it never touched.
+ *
+ * This is still a *report*, not an observation. The authority on what changed is
+ * the before/after snapshot in `agent/stages.ts`; this keeps the per-call
+ * timeline accurate without re-walking the tree.
  */
-const WRITING_TOOLS = new Set(['write_file', 'append_file', 'edit_file', 'move_file'])
-
 function changedPathOf(toolId: string, result: NormalizedToolResult): string | null {
-  if (!WRITING_TOOLS.has(toolId)) return null
-  const data = result.data as { path?: unknown; to?: unknown } | undefined
-  if (!data) return null
-  if (toolId === 'move_file' && typeof data.to === 'string') return data.to
-  return typeof data.path === 'string' ? data.path : null
+  void toolId
+  const first = result.filesChanged?.[0]
+  return typeof first === 'string' && first.length > 0 ? first : null
 }
 
 function sameOrNested(candidate: string, claim: string): boolean {

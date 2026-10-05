@@ -673,3 +673,25 @@ task forever. Full write-up in `audit.md`; the invariants in `work.md`.
 - [ ] `run_command` exits are read from `data.exitCode`; a tool that returns
       neither an exit code nor a parseable summary counts as a pass. Tightened for
       the filesystem tools, not yet enforced across the whole registry.
+
+### PHASE 0.13 addendum — structured tool results (§5)
+
+- [x] **`NormalizedToolResult` now carries the structured effect**: `operation`,
+      `filesChanged`, `filesCreated`, `filesDeleted`, `filesRenamed`, `timestamp`
+      alongside the existing `durationMs`, `exitCode`, `artifacts`, `warnings`.
+      Filled in by the runtime from what the tool reported.
+- [x] **`changedPathOf` no longer uses a four-name allowlist.** It reads the
+      structured `filesChanged`. `delete_file` and a move's source were
+      previously invisible to the engine.
+- [x] **A move is a rename**, not a create plus a delete — reporting it that way
+      loses the fact that the file survived.
+- [x] **`delete_file` now reports `deleted: true`**, which is what lets the
+      runtime distinguish a delete from a read at all.
+- [x] **Only a tool whose operation is `write` may report a change.** Found by a
+      test: `read_file` returns a `path` like every other tool, and the first
+      version of this classified that as a modification — a pure read reporting
+      `filesChanged: [...]`. That is the same false-positive class the whole
+      phase exists to eliminate, introduced by the fix for it. Caught before
+      commit, fixed at the cause rather than by relaxing the assertion.
+- [x] 5 new tests asserting created vs modified vs deleted vs read through the
+      real runtime. **500 tests / 19 files**, typecheck 0, build 0.
