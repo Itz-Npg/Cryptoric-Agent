@@ -96,6 +96,8 @@ interface Services {
   store: ReturnType<typeof createStore>
   credentials: CredentialStore
   conversation: MirroredConversation
+  /** Reopen the last project and resume anything it left running. */
+  reopenLastProject(): Promise<void>
   getProject(): ProjectProfile | null
 }
 
@@ -521,6 +523,37 @@ async function boot(): Promise<Services> {
   const sessionLedger = new SessionLedger(ledgerPath(userDataDir))
   void sessionLedger.load()
 
+  /**
+   * Pick up a task the last exit interrupted, if its time is still running.
+   *
+   * Called both when a folder is opened and at launch, because "close the app
+   * and carry on" only works if the app reopens the folder on its own. Restarting
+   * costs nothing: the session was paid for once, and `resumableGrant` only ever
+   * returns one that has not been consumed and has not run out.
+   */
+  function resumeInterruptedTask(projectRoot: string): void {
+    const grant = resumableGrant(sessionLedger.list(), projectRoot, Date.now())
+    if (!grant) return
+    agent.submit({
+      title: deriveTitle(grant.prompt),
+      prompt: grant.prompt,
+      role: 'IMPLEMENTER',
+      projectRoot: grant.projectRoot,
+      // Carries the session that was already paid for. Without this a resume
+      // would be charged a second time for time the user already bought,
+      // which is the fastest way to make resume feel like a trap.
+      resume: grant
+    })
+    push({
+      type: 'log',
+      level: 'info',
+      message:
+        `Resumed an interrupted task · ${Math.round(remainingMs(grant, Date.now()) / 60_000)} minutes ` +
+        'left on the session already paid for.',
+      at: new Date().toISOString()
+    })
+  }
+
   const credentials = new CredentialStore(join(userDataDir, 'credentials.json'), {
     isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
     encryptString: (v) => safeStorage.encryptString(v),
@@ -549,6 +582,68 @@ async function boot(): Promise<Services> {
     }
   }
 
+  /**
+   * Open a folder: detect it, give it a workspace, scope the transcript to
+   * it, and remember it as the last project.
+   *
+   * Hoisted out of the route table so launch can call exactly the same code.
+   * Two copies of "what opening a project does" is how the app ends up
+   * reopening a folder without its workspace, or with the transcript still
+   * scoped to the previous one.
+   */
+  const setProject = async (root: string): Promise<ProjectProfile> => {
+    const detected = await detectProject(root)
+    project = detected
+
+    // Opening a folder gives it a workspace: a stable project id, and a place
+    // for its history that travels with the folder. The folder ignores itself
+    // in git, so this never shows up as untracked noise in the user's repo.
+    const workspace = ensureProjectWorkspace(detected.root, detected.name)
+    if (workspace.error) {
+      // Reported rather than swallowed: a project whose folder cannot be
+      // created still works, but the user should know their history is going
+      // somewhere they did not expect.
+      push({
+        type: 'log',
+        level: 'warn',
+        message: `Could not create .cryptoricagent in ${detected.root}: ${workspace.error}. History is kept in the app folder only.`,
+        at: new Date().toISOString()
+      })
+    }
+
+    conversation.retarget(
+      resolveHistoryPaths(
+        {
+          appDir: userDataDir,
+          projectDir: workspace.dir,
+          location: settings.get().sessions.historyLocation
+        },
+        workspace.manifest.id
+      ).writes
+    )
+
+    // Scope the transcript to this project *before* anything can append, so a
+    // turn can never land in the previous project's history.
+    conversation.setProject(detected.root)
+    env.setProjectEnv(detected.root, {})
+    await skills.discover(DEFAULT_SKILL_ROOTS, detected.root)
+    push({ type: 'project', project: detected })
+    const current = store.get()
+    await store.set({
+      lastProjectRoot: detected.root,
+      recentProjects: [
+        { root: detected.root, name: detected.name, openedAt: new Date().toISOString() },
+        ...current.recentProjects.filter((p) => p.root !== detected.root)
+      ].slice(0, 10)
+    })
+    // Opening a folder is the moment an interrupted task can be picked up, so
+    // the resume lives here rather than in the route: both the open command and
+    // the launch-time reopen go through this one function, and there is no
+    // second path that can forget to carry on.
+    resumeInterruptedTask(detected.root)
+    return detected
+  }
+
   registerRoutes(router, {
     env,
     terminals,
@@ -558,7 +653,6 @@ async function boot(): Promise<Services> {
     approvals,
     skills,
     agent,
-    sessionLedger,
     store,
     settings,
     files,
@@ -569,53 +663,7 @@ async function boot(): Promise<Services> {
     conversation,
     recordTurn,
     getProject: () => project,
-    setProject: async (root) => {
-      const detected = await detectProject(root)
-      project = detected
-
-      // Opening a folder gives it a workspace: a stable project id, and a place
-      // for its history that travels with the folder. The folder ignores itself
-      // in git, so this never shows up as untracked noise in the user's repo.
-      const workspace = ensureProjectWorkspace(detected.root, detected.name)
-      if (workspace.error) {
-        // Reported rather than swallowed: a project whose folder cannot be
-        // created still works, but the user should know their history is going
-        // somewhere they did not expect.
-        push({
-          type: 'log',
-          level: 'warn',
-          message: `Could not create .cryptoricagent in ${detected.root}: ${workspace.error}. History is kept in the app folder only.`,
-          at: new Date().toISOString()
-        })
-      }
-
-      conversation.retarget(
-        resolveHistoryPaths(
-          {
-            appDir: userDataDir,
-            projectDir: workspace.dir,
-            location: settings.get().sessions.historyLocation
-          },
-          workspace.manifest.id
-        ).writes
-      )
-
-      // Scope the transcript to this project *before* anything can append, so a
-      // turn can never land in the previous project's history.
-      conversation.setProject(detected.root)
-      env.setProjectEnv(detected.root, {})
-      await skills.discover(DEFAULT_SKILL_ROOTS, detected.root)
-      push({ type: 'project', project: detected })
-      const current = store.get()
-      await store.set({
-        lastProjectRoot: detected.root,
-        recentProjects: [
-          { root: detected.root, name: detected.name, openedAt: new Date().toISOString() },
-          ...current.recentProjects.filter((p) => p.root !== detected.root)
-        ].slice(0, 10)
-      })
-      return detected
-    },
+    setProject,
     push
   })
 
@@ -644,9 +692,36 @@ async function boot(): Promise<Services> {
     }
   }
 
+  /**
+   * Reopen the folder that was open last session and pick up whatever it left
+   * running.
+   *
+   * Without this the resume path could never fire on a relaunch: the app
+   * remembered the project for its transcript but never re-opened the folder, so
+   * "close the app and carry on" did nothing at all.
+   *
+   * Failures are swallowed on purpose. A folder that has since been moved,
+   * renamed or unmounted must not stop the app from starting.
+   */
+  async function reopenLastProject(): Promise<void> {
+    const last = store.get().lastProjectRoot
+    if (!last || !existsSync(last)) return
+    try {
+      await setProject(last)
+    } catch {
+      push({
+        type: 'log',
+        level: 'warn',
+        message: `Could not reopen ${last}; it may have been moved or renamed.`,
+        at: new Date().toISOString()
+      })
+    }
+  }
+
   return {
     env, terminals, processes, browser, tools, policy, approvals, skills, agent, router, store, credentials,
     conversation,
+    reopenLastProject,
     getProject: () => project
   }
 }
@@ -660,8 +735,6 @@ interface RouteDeps {
   approvals: ApprovalQueue
   skills: SkillRegistry
   agent: AgentRuntime
-  /** Bought sessions, and which of them were interrupted. */
-  sessionLedger: SessionLedger
   store: ReturnType<typeof createStore>
   settings: SettingsStore
   files: FileService
@@ -679,7 +752,6 @@ interface RouteDeps {
 function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   const { env, terminals, processes, tools, policy, approvals, skills, agent, store, files, git, gateway } = deps
   const { updates } = deps
-  const { sessionLedger } = deps
   const settings = deps.settings
   const credentials = deps.credentials
   const { conversation } = deps
@@ -750,27 +822,6 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
       // still running. Restarting it charges nothing: the original session was
       // already paid for, and `resumableGrant` only ever returns one that has
       // not been consumed and has not run out.
-      const grant = resumableGrant(sessionLedger.list(), selected, Date.now())
-      if (grant) {
-        agent.submit({
-          title: deriveTitle(grant.prompt),
-          prompt: grant.prompt,
-          role: 'IMPLEMENTER',
-          projectRoot: grant.projectRoot,
-          // Carries the session that was already paid for. Without this a
-          // resume would be charged a second time for time the user already
-          // bought, which is the fastest way to make resume feel like a trap.
-          resume: grant
-        })
-        push({
-          type: 'log',
-          level: 'info',
-          message:
-            `Resumed an interrupted task · ${Math.round(remainingMs(grant, Date.now()) / 60_000)} minutes ` +
-            'left on the session already paid for.',
-          at: new Date().toISOString()
-        })
-      }
       return opened
     }
   })
@@ -1792,6 +1843,11 @@ if (!app.requestSingleInstanceLock()) {
     services = await boot()
     mainWindow = createWindow()
     buildMenu()
+
+    // Reopen the folder that was open last session, then pick up a task it left
+    // interrupted. Awaited *after* the window exists so the renderer is ready to
+    // show the resumed task rather than missing its first events.
+    await services.reopenLastProject()
 
     // Check the release feed once on launch, after the window exists so the
     // result has somewhere to go. Deliberately not awaited: a slow feed must not
