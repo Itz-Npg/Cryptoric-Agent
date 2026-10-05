@@ -236,7 +236,14 @@ async function boot(): Promise<Services> {
       endpoint: state.modelEndpoint,
       model: activeModelId,
       credentialKey: PROVIDER_CREDENTIAL_SLOTS[state.modelProvider] ?? 'model-api-key',
-      dailyBudgetCoins: Math.round(state.dailyBudgetUsd * 100)
+      // The allowance comes from the settings store, not from
+      // `state.dailyBudgetUsd * 100`. It used to, and that is why an install
+      // that had been running since the allowance dropped from 500 to 25 kept
+      // showing `0 / 500` forever: `migrateAllowance` rewrites
+      // `usage.dailyAllowanceCoins`, and *nothing ever read that field*, so the
+      // migration ran correctly and changed nothing the user could see. The
+      // legacy flat value was the only thing feeding the gateway.
+      dailyBudgetCoins: settings.get().usage.dailyAllowanceCoins
     },
     getApiKey: (key) => credentialsRef.get(key),
     onUsage: () => undefined
@@ -385,7 +392,11 @@ async function boot(): Promise<Services> {
   const router = new IpcRouter({
     getTrustedWebContents: () => mainWindow?.webContents ?? null,
     policy,
-    approvals
+    approvals,
+    // Without this the router can create an approval but never show it, and
+    // every gated channel (updates:install, env:install, process:restart) waits
+    // out its timeout instead of asking the user anything.
+    push
   })
 
   const credentials = new CredentialStore(join(userDataDir, 'credentials.json'), {
@@ -890,9 +901,16 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   router.register(CHANNELS.modelsSetBudget, {
     domain: 'env.modify',
     requiresApproval: false,
-    handler: (args: { coins: number }) => {
+    handler: async (args: { coins: number }) => {
       gateway.setConfig({ ...gateway.getConfig(), dailyBudgetCoins: args.coins })
-      void store.set({ dailyBudgetUsd: args.coins / 100 })
+      // Written to the settings store, which is where the value is now read
+      // from. It used to be written back to the legacy flat `dailyBudgetUsd`,
+      // which is how one number ended up living in two places and the migrated
+      // copy silently rotted.
+      const applied = await settings.update({ 'usage.dailyAllowanceCoins': args.coins })
+      if (!applied.ok) {
+        return { ...modelSnapshot(), error: `Budget not saved: ${applied.issues[0]?.message ?? 'invalid'}` }
+      }
       return modelSnapshot()
     }
   })

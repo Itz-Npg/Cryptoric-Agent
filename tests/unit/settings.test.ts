@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SettingsStore, migrateLegacyState, migrateAllowance, applyOverride, stripSecrets } from '../../src/main/services/settings/store'
 import { defaultSettings, SETTINGS_VERSION, SettingsSchema } from '../../src/main/services/settings/schema'
+import { ModelGateway, OPENROUTER_CREDENTIAL, OPENROUTER_ENDPOINT } from '../../src/main/services/models/gateway'
 
 let dir = ''
 let store: SettingsStore
@@ -514,5 +515,57 @@ describe('coin allowance migration', () => {
   it('tolerates a file with no usage section', () => {
     const input = { appearance: { theme: 'dark' } }
     expect(migrateAllowance(2, input)).toBe(input)
+  })
+})
+/**
+ * The balance the user actually sees — the `0 / 500` report.
+ *
+ * Everything *below* the wiring was already proven: `migrateAllowance` has six
+ * assertions in this file and a live check (`test:migration`) asserting 25. And
+ * all of it passed. The migration worked perfectly and changed nothing visible,
+ * because `usage.dailyAllowanceCoins` was read by nothing at runtime — the
+ * gateway was fed `dailyBudgetUsd * 100` from the legacy flat state, which is
+ * still 5, and rendered 500.
+ *
+ * So the assertion here is deliberately end-to-end: settings → gateway → the
+ * number on screen. Another test of the migration alone would have passed
+ * identically while the app kept lying.
+ */
+describe('the coin balance shown to the user', () => {
+  it('shows the migrated allowance, not the retired legacy one', async () => {
+    // The reported install: legacy flat state carrying a $5 daily budget.
+    const legacyState = { dailyBudgetUsd: 5 }
+    const legacyStore = new SettingsStore({ userDataDir: dir, legacyState })
+    const settings = await legacyStore.load()
+
+    // The trap, pinned deliberately. This expression still exists and still
+    // yields the old number; it must not be what feeds the gateway.
+    expect(Math.round(legacyState.dailyBudgetUsd * 100)).toBe(500)
+
+    // The migrated field is the one that is correct.
+    expect(settings.usage.dailyAllowanceCoins).toBe(25)
+
+    // And this is the number the user must see. Configured the way
+    // `src/main/index.ts` configures it.
+    const gateway = new ModelGateway({
+      config: {
+        provider: 'openrouter',
+        endpoint: OPENROUTER_ENDPOINT,
+        model: 'stealth/space-bunny-alpha',
+        credentialKey: OPENROUTER_CREDENTIAL,
+        dailyBudgetCoins: settings.usage.dailyAllowanceCoins
+      },
+      getApiKey: () => null,
+      onUsage: () => undefined
+    })
+
+    const budget = gateway.budget()
+    expect(budget.budgetCoins).toBe(25)
+    expect(budget.usedCoins).toBe(0)
+    expect(budget.budgetCoins - budget.usedCoins).toBe(25)
+  })
+
+  it('is 25 by default on a clean install', () => {
+    expect(defaultSettings().usage.dailyAllowanceCoins).toBe(25)
   })
 })

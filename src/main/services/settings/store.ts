@@ -336,7 +336,24 @@ export class SettingsStore {
    * with a one-field stub, leaving every other field undefined on disk.
    */
   private freshFromLegacy(): Settings {
-    const candidate = { ...(defaultSettings() as unknown as Record<string, unknown>), ...this.seedFromLegacy() }
+    const seeded = this.seedFromLegacy()
+    // The legacy flat state carries the *old* USD budget, and
+    // `migrateLegacyState` converts it to coins at the documented 1:100 — which
+    // reproduces the retired 500-coin default exactly. So the retirement has to
+    // run on this path too.
+    //
+    // It did not, and that is why an install with legacy flat state but no
+    // `settings.json` yet — the ordinary first launch after an upgrade — seeded
+    // straight to 500 and stayed there. `migrate()` only runs the retirement
+    // when a settings file already exists, so the very path that *created* the
+    // stale number was the one path that never cleaned it up. Handed the
+    // pre-grouped version so `migrateAllowance` treats it as needing an upgrade.
+    const retired =
+      Object.keys(seeded).length > 0
+        ? (migrateAllowance(LEGACY_FLAT_VERSION - 1, seeded) as Record<string, unknown>)
+        : seeded
+
+    const candidate = { ...(defaultSettings() as unknown as Record<string, unknown>), ...retired }
     const parsed = SettingsSchema.safeParse(candidate)
     return parsed.success ? parsed.data : defaultSettings()
   }

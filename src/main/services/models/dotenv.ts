@@ -46,15 +46,36 @@ export function parseEnv(text: string): Record<string, string> {
   return out
 }
 
-/** First readable `.env` among `dirs`, merged in order. Missing file is not an error. */
+/**
+ * Filenames a key file can have, in priority order.
+ *
+ * `.env` is the developer's file. `cryptoric-keys.env` is what
+ * `scripts/stage-keys.mjs` writes into `out/` so a personal build carries the
+ * key — it is not a dotfile because electron-builder's `out` glob does not match
+ * dotfiles, so a `.env` placed there could be silently dropped from the package.
+ */
+const ENV_FILENAMES = ['.env', 'cryptoric-keys.env']
+
+/**
+ * First readable key file among `dirs`, merged in order. Missing file is not an
+ * error.
+ *
+ * The app path is searched first, which is what lets a packaged build find the
+ * staged file inside the asar — Electron resolves `fs` reads inside an asar
+ * transparently, so no extraction step is needed.
+ */
 export function readEnvFile(dirs: string[]): Record<string, string> {
+  const merged: Record<string, string> = {}
   for (const dir of dirs) {
     if (!dir) continue
-    try {
-      return parseEnv(readFileSync(join(dir, '.env'), 'utf8'))
-    } catch {
-      // Try the next candidate directory.
+    for (const name of ENV_FILENAMES) {
+      try {
+        Object.assign(merged, parseEnv(readFileSync(join(dir, name), 'utf8')))
+        break
+      } catch {
+        // Try the next filename, then the next directory.
+      }
     }
   }
-  return {}
+  return merged
 }

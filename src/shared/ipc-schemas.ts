@@ -8,8 +8,11 @@
 
 import { z } from 'zod'
 import { CHANNELS } from './ipc-channels'
+import { MAX_PROMPT_CHARS } from './limits'
 
 const rootSchema = z.string().min(1)
+
+export { MAX_PROMPT_CHARS }
 
 export const SCHEMAS = {
   [CHANNELS.appInfo]: z.object({}),
@@ -83,7 +86,7 @@ export const SCHEMAS = {
   [CHANNELS.fileTree]: z.object({ path: z.string().optional(), depth: z.number().int().min(1).max(8).optional() }),
 
   [CHANNELS.agentSubmit]: z.object({
-    prompt: z.string().min(1).max(20_000),
+    prompt: z.string().min(1).max(MAX_PROMPT_CHARS),
     title: z.string().max(200).optional(),
     role: z
       .enum([

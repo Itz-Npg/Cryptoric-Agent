@@ -17,6 +17,7 @@
 import { ipcMain, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import type { IpcResult } from '@shared/ipc-channels'
 import { SCHEMAS } from '@shared/ipc-schemas'
+import type { MainEvent } from '@shared/types'
 import type { PermissionPolicy } from '../services/permissions/policy'
 import type { ApprovalQueue } from '../services/permissions/policy'
 
@@ -25,6 +26,16 @@ export interface RouterContext {
   getTrustedWebContents(): WebContents | null
   policy: PermissionPolicy
   approvals: ApprovalQueue
+  /**
+   * Deliver an event to the renderer.
+   *
+   * The router needs this because it is the only component that gates a call on
+   * an approval it creates itself. Creating the request is not enough: unless it
+   * is pushed, nothing ever renders it, nobody resolves the waiter, and the
+   * call silently expires at the queue's timeout — a button that appears dead
+   * and then fails with "Not approved." minutes later.
+   */
+  push(event: MainEvent): void
 }
 
 export interface RouteOptions<T> {
@@ -33,6 +44,21 @@ export interface RouteOptions<T> {
   /** When false (default) the call is recorded but not user-gated. */
   requiresApproval?: boolean
   handler(args: never, event: IpcMainInvokeEvent): Promise<T> | T
+}
+
+/**
+ * What a gated channel is asking permission for, in words.
+ *
+ * The channel name is the fallback, not the message. This string is rendered as
+ * the title of a large blocking dialog, so "Allow updates:install?" is not an
+ * acceptable thing to put in front of a person.
+ */
+const CHANNEL_INTENT: Record<string, string> = {
+  'updates:install': 'replace the running app with the downloaded update',
+  'env:install': 'install a missing runtime',
+  'terminal:list': 'list terminal sessions',
+  'process:list': 'list running processes',
+  'process:restart': 'restart a running process'
 }
 
 export class IpcRouter {
@@ -89,10 +115,15 @@ export class IpcRouter {
         const request = this.ctx.approvals.request({
           toolId: channel,
           tier: 'elevated',
-          title: `Allow ${channel}?`,
-          detail: JSON.stringify(parsed.data).slice(0, 400),
-          risk: `Requires ${route.domain}.`
+          title: CHANNEL_INTENT[channel]
+            ? `Allow Cryptoric to ${CHANNEL_INTENT[channel]}?`
+            : `Allow ${channel}?`,
+          detail: JSON.stringify(parsed.data, null, 2).slice(0, 2000),
+          risk: `This action needs ${route.domain} permission.`
         })
+        // Shown before waiting, never after. A gate the user cannot see is not a
+        // gate, it is a hang.
+        this.ctx.push({ type: 'approval', request })
         const approved = await this.ctx.approvals.wait(request.id)
         if (!approved) return { ok: false, error: 'Not approved.' }
       }
