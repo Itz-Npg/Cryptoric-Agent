@@ -289,12 +289,18 @@ what was signed — do not run it.
 
 ### Code signing policy
 
-- **Authenticode is not in use.** Binaries are GPG-signed, which proves
-  provenance but does **not** clear SmartScreen. A SignPath Foundation grant
-  would; that is an external human application.
-- **Contributors never receive the signing key.** The private key and its
-  passphrase exist only on the maintainer's machine, and are not backed up
-  anywhere.
+> **Free code signing provided by SignPath.io, certificate by SignPath Foundation**
+
+The full policy — who may sign what, key management, team roles and the
+privacy policy — is [`docs/signing/CODE_SIGNING_POLICY.md`](docs/signing/CODE_SIGNING_POLICY.md).
+
+- **Authenticode is not in use yet.** Binaries are GPG-signed, which proves
+  provenance but does **not** clear SmartScreen. Authenticode is pending
+  SignPath Foundation approval; until that is granted the `.exe` carries no
+  Microsoft signature and SmartScreen will still warn.
+- **Contributors never receive the signing key.** There are no other
+  contributors. The private key and its passphrase exist only on the
+  maintainer's machine, and are not backed up anywhere.
 
 ### Attestation
 
@@ -372,6 +378,23 @@ co-author, and this project has exactly one. Credentials are never shared: the
 signing key, the Apple account, the npm token and every provider key belong to
 the maintainer alone, and [`.env.example`](.env.example) says so where a secret
 is expected.
+
+---
+
+## Privacy
+
+[PRIVACY.md](PRIVACY.md) is the policy, written from this repository's source:
+every request it describes corresponds to a `fetch` call in the tree.
+
+There is no analytics, no telemetry, no tracking and no crash reporting in this
+project — not because they are switched off, but because the dependency that
+would provide them is not present. What leaves your machine is only what you
+configured or asked for: a model provider you chose, an account server you
+pointed the app at, a Google sign-in you clicked, a page you told the agent to
+open, and an update check against GitHub.
+
+Your files, transcripts and command output stay on your machine. They reach a
+model provider only inside a request you caused, and never to the maintainer.
 
 ---
 
