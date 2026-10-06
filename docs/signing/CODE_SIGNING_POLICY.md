@@ -1,5 +1,7 @@
 # Code signing policy
 
+> **Free code signing provided by SignPath.io, certificate by SignPath Foundation**
+
 Cryptoric Agent is distributed as prebuilt Windows installers, macOS disk images
 and Linux packages on the [GitHub Releases page](https://github.com/Itz-Npg/Cryptoric-Agent/releases).
 This page states who is allowed to sign those artifacts, on what terms, and what
@@ -28,6 +30,38 @@ issued by a recognised authority, which is a separate thing, described below.
 No signature in this project is ever produced by a test double, a self-signed
 placeholder, or a mocked code path. An artifact is either signed by the release
 key or it is published unsigned and says so.
+
+## Team roles and members
+
+SignPath Foundation requires a project to name the roles below. Cryptoric Agent
+is maintained by one person, so each role is held by the same individual. That
+is stated rather than hidden: the roles exist to make the trust boundary
+explicit, and pretending a one-person project has a separate review board would
+be the dishonest version of compliance.
+
+| Role | Member | Scope |
+| --- | --- | --- |
+| **Author** | [Itz-Npg](https://github.com/Itz-Npg) | Commits source code to this repository without additional review |
+| **Reviewer** | [Itz-Npg](https://github.com/Itz-Npg) | Reviews changes proposed by non-committers. No such changes exist today, so this role is currently vacant in practice |
+| **Approver** | [Itz-Npg](https://github.com/Itz-Npg) ([Owners](https://github.com/Itz-Npg/Cryptoric-Agent/people?query=role%3Aowner)) | Approves each signing request before artifacts are signed |
+
+If a second person is ever added with commit access, the Author and Approver
+roles must be reassigned so that no single person is both the sole author of a
+release and its sole approver. The point of the roles is separation; one person
+holding all three is the documented starting condition, not the destination.
+
+## Privacy policy
+
+**[PRIVACY.md](../../PRIVACY.md)** is this project's privacy policy. It is
+written from this repository's source code: every network request it describes
+corresponds to a `fetch` call in the tree, and every local file it lists is one
+the app actually writes.
+
+This project has no analytics, no telemetry, no tracking and no crash
+reporting. The third-party components users may optionally connect to — model
+providers, the account server, Google sign-in, the mobile relay, connector APIs
+and the `winget` package source on Windows — are covered in their own sections
+of that policy, together with how to disable each one.
 
 ## Who may sign release artifacts
 
