@@ -1,0 +1,88 @@
+# Dependency supply chain.
+#
+# Separate from `release.yml` on purpose. A build that fails because an advisory
+# was published overnight is a build somebody is tempted to carve an exception
+# into; here it is its own red mark on its own workflow, which is a thing to fix
+# rather than a thing to route around.
+#
+# **The gate is on production dependencies only.** `npm audit` over the whole tree
+# currently reports advisories in the build and test toolchain — the
+# `electron-builder` → `tar` chain and `vitest` → `tinypool` — and a gate that
+# fails on a package the shipped artifact does not contain is a gate that gets
+# disabled within a week. Those are real and worth fixing by upgrading the tools
+# that pull them in; they are reported below without failing the run, so the
+# difference between "this ships" and "this builds" stays visible.
+#
+# The scheduled run matters more than the push trigger: advisories are published
+# on someone else's schedule, so a repository with no commits this month still
+# needs to be told its dependencies have become a problem.
+
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '41 5 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit shipped dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Refuse a high or critical advisory in a dependency that ships
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Report the build and test toolchain without failing on it
+        if: always()
+        run: |
+          echo '::group::Full audit (development dependencies included)'
+          npm audit || true
+          echo '::endgroup::'
+
+  sbom:
+    name: Publish a software bill of materials
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Built from the lockfile, so the artifact describes what a release would
+      # actually install — and a released build can be matched against the exact
+      # component list it was built from, months later.
+      - name: Generate a CycloneDX SBOM for the shipped dependency set
+        run: npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 90

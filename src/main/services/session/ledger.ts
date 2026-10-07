@@ -66,7 +66,12 @@ export class SessionLedger {
 
   private async persist(): Promise<void> {
     await mkdir(dirname(this.file), { recursive: true })
-    await writeFile(this.file, JSON.stringify({ grants: this.grants }, null, 2), 'utf8')
+    // 0o600 like the settings store: purchase history is the user's business,
+    // not a world-readable file in a shared home directory.
+    await writeFile(this.file, JSON.stringify({ grants: this.grants }, null, 2), {
+      encoding: 'utf8',
+      mode: 0o600
+    })
   }
 
   /**

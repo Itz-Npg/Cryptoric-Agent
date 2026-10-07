@@ -1,0 +1,48 @@
+# Static analysis for the code that talks to the OS.
+#
+# The tool runtime parses attacker-influenced argv, resolves attacker-
+# influenced paths, and runs inside an Electron main process — precisely the
+# code a SAST pass is good at checking, and precisely what no unit test in
+# this repo can prove absent by example alone. Runs on every push and PR so a
+# finding lands next to the change that caused it.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, off-peak: catches new queries in the CodeQL ruleset itself,
+    # not just new code in the repo.
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: javascript-typescript
+          - language: actions
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
