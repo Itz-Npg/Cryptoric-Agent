@@ -79,6 +79,9 @@ export const SCHEMAS = {
   [CHANNELS.gitDiff]: z.object({ path: z.string().optional() }),
   [CHANNELS.gitCheckpoint]: z.object({ message: z.string().max(200).optional() }),
   [CHANNELS.gitCommit]: z.object({ message: z.string().min(1).max(4000) }),
+  [CHANNELS.gitWorktreeList]: z.object({}),
+  [CHANNELS.gitWorktreeRemove]: z.object({ path: z.string().min(1) }),
+  [CHANNELS.gitWorktreeRemoveAll]: z.object({ force: z.boolean().optional() }),
 
   [CHANNELS.fileRead]: z.object({ path: z.string().min(1) }),
   [CHANNELS.fileWrite]: z.object({ path: z.string().min(1), content: z.string().max(5_000_000) }),

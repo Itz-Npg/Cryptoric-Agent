@@ -765,6 +765,7 @@ async function boot(): Promise<Services> {
     settings,
     files,
     git,
+    worktrees,
     gateway,
     updates,
     credentials,
@@ -854,6 +855,7 @@ interface RouteDeps {
   settings: SettingsStore
   files: FileService
   git: GitService
+  worktrees: WorktreeManager
   gateway: ModelGateway
   updates: UpdateService
   credentials: CredentialStore
@@ -1245,6 +1247,38 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   router.register(CHANNELS.gitCommit, {
     domain: 'git.modify',
     handler: (args: { message: string }) => git.commit(args.message)
+  })
+
+  // Worktree management. The manager is created in `boot` and lives under the
+  // app's data directory; the project is the thing that owns the repository.
+  // The manager is passed through route deps, not reached through the runtime,
+  // because removing a checkout is a user's decision — not something the agent
+  // does — and the runtime only exposes the checkout a *running* task is in.
+  router.register(CHANNELS.gitWorktreeList, {
+    domain: 'git.read',
+    requiresApproval: false,
+    handler: async () => {
+      const project = deps.getProject()
+      if (!project) return []
+      return deps.worktrees.list(project.root)
+    }
+  })
+  router.register(CHANNELS.gitWorktreeRemove, {
+    domain: 'git.modify',
+    handler: async (args: { path: string }) => {
+      const project = deps.getProject()
+      if (!project) return false
+      const result = await deps.worktrees.remove({ projectRoot: project.root, path: args.path })
+      return result.ok
+    }
+  })
+  router.register(CHANNELS.gitWorktreeRemoveAll, {
+    domain: 'git.modify',
+    handler: async (args: { force?: boolean }) => {
+      const project = deps.getProject()
+      if (!project) return { removed: 0, kept: 0 }
+      return deps.worktrees.removeAll(project.root, { force: args.force })
+    }
   })
 
   // ---------------------------------------------------------------- files

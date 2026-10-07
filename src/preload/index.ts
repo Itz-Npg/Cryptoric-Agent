@@ -66,6 +66,7 @@ import type {
   GitCheckpointResult,
   GitDiffResult,
   GitStatus,
+  GitWorktreeEntry,
   MainEvent,
   PermissionRule,
   ProcessInfo,
@@ -293,7 +294,10 @@ const api = {
     status: () => invoke<GitStatus>(CHANNELS.gitStatus, {}),
     diff: (path?: string) => invoke<GitDiffResult>(CHANNELS.gitDiff, { path }),
     checkpoint: (message?: string) => invoke<GitCheckpointResult>(CHANNELS.gitCheckpoint, { message }),
-    commit: (message: string) => invoke<GitCheckpointResult>(CHANNELS.gitCommit, { message })
+    commit: (message: string) => invoke<GitCheckpointResult>(CHANNELS.gitCommit, { message }),
+    worktreeList: () => invoke<GitWorktreeEntry[]>(CHANNELS.gitWorktreeList, {}),
+    worktreeRemove: (path: string) => invoke<boolean>(CHANNELS.gitWorktreeRemove, { path }),
+    worktreeRemoveAll: (force?: boolean) => invoke<{ removed: number; kept: number }>(CHANNELS.gitWorktreeRemoveAll, { force })
   },
   file: {
     read: (path: string) => invoke<FileContents>(CHANNELS.fileRead, { path }),

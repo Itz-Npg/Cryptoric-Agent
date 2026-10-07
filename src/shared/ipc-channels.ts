@@ -54,6 +54,9 @@ export const CHANNELS = {
   gitDiff: 'git:diff',
   gitCheckpoint: 'git:checkpoint',
   gitCommit: 'git:commit',
+  gitWorktreeList: 'git:worktree-list',
+  gitWorktreeRemove: 'git:worktree-remove',
+  gitWorktreeRemoveAll: 'git:worktree-remove-all',
 
   // --- files
   fileRead: 'file:read',

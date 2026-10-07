@@ -120,7 +120,7 @@ multi-project execution above.
 | Quick open | Command palette over files, tools, commands. Self-contained. |
 | Notifications + unread | Electron native notifications; real value once agents run long. |
 | Multiple terminals | Working terminal panes. **Not** Ghostty-class WebGL rendering — that is a different product. Now unblocked: `TerminalSessionManager` is already headless and drives `cryptoric` today. |
-| Worktree management | List, review and remove the checkouts isolation creates. The worktree side of this is written and tested (`list`, `remove`, `removeAll`); what is missing is a surface — today a checkout is reviewed with `git` and the settings page has no switch for the setting either. |
+| Worktree management | List, review and remove the checkouts isolation creates. The worktree side of this is written and tested (`list`, `remove`, `removeAll`); the settings page now lists checkouts and the worktree isolation toggle is on the Sessions page. |
 | Any CLI agent | Orca's actual insight: *if it runs in a terminal, it runs in Orca.* Cryptoric already runs arbitrary commands via `run_command`, so this is a wrapper, not a reimplementation. |
 
 ## Deliberately not copying from the reference

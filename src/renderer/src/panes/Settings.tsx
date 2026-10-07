@@ -130,6 +130,8 @@ export function SettingsSurface({
 }) {
   const [rules, setRules] = useState<{ domain: string; default: string }[]>([])
   const [theme, setTheme] = useState<'graphite' | 'bone'>('graphite')
+  const [settings, setSettings] = useState<Record<string, unknown>>({})
+  const [worktreeEntries, setWorktreeEntries] = useState<import('../../../preload').GitWorktreeEntry[]>([])
 
   useEffect(() => {
     void window.cryptoric.permission
@@ -141,6 +143,27 @@ export function SettingsSurface({
   useEffect(() => {
     setTheme(document.documentElement.dataset.theme === 'bone' ? 'bone' : 'graphite')
   }, [])
+
+  useEffect(() => {
+    void window.cryptoric.settings.get().then(setSettings).catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    const project = state.project ?? null
+    if (!project) {
+      setWorktreeEntries([])
+      return
+    }
+    void window.cryptoric.git.worktreeList().then(setWorktreeEntries).catch(() => setWorktreeEntries([]))
+  }, [state.project?.root])
+
+  const removeAllWorktrees = async (): Promise<void> => {
+    void window.cryptoric.git.worktreeRemoveAll().then((result) => {
+      if (result.removed > 0) {
+        void window.cryptoric.git.worktreeList().then(setWorktreeEntries)
+      }
+    })
+  }
 
   return (
     <div className="scroll" style={{ padding: '28px 32px 48px' }}>
@@ -251,6 +274,120 @@ export function SettingsSurface({
             </span>
             <div style={{ flex: 1 }} />
             <Button onClick={onRefresh}>Re-read OS environment</Button>
+          </div>
+        </section>
+
+        <section>
+          <SectionHead>Sessions</SectionHead>
+          <div className="card card-pad" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div className="row" style={{ borderRadius: 0 }}>
+              <div className="row-label" style={{ display: 'grid', minWidth: 0 }}>
+                <span style={{ fontWeight: 550 }}>Isolate tasks in git worktrees</span>
+                <span className="caption" style={{ marginTop: 3 }}>
+                  Each task gets its own `git worktree` at the last commit, on a branch of its own (`cryptoric/…`),
+                  outside the project folder. Your working tree is untouched and the task's changes are one reviewable branch.
+                </span>
+              </div>
+              <div style={{ flex: 1 }} />
+              <div className="segmented">
+                <button
+                  data-on={settings?.sessions?.worktreeIsolation ? 'true' : undefined}
+                  onClick={() => {
+                    void window.cryptoric.settings.update({ sessions: { worktreeIsolation: true } }).then(() => {
+                      setSettings((prev) => ({ ...prev, sessions: { ...(prev.sessions as object ?? {}), worktreeIsolation: true } }))
+                    })
+                  }}
+                  type="button"
+                >
+                  On
+                </button>
+                <button
+                  data-on={!settings?.sessions?.worktreeIsolation ? 'true' : undefined}
+                  onClick={() => {
+                    void window.cryptoric.settings.update({ sessions: { worktreeIsolation: false } }).then(() => {
+                      setSettings((prev) => ({ ...prev, sessions: { ...(prev.sessions as object ?? {}), worktreeIsolation: false } }))
+                    })
+                  }}
+                  type="button"
+                >
+                  Off
+                </button>
+              </div>
+            </div>
+
+            {/* Worktree management */}
+            {state.project?.root && (
+              <>
+                <div className="row" style={{ borderTop: '1px solid var(--line)', borderRadius: 0 }}>
+                  <div className="row-label" style={{ display: 'grid', minWidth: 0 }}>
+                    <span style={{ fontWeight: 550 }}>Checkouts</span>
+                    <span className="caption" style={{ marginTop: 3 }}>
+                      The isolated checkouts this app created for this project. The project's own working tree is listed first and cannot be removed here.
+                    </span>
+                  </div>
+                </div>
+
+                {worktreeEntries.length === 0 ? (
+                  <div className="row" style={{ borderTop: '1px solid var(--line)', borderRadius: 0, padding: '12px 16px' }}>
+                    <span className="caption">No checkouts yet. Tasks you run with isolation on will appear here.</span>
+                  </div>
+                ) : (
+                  <div style={{ borderTop: '1px solid var(--line)' }}>
+                    {worktreeEntries.map((entry, index) => (
+                      <div
+                        key={entry.path}
+                        className="row"
+                        style={{ borderTop: index === 0 ? 'none' : '1px solid var(--line)', borderRadius: 0, alignItems: 'flex-start', padding: '12px 16px' }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontWeight: entry.main ? 550 : 400 }}>
+                              {entry.main ? 'Project working tree' : `cryptoric/${entry.branch}`}
+                            </span>
+                            {entry.main && <Chip tone="idle">main</Chip>}
+                            {!entry.main && (
+                              <span className="caption" style={{ fontFamily: 'var(--mono)' }}>
+                                {entry.path}
+                              </span>
+                            )}
+                          </div>
+                          {!entry.main && entry.head && (
+                            <span className="caption" style={{ marginTop: 2, color: 'var(--text-3)' }}>
+                              {entry.head.slice(0, 7)} · {entry.detached ? 'detached' : `branch ${entry.branch}`}
+                            </span>
+                          )}
+                        </div>
+                        {!entry.main && (
+                          <Button
+                            variant="ghost"
+                            size="small"
+                            onClick={() => {
+                              void window.cryptoric.git.worktreeRemove(entry.path).then((ok) => {
+                                if (ok) {
+                                  setWorktreeEntries((prev) => prev.filter((e) => e.path !== entry.path))
+                                  void window.cryptoric.git.worktreeList()
+                                }
+                              })
+                            }}
+                          >
+                            Remove
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="row" style={{ borderTop: '1px solid var(--line)', borderRadius: 0, padding: '10px 16px', alignItems: 'center' }}>
+                  <span className="caption" style={{ flex: 1 }}>
+                    Remove all checkouts this app created for this project. The project's own working tree and any handmade checkouts are left alone.
+                  </span>
+                  <Button variant="ghost" size="small" onClick={removeAllWorktrees}>
+                    Remove all
+                  </Button>
+                </div>
+              </>
+            )}
           </div>
         </section>
 
@@ -468,8 +605,6 @@ function UpdatesSection({
   const canCheck = !busy && update?.state !== 'unsupported'
 
   return (
-    <section>
-      <SectionHead>Updates</SectionHead>
       <div className="card" style={{ overflow: 'hidden' }}>
         <div className="row" style={{ borderRadius: 0 }}>
           <div className="row-label" style={{ display: 'grid' }}>

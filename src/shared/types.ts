@@ -741,6 +741,15 @@ export interface GitCheckpointResult {
   error: string | null
 }
 
+export interface GitWorktreeEntry {
+  path: string
+  head: string | null
+  branch: string | null
+  detached: boolean
+  /** True for the repository's own working tree. */
+  main: boolean
+}
+
 // ---------------------------------------------------------------------------
 // Events pushed from main -> renderer
 // ---------------------------------------------------------------------------

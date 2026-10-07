@@ -191,8 +191,7 @@ Every tool call the task makes resolves inside that checkout, so your working
 tree is untouched and the task's changes are one reviewable branch instead of a
 diff mixed in with whatever else you had open. What it cannot do is see work you
 have not committed — that is the trade, so it is a choice rather than a default.
-Turn it on with `sessions.worktreeIsolation` in `settings.json` (there is no
-switch on the settings page yet), or `CRYPTORIC_WORKTREE_ISOLATION=1` in the CLI.
+Turn it on with `sessions.worktreeIsolation` in `settings.json`, or `CRYPTORIC_WORKTREE_ISOLATION=1` in the CLI.
 
 Checkouts are **kept** when a task ends: deleting one would delete the work. They
 live under the app's user-data folder — `$CRYPTORIC_HOME/worktrees` for the CLI —
