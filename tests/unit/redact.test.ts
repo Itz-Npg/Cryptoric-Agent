@@ -77,8 +77,36 @@ describe('isSensitiveKey', () => {
   it('recognises credential-shaped key names', () => {
     expect(isSensitiveKey('apiKey')).toBe(true)
     expect(isSensitiveKey('client_secret')).toBe(true)
+    expect(isSensitiveKey('authToken')).toBe(true)
+    expect(isSensitiveKey('authorization')).toBe(true)
     expect(isSensitiveKey('PATH')).toBe(false)
     expect(isSensitiveKey('branch')).toBe(false)
+  })
+
+  it('does not mistake a byline for a credential', () => {
+    // `author` contains `auth`, and the blunt pattern redacted it — so a git
+    // log entry lost its byline on the way to the model and the transcript,
+    // which is information silently replaced with nothing.
+    expect(isSensitiveKey('author')).toBe(false)
+    expect(isSensitiveKey('authors')).toBe(false)
+    const redacted = redactArgs({ author: 'Ada Lovelace', subject: 'fix: thing' }) as Record<string, string>
+    expect(redacted.author).toBe('Ada Lovelace')
+    expect(redacted.subject).toBe('fix: thing')
+  })
+
+  it('does not mistake a test outcome for a password', () => {
+    // `passed` contains `pass`. Redacting it removed the single fact a test run
+    // exists to report.
+    expect(isSensitiveKey('passed')).toBe(false)
+    expect(isSensitiveKey('passes')).toBe(false)
+    expect(isSensitiveKey('pass')).toBe(true)
+    expect(isSensitiveKey('password')).toBe(true)
+    expect(isSensitiveKey('passphrase')).toBe(true)
+    expect(isSensitiveKey('passwords')).toBe(true)
+
+    const redacted = redactArgs({ passed: false, exitCode: 3 }) as Record<string, unknown>
+    expect(redacted.passed).toBe(false)
+    expect(redacted.exitCode).toBe(3)
   })
 })
 

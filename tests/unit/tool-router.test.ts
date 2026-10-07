@@ -32,26 +32,38 @@ function registry(tools: ToolDefinition[]): ToolRegistry {
   return r
 }
 
+/**
+ * A registry of tool ids that actually exist in the product.
+ *
+ * This fixture used to carry `search_code`, `generate_diff`, `scan_secrets`,
+ * `list_containers`, `database_inspect` and `web_research` — none of which any
+ * tool builder registers. A router unit test proving that a fictional workflow
+ * ranks correctly is not a test of this router. The ids below are the real ones;
+ * `tests/unit/tool-catalogue.test.ts` is what keeps them real, by building the
+ * registries the composition roots build and refusing to let an intent chain
+ * name anything else.
+ */
 const SAMPLE = [
   tool('analyze_project', 'files'),
-  tool('search_code', 'code', { description: 'search the code base for content and symbols' }),
+  tool('search_content', 'code', { description: 'search the code base for content and symbols' }),
   tool('read_file', 'files'),
+  tool('write_file', 'files', { mutates: true, risk: 'medium' }),
   tool('edit_file', 'files', { mutates: true, risk: 'medium' }),
-  tool('generate_diff', 'git'),
+  tool('git_status', 'git'),
+  tool('git_diff', 'git'),
+  tool('git_log', 'git'),
+  tool('git_commit', 'git', { risk: 'medium', mutates: true }),
   tool('run_tests', 'test'),
   tool('run_command', 'terminal', { risk: 'medium' }),
+  tool('web_fetch', 'research'),
   tool('detect_runtime', 'runtime'),
   tool('install_runtime', 'runtime', { risk: 'medium', mutates: true }),
   tool('refresh_environment', 'runtime'),
   tool('verify_runtime', 'runtime'),
   tool('create_terminal_session', 'terminal', { mutates: true, risk: 'low' }),
-  tool('git_status', 'git'),
-  tool('git_commit', 'git', { risk: 'medium', mutates: true }),
-  tool('scan_secrets', 'security'),
+  tool('list_running_processes', 'process'),
   tool('browser_navigate', 'browser', { risk: 'low' }),
-  tool('list_containers', 'containers'),
-  tool('database_inspect', 'database', { risk: 'medium' }),
-  tool('web_research', 'research')
+  tool('browser_screenshot', 'browser', { risk: 'low' })
 ]
 
 describe('classifyIntent', () => {
@@ -81,21 +93,29 @@ describe('classifyIntent', () => {
 describe('routeTools', () => {
   it('proposes only tools from required capability families', () => {
     const plan = routeTools(registry(SAMPLE), { prompt: 'Fix the failing login test' }, { maxTools: 8 })
-    const categories = new Set(plan.tools.map((t) => t.category))
-    expect(categories.has('containers')).toBe(false)
-    expect(categories.has('database')).toBe(false)
-    expect(categories.has('research')).toBe(false)
+    const wanted = new Set(plan.categories)
+    expect(plan.tools.length).toBeGreaterThan(0)
+    // Not "these ids are absent" but "every selected id belongs to a family the
+    // router actually decided this task needs" — which is the guarantee, and it
+    // holds whatever the registry contains.
+    for (const selected of plan.tools) expect(wanted.has(selected.category)).toBe(true)
+    expect(plan.tools.map((t) => t.toolId)).not.toContain('web_fetch')
   })
 
   it('never proposes a browser tool for a pure backend fix', () => {
     const plan = routeTools(registry(SAMPLE), { prompt: 'Fix the failing login test' }, { maxTools: 10 })
-    expect(plan.tools.map((t) => t.toolId)).not.toContain('browser_navigate')
-    expect(plan.tools.map((t) => t.toolId)).not.toContain('list_containers')
-    expect(plan.tools.map((t) => t.toolId)).not.toContain('database_inspect')
+    const ids = plan.tools.map((t) => t.toolId)
+    expect(ids).not.toContain('browser_navigate')
+    expect(ids).not.toContain('browser_screenshot')
+    expect(plan.tools.some((t) => t.category === 'browser')).toBe(false)
   })
 
   it('brings in the runtime chain when a runtime is missing', () => {
-    const plan = routeTools(registry(SAMPLE), { prompt: 'Install Rust and run the project' }, { maxTools: 8 })
+    // The budget is deliberately generous: the real registry is larger than the
+    // chain, and what is asserted is that the chain is *proposed*, not that it
+    // wins a popularity contest against tools the same prompt also plausibly
+    // needs. See `keeps the whole runtime chain` below for the ordering claim.
+    const plan = routeTools(registry(SAMPLE), { prompt: 'Install Rust on this machine' }, { maxTools: 12 })
     const ids = plan.tools.map((t) => t.toolId)
     expect(ids).toContain('detect_runtime')
     expect(ids).toContain('install_runtime')

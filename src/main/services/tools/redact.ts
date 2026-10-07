@@ -18,8 +18,25 @@
 
 const REDACTED = '[redacted]'
 
-/** Argument names whose values are never recorded. */
-const SENSITIVE_KEY = /(pass(word|phrase)?|secret|token|api[-_]?key|credential|auth|bearer|cookie|session[-_]?id|private[-_]?key|client[-_]?secret|access[-_]?key)/i
+/**
+ * Argument names whose values are never recorded.
+ *
+ * Both lookaheads here are load-bearing, and both came from a false positive
+ * that silently destroyed real information:
+ *
+ *  - `auth(?!ors?\b)` — `author` contains `auth`, so a `git log` entry lost its
+ *    byline to `[redacted]` on the way to the model.
+ *  - `pass(?:word|phrase)?s?(?![a-z])` — `passed` contains `pass`, so the
+ *    `run_tests` result lost the one boolean that says whether the suite
+ *    passed. The lookahead is a letter *after* the optional suffix, which is
+ *    what separates `password` and `passphrase` (still sensitive) from `passed`
+ *    and `passphraseHint`-shaped words that are not credentials at all.
+ *
+ * Neither is a loosened rule: `auth`, `authToken`, `authorization`, `pass`,
+ * `passWord` and `passphrase` all still match.
+ */
+const SENSITIVE_KEY =
+  /(pass(?:word|phrase)?s?(?![a-z])|secret|token|api[-_]?key|credential|auth(?!ors?\b)|bearer|cookie|session[-_]?id|private[-_]?key|client[-_]?secret|access[-_]?key)/i
 
 /**
  * Value shapes that are credentials wherever they appear.

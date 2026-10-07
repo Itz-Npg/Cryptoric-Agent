@@ -147,16 +147,31 @@ export interface ResolvedHistory {
   writes: string[]
 }
 
+/**
+ * Where a project's transcript lives.
+ *
+ * A transcript must never be written to a *relative* path. `join('',
+ * 'conversation.json')` is `conversation.json`, which resolves against the
+ * process's working directory — so the app, which passes `projectDir: ''`
+ * until a project is opened, dropped a stray `conversation.json` into whatever
+ * directory it happened to be launched from, and read that file back as the
+ * user's conversation on the next boot. An empty `projectDir` now means "there
+ * is no project copy", and the app folder carries the session on its own.
+ *
+ * With the location set to the project folder and no project open, the app copy
+ * is still the only honest destination: the alternative is losing the session.
+ */
 export function resolveHistoryPaths(targets: HistoryTargets, projectId: string): ResolvedHistory {
   // Keyed by project id rather than by root: two checkouts of the same repo are
   // different projects and must not share a transcript.
   const appFile = join(targets.appDir, 'conversations', `${projectId}.json`)
-  const projectFile = join(targets.projectDir, CONVERSATION_FILE)
+  const hasProject = targets.projectDir.trim().length > 0
+  const projectFile = hasProject ? join(targets.projectDir, CONVERSATION_FILE) : null
 
-  if (targets.location === 'project') {
+  if (targets.location === 'project' && projectFile) {
     return { reads: [projectFile], writes: [projectFile] }
   }
-  if (targets.location === 'app') {
+  if (targets.location === 'app' || !projectFile) {
     return { reads: [appFile], writes: [appFile] }
   }
 

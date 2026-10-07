@@ -11,7 +11,7 @@ one pipeline:
 | Surface | What it is | State |
 |---|---|---|
 | **Desktop** | Electron app, agent + browser + terminal | Ships as `.exe`, `.dmg`, `.AppImage`, `.deb` |
-| **CLI** | `cryptoric`, one 425 KB file, no Electron | Verified; not yet on npm |
+| **CLI** | `cryptoric`, one 475 KB file, no Electron | Verified; not yet on npm |
 | **Mobile** | Swift companion + Node relay | **Library and tests only — no app ships** |
 
 > **Bring your own key.** There is no Cryptoric account and no Cryptoric-funded
@@ -90,6 +90,41 @@ The parts worth naming:
 - **Links leave through an allowlist.** `shell.openExternal` is a process
   launcher on Windows, so only `https:`, `http:` and `mailto:` are handed to it.
 
+### The tool surface
+
+**75 tools in the desktop app, 31 in the CLI**, from one registry — so a
+capability is written once and its policy is enforced in one place.
+
+| Family | Tools | What it is for |
+|---|---|---|
+| Files | 12 | read, write, edit, move, delete, search; every path resolved and re-checked against the open project |
+| Environment | 11 | detect, install and verify runtimes; supervise terminals and processes |
+| Git | 4 | `git_status`, `git_diff`, `git_log`, `git_commit` — see what changed, then record it |
+| Project | 2 | `analyze_project` orientates on a repository it has not seen; `run_tests` runs the suite the project already declares |
+| Research | 1 | `web_fetch` reads one http(s) page as text |
+| Command | 1 | `run_command` — argv, never a shell string |
+| Browser | 44 | desktop only: it drives a real `WebContentsView`, so the CLI does not offer it |
+
+The three read-only git tools are `safe`; `git_commit` is `ask`, and it stages
+only the paths it was given unless told otherwise. **No tool can rewrite history
+or publish**: `push`, `reset --hard`, `clean` and force are not exposed at any
+tier, so a prompt-injected model cannot reach them by asking.
+
+`web_fetch` follows redirects by hand — five at most — and re-checks every hop,
+because a permitted host is not a licence for wherever it points next. Cloud
+metadata addresses are refused outright; loopback and private addresses are
+allowed, because checking your own dev server is the main reason the tool
+exists. Bodies are read under a byte cap and cancelled once it is reached, and
+the content type decides whether the bytes are text at all.
+
+**Children get an expanded environment.** The machine PATH is stored in the
+registry as `REG_EXPAND_SZ` and Windows expands it when it composes a process
+environment. Reading it raw put a literal `%SystemRoot%\system32` on the PATH of
+every spawned child, which made `npm run <script>` fail with
+`ENOENT spawn %SystemRoot%\system32\cmd.exe` — npm shells out to cmd through
+that very entry. It is expanded now, and where no variable is found the text is
+left as written rather than silently emptied.
+
 ### Browser
 
 **44 browser tools**, driven by a real `WebContentsView`. Design Mode adds
@@ -136,6 +171,12 @@ history was chosen to continue the conversation.
 Opening a folder creates `<root>/.cryptoricagent/` holding a stable project id
 and the transcript. The folder writes its own `.gitignore` containing `*`, so it
 never shows up as untracked noise in your repo.
+
+The app-folder copy is keyed by project id, and a transcript is never written to
+a relative path: with nothing open, the app copy carries the session on its own.
+It used to resolve `conversation.json` against the process's working directory,
+which left a stray transcript next to the executable and read it back as the
+user's conversation on the next launch.
 
 History location is a setting: **app folder**, **project folder**, or **both**
 (default). Multiple projects run in **parallel**, and two tasks in the *same*
@@ -231,9 +272,15 @@ cryptoric run "<task>" --json
 ```
 
 The same pipeline, the same tools, the same verdicts — assembled around argv and
-a pipe instead of a window. One file — 425 KB as the bundler reports it — with
+a pipe instead of a window. One file — 475 KB as the bundler reports it — with
 no Electron, built with the esbuild already in the repo so it installs nothing
 extra.
+
+It has **31 tools**: files, environment, git, the project tools (`analyze_project`
+and `run_tests`), `web_fetch` and `run_command`. The one family missing is the
+browser's, and it is missing rather than stubbed — those tools are backed by a
+window, so `cryptoric tools` says so instead of offering a tool that always
+fails.
 
 With no model configured it exits **2** and reports `BLOCKED` with a reason.
 `--json` carries that reason too; an earlier build returned a verdict with
@@ -321,7 +368,7 @@ store once; a key already in the store always wins.
 - **Zero runtime dependencies in the main process beyond `zod`.** The renderer
   adds `motion` and `@hugeicons/*` for the prompt bar; nothing privileged gained
   a dependency.
-- **1012 tests across 45 files**, run on every push.
+- **1065 tests across 49 files**, run on every push.
 - CI: **Build and Release**, **CLI**, **Mobile companion**, **CodeQL** and
   **Security** — the last of which refuses a high or critical advisory in a
   dependency that ships and publishes a CycloneDX SBOM per run.
@@ -369,7 +416,7 @@ could not run, that is written down below rather than left to look like success.
 
 **Verified, with the command that proves it:**
 
-- Agent loop, stages, evidence gate and tool runtime — 1012 unit tests, all green.
+- Agent loop, stages, evidence gate and tool runtime — 1065 unit tests, all green.
 - **Security** — symlink and junction escapes denied (a junction is used in the
   test because file symlinks need Developer Mode on Windows), session grants
   proven to expire and to refuse a tier above the one approved, credential-shaped
@@ -378,8 +425,24 @@ could not run, that is written down below rather than left to look like success.
   a ban, an unconfigured server keeps the route shut, and the limit answers `429`
   with a `retry-after`.
 - **Browser** — `npm run test:browser` → **64/64 against real Chromium**, 44 tools.
-- **CLI** — builds Electron-free, and a real run with no model exits **2
-  `BLOCKED`**, writes nothing, and explains why in both human and JSON output.
+- **CLI** — builds Electron-free, offers **31 tools**, and a real run with no
+  model exits **2 `BLOCKED`**, writes nothing, and explains why in both human and
+  JSON output.
+- **Git, tests and the web** — the git tools run against a real repository on
+  disk (`git_commit` stages only the paths it was given, refuses an empty tree and
+  never touches history), `run_tests` runs a real `npm test` in fixture projects
+  and reports the runner's own exit code as the verdict, and `web_fetch` is driven
+  against a real HTTP server on loopback — redirect chains, a 404, a declared
+  charset, a byte cap, and four refusals that never become a request.
+- **The capability map names real tools.** `router.ts` advertised chains built
+  from eight tool ids that no builder registered, so the "canonical workflow" it
+  ranked was a description of a different product. Every id is now real, and
+  `tests/unit/tool-catalogue.test.ts` builds the registry both hosts build and
+  fails if a chain names anything else.
+- **Redaction no longer eats real data.** The heuristic that scrubs
+  credential-shaped *keys* matched `author` (via `auth`) and `passed` (via
+  `pass`), so a git log lost its byline and a test run lost the one boolean it
+exists to report — silently, in both cases. Both patterns are anchored now.
 - **iOS companion** — `swift build` + `swift test` on a GitHub macOS runner.
 - **Relay** — 17/17.
 - **Session economy** — the exchange rate, the price floor, the zero-coin gate
@@ -413,7 +476,11 @@ could not run, that is written down below rather than left to look like success.
   macOS and Linux correctly refuse.
 - **The CLI has never run against a live model provider.** Every CLI result here
   was produced with no key set. That is the path which must refuse to claim
-  success, and it does — but the model path itself is untested end to end.
+  success, and it does — but the model path itself is untested end to end. To
+  close it: `node cli/build.mjs`, then a run with `CRYPTORIC_API_KEY`,
+  `CRYPTORIC_ENDPOINT` and `CRYPTORIC_MODEL` all set, since the CLI requires all
+  three. `npm run test:model` proves the shared gateway against the same provider
+  first, and needs only `OPENROUTER_API_KEY`.
 - **In `local` mode the coin limit is enforced on the user's machine.** The
   balance is a file, which raises the cost of cheating without making it
   impossible. `hosted` mode is the answer to that — it asks the server — but
@@ -421,15 +488,28 @@ could not run, that is written down below rather than left to look like success.
 - **Multi-project execution is real; the UI is not.** There is no sidebar yet to
   switch between folders.
 - **The provider server has never been published.** It is tested against itself
-  over loopback, not against a live deployment.
-- **The Google handshake has never run against Google.** Every piece around it is
-  tested, but the code exchange needs a real `GOOGLE_CLIENT_ID` — a Desktop app
-  client id whose redirect URI is `http://127.0.0.1:53123/callback` — and only
-  the maintainer can create one.
+  over loopback, not against a live deployment. `PROVIDER_TOKEN=$(openssl rand -hex
+  32) node server/index.mjs` runs it for real on this machine; what is untested is
+  a host other people can reach.
+- **The Google handshake has not completed against Google yet — but the request
+  now has.** The authorization endpoint was given the exact URL this code builds
+  and accepted its shape: PKCE `S256`, `openid email profile`, offline access and
+  the loopback redirect, objecting only to a deliberately fake client id. What is
+  still unproven is the half after consent — Google returning a code, and the
+  verifier redeeming it. `npm run test:google` runs exactly that in about a
+  minute, and two of its checks only a real socket can prove: that the port was
+  already answering when the browser was handed the URL, and that it is gone
+  afterwards. [docs/google-sign-in.md](docs/google-sign-in.md) is the five-step
+  console setup. It needs a **Desktop app** client id, which only the maintainer
+  can create, and a human to consent; with none set it reports zero checks ran
+  rather than passing quietly.
 - **`hosted` mode is charged, but only against a server you control.** It has
   never run against a deployment: `AGENT_SERVER_URL` and `AGENT_SERVER_TOKEN`
   are yours to set, and no Vercel deployment exists. The billing path is
-  verified against the real handler on a real socket.
+  verified against the real handler on a real socket. A local
+  `node agentserver/src/index.mjs` with `AGENT_SERVER_TOKEN` and
+  `AGENT_SERVER_ADMIN_TOKEN` set closes the loop end to end; a deployment that
+  survives a restart is the part nobody has run.
 - **Electron 33 is end-of-life.** Chromium 130 no longer receives security fixes,
   and this is the largest outstanding risk in the project. The upgrade is a real
   piece of work, not a version bump.

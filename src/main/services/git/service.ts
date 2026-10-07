@@ -104,17 +104,81 @@ export class GitService {
   }
 
   /**
-   * Create a safety checkpoint before autonomous work: stage everything and
-   * commit with a machine-authored message. Refuses to commit an empty tree.
+   * Whether the open project is inside a work tree at all.
+   *
+   * Kept as its own call because every other method has to decide what "not a
+   * repository" means, and doing that by inspecting a failed `status` parse is
+   * how a wrong answer gets reported as a real one.
    */
-  async checkpoint(message?: string): Promise<GitCheckpointResult> {
+  async isRepo(): Promise<boolean> {
+    const cwd = this.root()
+    if (!cwd) return false
+    const inside = await this.run(['rev-parse', '--is-inside-work-tree'], cwd, 8000)
+    return inside.code === 0 && inside.stdout.trim() === 'true'
+  }
+
+  /**
+   * The most recent commits, newest first.
+   *
+   * `--format` with NUL separators rather than the default pretty format: a
+   * commit subject can contain any character a human can type, including the
+   * ones a line- and colon-delimited format would split on, and a parsed log
+   * that silently mis-attributes a subject to the wrong sha is worse than no
+   * log at all.
+   */
+  async log(limit = 15): Promise<GitCommitEntry[]> {
+    const cwd = this.root()
+    if (!cwd) return []
+    const count = Math.max(1, Math.min(100, Math.floor(limit)))
+    const result = await this.run(
+      ['log', `--max-count=${count}`, '--no-color', '--format=%H%x00%h%x00%s%x00%an%x00%aI'],
+      cwd,
+      15_000
+    )
+    if (result.code !== 0) return []
+    return result.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        const [sha, short, subject, author, date] = line.split('\u0000')
+        return {
+          sha: sha ?? '',
+          short: short ?? '',
+          subject: subject ?? '',
+          author: author ?? '',
+          date: date ?? ''
+        }
+      })
+      .filter((entry) => entry.sha.length > 0)
+  }
+
+  /**
+   * Create a safety checkpoint before autonomous work: stage and commit with a
+   * message. Refuses to commit an empty tree.
+   *
+   * `paths` narrows what is staged. Without it this stages everything (`add
+   * -A`), which is right for a pre-flight checkpoint and wrong for an agent
+   * that edited one file and should not sweep an unrelated in-progress change
+   * into its commit. Every path is validated against the workspace first, for
+   * the same reason `diff` does it: a path is an argument the model chose.
+   */
+  async checkpoint(message?: string, paths?: string[]): Promise<GitCheckpointResult> {
     const cwd = this.root()
     if (!cwd) return { created: false, commit: null, message: '', error: 'No project open.' }
 
     const inside = await this.run(['rev-parse', '--is-inside-work-tree'], cwd, 8000)
     if (inside.code !== 0) return { created: false, commit: null, message: '', error: 'Not a git repository.' }
 
-    await this.run(['add', '-A'], cwd, 30_000)
+    const scoped: string[] = []
+    for (const path of paths ?? []) {
+      const verdict = checkPath(path, this.getRoots())
+      if (!verdict.allowed) return { created: false, commit: null, message: '', error: `Path denied: ${verdict.reason}` }
+      scoped.push(verdict.absolute)
+    }
+
+    // `--` ends option parsing, so a path that begins with `-` is a path.
+    await this.run(scoped.length > 0 ? ['add', '--', ...scoped] : ['add', '-A'], cwd, 30_000)
     const staged = await this.run(['diff', '--cached', '--name-only'], cwd, 15_000)
     if (!staged.stdout.trim()) {
       return { created: false, commit: null, message: '', error: 'Nothing to checkpoint — the working tree is clean.' }
@@ -133,9 +197,19 @@ export class GitService {
   }
 
   /** Alias of `checkpoint` kept for the command palette's "Commit" entry point. */
-  async commit(message: string): Promise<GitCheckpointResult> {
-    return this.checkpoint(message)
+  async commit(message: string, paths?: string[]): Promise<GitCheckpointResult> {
+    return this.checkpoint(message, paths)
   }
+}
+
+/** One entry of `git log`, as parsed above. */
+export interface GitCommitEntry {
+  sha: string
+  short: string
+  subject: string
+  author: string
+  /** ISO 8601 author date. */
+  date: string
 }
 
 function emptyStatus(): GitStatus {

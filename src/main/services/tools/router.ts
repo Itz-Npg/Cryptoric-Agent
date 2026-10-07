@@ -24,6 +24,14 @@ import type { ToolRegistry } from './registry'
  * `chain` is the canonical order for that kind of work. The router uses it to
  * rank related tools against each other — the analyzer before the search before
  * the edit — so a plan reads as a workflow rather than a bag of tools.
+ *
+ * **Every id in a chain must be a tool that is actually registered.** This list
+ * used to name `git_status`, `generate_diff`, `run_tests`, `web_research`,
+ * `scan_secrets`, `find_references`, `detect_dev_port` and `database_inspect`,
+ * none of which existed — so the "canonical workflow" it ranked against was a
+ * description of a different product. `tests/unit/tool-catalogue.test.ts` now
+ * builds the real registries and fails if a chain names anything else, which is
+ * the only thing that keeps this list from drifting back into fiction.
  */
 export interface IntentSignal {
   intent: string
@@ -37,97 +45,97 @@ export const INTENT_SIGNALS: IntentSignal[] = [
     intent: 'fix-bug',
     categories: ['files', 'code', 'terminal', 'test'],
     keywords: ['fix', 'bug', 'broken', 'failing', 'error', 'crash', 'regression', 'not working', 'fails'],
-    chain: ['analyze_project', 'search_code', 'read_file', 'run_command', 'run_tests', 'edit_file', 'run_tests', 'generate_diff']
+    chain: ['analyze_project', 'search_content', 'read_file', 'edit_file', 'run_tests', 'git_diff']
   },
   {
     intent: 'build-feature',
     categories: ['code', 'files', 'test'],
     keywords: ['add', 'implement', 'build', 'create', 'feature', 'support', 'write', 'new'],
-    chain: ['analyze_project', 'search_code', 'read_file', 'edit_file', 'run_tests']
+    chain: ['analyze_project', 'search_content', 'read_file', 'write_file', 'run_tests']
   },
   {
     intent: 'refactor',
     categories: ['code', 'files', 'test'],
     keywords: ['refactor', 'rename', 'extract', 'cleanup', 'restructure', 'simplify', 'organize'],
-    chain: ['analyze_project', 'find_references', 'edit_file', 'run_tests', 'generate_diff']
+    chain: ['analyze_project', 'search_content', 'edit_file', 'run_tests', 'git_diff']
   },
   {
     intent: 'setup-environment',
     categories: ['runtime', 'process', 'terminal'],
     keywords: ['install', 'runtime', 'toolchain', 'setup', 'set up', 'missing', 'version', 'node', 'python', 'rust', 'java', 'go', 'dotnet'],
-    chain: ['detect_runtime', 'install_runtime', 'refresh_environment', 'verify_runtime', 'create_terminal_session']
+    chain: ['detect_runtime', 'detect_package_manager', 'install_runtime', 'refresh_environment', 'verify_runtime', 'create_terminal_session']
   },
   {
     intent: 'run-project',
     categories: ['process', 'terminal', 'runtime', 'browser'],
     keywords: ['run', 'start', 'serve', 'dev server', 'launch', 'preview', 'localhost', 'port'],
-    chain: ['analyze_project', 'detect_package_manager', 'start_process', 'detect_dev_port', 'browser_navigate']
+    chain: ['analyze_project', 'detect_package_manager', 'run_command', 'list_running_processes', 'browser_navigate']
   },
   {
     intent: 'test',
     categories: ['test', 'terminal', 'files'],
     keywords: ['test', 'tests', 'coverage', 'spec', 'unit', 'integration', 'e2e', 'vitest', 'jest', 'pytest'],
-    chain: ['analyze_project', 'discover_tests', 'run_tests', 'generate_diff']
+    chain: ['analyze_project', 'run_tests', 'git_diff']
   },
   {
     intent: 'review',
     categories: ['git', 'files', 'code'],
     keywords: ['review', 'check', 'inspect', 'audit', 'diff', 'changes', 'pr', 'pull request'],
-    chain: ['git_status', 'generate_diff', 'git_log', 'read_file']
+    chain: ['git_status', 'git_diff', 'git_log', 'read_file']
   },
   {
     intent: 'commit',
     categories: ['git', 'security'],
     keywords: ['commit', 'push', 'checkpoint', 'version control', 'stage', 'branch'],
-    chain: ['git_status', 'scan_secrets', 'generate_diff', 'git_checkpoint', 'git_commit']
+    chain: ['git_status', 'git_diff', 'git_commit', 'git_log']
   },
   {
     intent: 'security',
     categories: ['security', 'files', 'git'],
     keywords: ['security', 'vulnerability', 'secret', 'exposed', 'xss', 'injection', 'traversal', 'audit', 'cve', 'dependency risk'],
-    chain: ['scan_secrets', 'scan_dependencies', 'analyze_permissions', 'generate_diff']
+    chain: ['analyze_project', 'search_content', 'git_diff']
   },
   {
     intent: 'debug',
     categories: ['terminal', 'process', 'code', 'files'],
     keywords: ['debug', 'stack trace', 'stacktrace', 'exception', 'segfault', 'hang', 'hangs', 'hangs', 'deadlock', 'port conflict'],
-    chain: ['analyze_project', 'run_command', 'inspect_process', 'read_file', 'edit_file']
+    chain: ['analyze_project', 'run_command', 'list_running_processes', 'read_file', 'edit_file']
   },
   {
     intent: 'documentation',
     categories: ['files', 'code', 'git'],
     keywords: ['document', 'documentation', 'readme', 'docstring', 'explain', 'changelog', 'architecture doc'],
-    chain: ['analyze_project', 'search_code', 'read_file', 'write_file']
+    chain: ['analyze_project', 'search_content', 'read_file', 'write_file']
   },
   {
     intent: 'research',
     categories: ['research', 'network'],
     keywords: ['research', 'docs', 'documentation for', 'latest', 'version of', 'how does', 'official', 'changelog', 'api reference'],
-    chain: ['web_research', 'read_file']
+    chain: ['web_fetch', 'read_file']
   },
   {
     intent: 'ui-work',
     categories: ['browser', 'files', 'code', 'test'],
     keywords: ['ui', 'design', 'layout', 'style', 'css', 'responsive', 'screenshot', 'visual', 'component', 'frontend', 'page'],
-    chain: ['analyze_project', 'search_code', 'read_file', 'edit_file', 'start_process', 'browser_navigate', 'browser_screenshot']
+    chain: ['analyze_project', 'search_content', 'read_file', 'edit_file', 'run_command', 'browser_navigate', 'browser_screenshot']
   },
   {
     intent: 'container',
     categories: ['containers', 'terminal', 'process'],
     keywords: ['docker', 'compose', 'container', 'podman', 'image', 'volume'],
-    chain: ['detect_runtime', 'list_containers', 'read_file']
+    chain: ['detect_runtime', 'list_running_processes', 'read_file']
   },
   {
     intent: 'database',
     categories: ['database', 'terminal'],
     keywords: ['database', 'sql', 'postgres', 'mysql', 'mongo', 'redis', 'sqlite', 'schema', 'migration', 'query'],
-    chain: ['analyze_project', 'database_inspect', 'read_file']
+    chain: ['analyze_project', 'read_file']
   },
   {
     intent: 'understand',
     categories: ['files', 'code', 'git'],
     keywords: ['explain', 'how does', 'what does', 'understand', 'analyse', 'analyze', 'architecture', 'structure', 'walk me through'],
-    chain: ['analyze_project', 'search_code', 'git_log', 'read_file']
+    chain: ['analyze_project', 'search_content', 'git_log', 'read_file']
   }
 ]
 

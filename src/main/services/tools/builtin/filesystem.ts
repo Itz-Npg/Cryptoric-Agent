@@ -72,8 +72,14 @@ export const PROTECTED_DIRECTORIES = [
   'vendor'
 ]
 
-/** Directories skipped when listing or searching, to keep results readable. */
-const IGNORED_DIRECTORIES = new Set([
+/**
+ * Directories skipped when listing or searching, to keep results readable.
+ *
+ * Exported because the project tools walk the same tree and must skip exactly
+ * the same set. Two lists would drift, and the symptom of drift is an
+ * `analyze_project` that reports a project as 90% dependencies.
+ */
+export const IGNORED_DIRECTORIES = new Set([
   '.git',
   'node_modules',
   'dist',

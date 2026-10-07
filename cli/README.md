@@ -37,13 +37,13 @@ changes in `src/main/services/agent/`, the CLI changes with it.
 ## Install
 
 ```bash
-npm install -g cryptoric
+npm install -g cryptoricagent
 ```
 
 Or run it without installing:
 
 ```bash
-npx cryptoric run "..."
+npx cryptoricagent run "..."
 ```
 
 ## Commands

@@ -16,7 +16,10 @@ in `docs/signing/AUDIT.md`.
 | Design Mode (`browser_inspect_element`) | Markup + computed style + reusable selector in one call; 5 new live checks |
 | Honest browser verification in the pipeline | 5 distinct outcomes; a build can no longer deny a browser it has |
 | **iOS companion** | `swift build` + `swift test` green on macos-15; the job fails unless `Executed N tests` appears with N ≥ 10 |
-| **`cryptoric` CLI** | 24 tools, one 398 KB file, no Electron; a real task run returns exit 2 `BLOCKED` and writes nothing |
+| **`cryptoric` CLI** | 31 tools, one 475 KB file, no Electron; a real task run returns exit 2 `BLOCKED` and writes nothing |
+| **Agent capabilities** | Git (status/diff/log/commit), `run_tests`, `web_fetch` and `analyze_project` registered in **both** hosts — a git tool runs against a real repository, a test run returns the runner's exit code, and a fetch is driven against a real server on loopback |
+| **Environment PATH** | Machine PATH read as `REG_EXPAND_SZ` and expanded before a child gets it; `npm run <script>` previously died on `ENOENT spawn %SystemRoot%\system32\cmd.exe` |
+| **Transcript paths** | Resolved absolutely, including with no project open — `join('', 'conversation.json')` used to write a transcript into the process's working directory and read it back as history |
 | **`.cryptoricagent/` per project** | Created on open, stable id, history in the project folder *and* the app folder; 8/8 end-to-end checks across two projects and three separate processes |
 | **Multi-project parallel execution** | 3 projects observed running concurrently; tasks inside one project still serialised, measured inside the stage, not by wall clock |
 | **Self-hosted model provider** | `server/index.mjs` serves a catalogue; 17 tests round-trip against the real server, wrong and missing tokens rejected |
