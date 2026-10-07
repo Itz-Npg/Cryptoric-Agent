@@ -24,6 +24,11 @@
   bottom: calc(100% + 8px);
   left: 0;
   z-index: 2;
+  /* Scrolls rather than growing past the window when the caller hands over a
+     large pool. Kept short enough that the field stays visible below it. */
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 4px;
   border-radius: 12px;
   background: var(--pb-menu);
