@@ -470,15 +470,39 @@ export async function readWindowsEnvironment(): Promise<MachineEnvironment> {
     runCapture('reg', ['query', 'HKCU\\Environment'])
   ])
 
-  const machineVars = parseRegOutput(machine.stdout)
-  const userVars = parseRegOutput(user.stdout)
+  const machineEntries = parseRegEntries(machine.stdout)
+  const userEntries = parseRegEntries(user.stdout)
 
-  const machinePath = machineVars['PATH'] ?? machineVars['Path'] ?? ''
-  const userPath = userVars['PATH'] ?? userVars['Path'] ?? ''
+  // The registry stores these as `REG_EXPAND_SZ`: the persisted machine PATH is
+  // literally `%SystemRoot%\system32;%SystemRoot%;…`, and Windows expands it
+  // when it composes a process environment. Reading the raw string and handing
+  // it to a child instead produced a PATH full of unresolvable `%SystemRoot%`
+  // entries — which `npm run <script>` turned into `ENOENT spawn
+  // %SystemRoot%\system32\cmd.exe`, because npm shells out to cmd through that
+  // literal string. So the expansion is not cosmetic; it is the difference
+  // between an environment a program can use and one that only looks right.
+  const expansionVars: EnvRecord = {}
+  for (const source of [process.env as EnvRecord, recordOf(machineEntries), recordOf(userEntries)]) {
+    for (const [key, value] of Object.entries(source)) {
+      if (typeof value === 'string') expansionVars[key] = value
+    }
+  }
+  // Expand the expandable values into the map as we go, so a variable that
+  // refers to another one resolves to the expanded form rather than to `%X%`.
+  for (const entry of [...machineEntries, ...userEntries]) {
+    if (!entry.expandable) continue
+    expansionVars[entry.name] = expandWindowsVariables(entry.value, expansionVars)
+  }
+
+  const machinePath = expandWindowsVariables(registryValue(machineEntries, 'PATH'), expansionVars)
+  const userPath = expandWindowsVariables(registryValue(userEntries, 'PATH'), expansionVars)
 
   // Windows composes a process PATH from the machine PATH then the user PATH.
   const combined = [...splitPathList(machinePath, spec), ...splitPathList(userPath, spec)]
-  const vars: EnvRecord = { ...machineVars, ...userVars }
+  const vars: EnvRecord = { ...recordOf(machineEntries), ...recordOf(userEntries) }
+  for (const [key, value] of Object.entries(vars)) {
+    if (typeof value === 'string') vars[key] = expandWindowsVariables(value, expansionVars)
+  }
   vars[spec.canonicalPathKey] = combined.join(spec.pathSeparator)
 
   return {
@@ -488,6 +512,74 @@ export async function readWindowsEnvironment(): Promise<MachineEnvironment> {
   }
 }
 
+/** One `reg query` value, with the type that decides whether it is expanded. */
+export interface RegEntry {
+  name: string
+  value: string
+  /** True for `REG_EXPAND_SZ`, whose `%NAME%` references Windows resolves. */
+  expandable: boolean
+}
+
+/** Parse `reg query` output: `    KEY_NAME    REG_SZ    value`. */
+export function parseRegEntries(stdout: string): RegEntry[] {
+  const out: RegEntry[] = []
+  for (const line of stdout.split(/\r?\n/)) {
+    const m = /^\s{4}(\S+)\s+REG_(SZ|EXPAND_SZ)\s+(.*)$/.exec(line)
+    if (!m) continue
+    out.push({
+      name: m[1] as string,
+      value: (m[3] as string).trim(),
+      expandable: m[2] === 'EXPAND_SZ'
+    })
+  }
+  return out
+}
+
+function recordOf(entries: RegEntry[]): EnvRecord {
+  const out: EnvRecord = {}
+  for (const entry of entries) out[entry.name] = entry.value
+  return out
+}
+
+/** A registry value by name, honouring the two casings `reg query` uses. */
+function registryValue(entries: RegEntry[], name: string): string {
+  for (const entry of entries) {
+    if (entry.name.toUpperCase() === name.toUpperCase()) return entry.value
+  }
+  return ''
+}
+
+/**
+ * Resolve `%NAME%` references the way Windows does.
+ *
+ * Lookup is case-insensitive because the registry is, and an unknown name is
+ * left exactly as written — Windows does the same, and substituting an empty
+ * string would silently turn a typo into a missing PATH entry. Several passes
+ * are made so a variable that points at another variable resolves, with a
+ * ceiling so a self-referential value cannot spin.
+ */
+export function expandWindowsVariables(value: string, vars: EnvRecord, passes = 4): string {
+  if (!value.includes('%')) return value
+
+  const lookup = new Map<string, string>()
+  for (const [key, inner] of Object.entries(vars)) {
+    if (typeof inner === 'string') lookup.set(key.toLowerCase(), inner)
+  }
+
+  let current = value
+  for (let pass = 0; pass < passes; pass++) {
+    let changed = false
+    current = current.replace(/%([^%]+)%/g, (whole, name: string) => {
+      const found = lookup.get(name.toLowerCase())
+      if (found === undefined || found === whole) return whole
+      changed = true
+      return found
+    })
+    if (!changed) break
+  }
+  return current
+}
+
 const WINDOWS_SPEC: PlatformSpec = {
   pathSeparator: ';',
   caseInsensitiveEnv: true,
@@ -495,14 +587,9 @@ const WINDOWS_SPEC: PlatformSpec = {
   exeExtensions: ['.EXE', '.CMD', '.BAT', '.COM', '.PS1']
 }
 
-/** Parse `reg query` output: `    KEY_NAME    REG_SZ    value`. */
+/** `reg query` output as a name→value record. Kept for callers that only want values. */
 export function parseRegOutput(stdout: string): EnvRecord {
-  const out: EnvRecord = {}
-  for (const line of stdout.split(/\r?\n/)) {
-    const m = /^\s{4}(\S+)\s+REG_(?:SZ|EXPAND_SZ)\s+(.*)$/.exec(line)
-    if (m) out[m[1] as string] = (m[2] as string).trim()
-  }
-  return out
+  return recordOf(parseRegEntries(stdout))
 }
 
 /**

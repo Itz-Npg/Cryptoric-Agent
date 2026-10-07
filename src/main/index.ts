@@ -28,6 +28,9 @@ import { AuditSink } from './services/tools/audit-sink'
 import { buildEnvironmentTools } from './services/tools/builtin/environment'
 import { buildFilesystemTools } from './services/tools/builtin/filesystem'
 import { buildCommandTools } from './services/tools/builtin/command'
+import { buildGitTools } from './services/tools/builtin/git'
+import { buildResearchTools } from './services/tools/builtin/research'
+import { buildProjectTools } from './services/tools/builtin/project'
 import { BrowserTabManager } from './services/browser/tabs'
 import { buildBrowserTools } from './services/browser/tools'
 import { AgentRuntime } from './services/agent/core'
@@ -273,6 +276,14 @@ async function boot(): Promise<Services> {
   // through that service, so they cannot be constructed before it.
   tools.registerAll(buildFilesystemTools({ files, policy, getRoots }))
   tools.registerAll(buildCommandTools({ env, getRoots }))
+  // Git was reachable from the status panel through IPC but was not a tool, so
+  // an agent could rewrite a repository and never see or record what it did.
+  tools.registerAll(buildGitTools({ git, getRoots }))
+  // Network read, and the project-level questions an unfamiliar repository
+  // raises. `buildResearchTools` takes no dependencies: it uses the platform's
+  // own fetch, which is why the CLI can register it too.
+  tools.registerAll(buildResearchTools())
+  tools.registerAll(buildProjectTools({ env, getRoots }))
 
   // The transcript is owned by the main process and written to disk. Keeping it
   // here rather than in renderer state is what makes it survive a restart and

@@ -10,6 +10,7 @@ import {
   splitPathList,
   withOverrides
 } from '../../src/main/services/env/layers'
+import { expandWindowsVariables, parseRegEntries } from '../../src/main/services/env/manager'
 
 describe('splitPathList', () => {
   it('splits on the platform separator and trims entries', () => {
@@ -125,5 +126,46 @@ describe('pathDirectories', () => {
   it('lists directories highest precedence first', () => {
     expect(pathDirectories({ PATH: '/a:/b' }, POSIX)).toEqual(['/a', '/b'])
     expect(pathDirectories({}, POSIX)).toEqual([])
+  })
+})
+
+describe('Windows registry values', () => {
+  /**
+   * The persisted machine PATH is REG_EXPAND_SZ, and Windows expands the
+   * %NAME% references when it composes a process environment. Reading the raw
+   * string instead put a literal %SystemRoot%\system32 on the PATH of every
+   * child Cryptoric spawned, and `npm test` answered
+   * `ENOENT spawn %SystemRoot%\system32\cmd.exe` — for a suite that was
+   * sitting right there, because npm shells out to cmd through that entry.
+   */
+  it('parses the value type as well as the value', () => {
+    const entries = parseRegEntries(
+      String.raw`HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Session Manager\Environment
+    Path    REG_EXPAND_SZ    %SystemRoot%\system32;%SystemRoot%
+    TEMP    REG_SZ    C:\Temp
+    windir    REG_EXPAND_SZ    %SystemRoot%`
+    )
+    expect(entries).toEqual([
+      { name: 'Path', value: String.raw`%SystemRoot%\system32;%SystemRoot%`, expandable: true },
+      { name: 'TEMP', value: String.raw`C:\Temp`, expandable: false },
+      { name: 'windir', value: String.raw`%SystemRoot%`, expandable: true }
+    ])
+  })
+
+  it('expands references case-insensitively and leaves unknown names alone', () => {
+    const vars = { SystemRoot: String.raw`C:\Windows`, SystemDrive: 'C:' }
+    expect(expandWindowsVariables(String.raw`%SystemRoot%\system32;%SYSTEMROOT%`, vars)).toBe(
+      String.raw`C:\Windows\system32;C:\Windows`
+    )
+    expect(expandWindowsVariables(String.raw`%NotASetting%\x`, vars)).toBe(String.raw`%NotASetting%\x`)
+    expect(expandWindowsVariables(String.raw`C:\plain`, vars)).toBe(String.raw`C:\plain`)
+  })
+
+  it('resolves a reference to another reference, and cannot loop forever', () => {
+    expect(expandWindowsVariables('%A%', { A: '%B%', B: String.raw`C:\real` })).toBe(String.raw`C:\real`)
+    // A cycle terminates rather than spinning: the value stays bounded, which
+    // is what matters — there is no correct expansion of a self-reference.
+    expect(expandWindowsVariables('%A%', { A: '%B%', B: '%A%' })).toMatch(/^%[AB]%$/)
+    expect(expandWindowsVariables('%A%', { A: '%A%' })).toBe('%A%')
   })
 })

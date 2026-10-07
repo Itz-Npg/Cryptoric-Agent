@@ -35,6 +35,9 @@ import { ToolRuntime } from '../../src/main/services/tools/runtime'
 import { buildCommandTools } from '../../src/main/services/tools/builtin/command'
 import { buildEnvironmentTools } from '../../src/main/services/tools/builtin/environment'
 import { buildFilesystemTools } from '../../src/main/services/tools/builtin/filesystem'
+import { buildGitTools } from '../../src/main/services/tools/builtin/git'
+import { buildResearchTools } from '../../src/main/services/tools/builtin/research'
+import { buildProjectTools } from '../../src/main/services/tools/builtin/project'
 
 import {
   ApprovalQueue,
@@ -45,6 +48,7 @@ import { EnvironmentManager } from '../../src/main/services/env/manager'
 import { TerminalSessionManager } from '../../src/main/services/terminal/sessions'
 import { ProcessSupervisor } from '../../src/main/services/proc/supervisor'
 import { FileService } from '../../src/main/services/fs/files'
+import { GitService } from '../../src/main/services/git/service'
 import { SkillRegistry, DEFAULT_SKILL_ROOTS } from '../../src/main/services/skills/registry'
 import { ModelGateway, PROVIDER_CREDENTIAL_SLOTS } from '../../src/main/services/models/gateway'
 import type { ModelConfig } from '../../src/main/services/models/gateway'
@@ -267,12 +271,18 @@ export class CliHost {
 
     const getRoots = (): string[] => [cwd]
     const files = new FileService(getRoots)
-    // No `GitService` here: no tool builder takes one. Git in the desktop app is
-    // reached through IPC for the status panel, and a CLI has no status panel.
-    // Constructing it would be an unused object, not a capability.
+    // Git used to be absent here on the grounds that a CLI has no status panel.
+    // That reasoned about the *panel* rather than about the agent: the agent is
+    // the thing that needed git, and it needs it in both hosts. `git` takes the
+    // same roots the other tools do, so a CLI run cannot reach outside its
+    // working directory.
+    const git = new GitService(getRoots)
 
     tools.registerAll(buildFilesystemTools({ files, policy, getRoots }))
     tools.registerAll(buildCommandTools({ env: environment, getRoots }))
+    tools.registerAll(buildGitTools({ git, getRoots }))
+    tools.registerAll(buildResearchTools())
+    tools.registerAll(buildProjectTools({ env: environment, getRoots }))
 
     const runtime = new ToolRuntime({
       registry: tools,

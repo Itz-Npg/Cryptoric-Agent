@@ -1,5 +1,5 @@
 {
-  "name": "cryptoric-cli",
+  "name": "cryptoricagent",
   "version": "0.1.0",
   "description": "Cryptoric Chan from the terminal: the same staged agent pipeline that runs inside Cryptoric Agent, headless.",
   "type": "module",

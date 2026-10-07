@@ -12,12 +12,18 @@
  * turns every argument into syntax — arguments containing cmd metacharacters are
  * **refused**. That makes injection impossible rather than unlikely, and the
  * refusal names the offending argument so the agent can route around it.
+ *
+ * `runCommand` is exported because a second capability needs exactly this
+ * behaviour: `run_tests` decides *which* command to run, and must not grow a
+ * second, subtly different executor to run it with. One executor, two entry
+ * points — otherwise the metacharacter refusal is a property of one tool rather
+ * than of the process.
  */
 
 import { existsSync } from 'node:fs'
 import { extname } from 'node:path'
 import { z } from 'zod'
-import type { PermissionDomain, ToolDescriptor } from '@shared/types'
+import type { PermissionDomain, PermissionTier, ToolDescriptor } from '@shared/types'
 import { checkPath, classifyCommand, tierRank } from '../../permissions/policy'
 import { findExecutableOnPath } from '../../env/layers'
 import { runCaptured } from '../exec'
@@ -28,6 +34,14 @@ export interface CommandToolDeps {
   env: EnvironmentManager
   /** Roots the command may run inside. Empty means nothing is permitted. */
   getRoots(): string[]
+}
+
+/** One argv-shaped command, as a caller supplies it. */
+export interface RunCommandInput {
+  command: string
+  args?: string[]
+  cwd?: string
+  timeoutMs?: number
 }
 
 const fail = (
@@ -59,6 +73,14 @@ const MAX_TIMEOUT_MS = 600_000
 
 /** Characters kept in captured output per stream. */
 const MAX_OUTPUT_CHARS = 64 * 1024
+
+/**
+ * The highest tier this executor will run, whatever the caller was granted.
+ *
+ * One constant, checked once per call against the real argv, so every entry
+ * point into this executor inherits the same ceiling.
+ */
+const EXECUTOR_MAX_TIER: PermissionTier = 'elevated'
 
 export function buildCommandTools(deps: CommandToolDeps): ToolDefinition[] {
   const tool = (
@@ -112,131 +134,155 @@ export function buildCommandTools(deps: CommandToolDeps): ToolDefinition[] {
           .optional()
           .describe(`Abort after this long. Defaults to 120000, capped at ${MAX_TIMEOUT_MS}.`)
       }),
-      async (input: { command: string; args?: string[]; cwd?: string; timeoutMs?: number }, ctx) => {
-        const roots = deps.getRoots()
-        if (roots.length === 0) {
-          return fail('No project open', 'Open a project before running commands.', 'unavailable')
-        }
-
-        const cwdVerdict = checkPath(input.cwd ?? (roots[0] as string), roots)
-        if (!cwdVerdict.allowed) {
-          return fail('Working directory rejected', cwdVerdict.reason, 'permission-denied')
-        }
-
-        const args: string[] = Array.isArray(input.args) ? input.args : []
-
-        // The tier is re-derived from the real argv. A caller cannot label
-        // `rm -rf /` as something benign by calling a different tool or by
-        // renaming a field.
-        const verdict = classifyCommand(input.command, args)
-        if (tierRank(verdict.tier) > tierRank('elevated')) {
-          return fail(
-            `Refused: ${verdict.reason}`,
-            `This command classifies as "${verdict.tier}"${
-              verdict.trigger ? ` because of "${verdict.trigger}"` : ''
-            }, which this stage may not run. Run it yourself in a terminal if you are sure.`,
-            'permission-denied'
-          )
-        }
-
-        const environment = deps.env.environmentFor({ projectRoot: cwdVerdict.absolute })
-        const resolved = resolveExecutable(input.command, environment)
-
-        if (resolved === null) {
-          return fail(
-            `"${input.command}" is not on PATH`,
-            `No executable named "${input.command}" was found in the current environment. Use detect_runtime or inspect_environment to see what is available.`,
-            'dependency-missing'
-          )
-        }
-
-        const batch = batchKindOf(resolved)
-        const isBatch = batch !== null
-        if (isBatch) {
-          const offender = [input.command, ...args].find((a) => CMD_METACHARACTERS.test(a))
-          if (offender !== undefined) {
-            return fail(
-              'Argument contains a shell metacharacter',
-              `"${truncate(offender, 80)}" contains one of & | < > ^ % ! ". ` +
-                `${batch} is a batch file and Windows can only run it through cmd.exe, ` +
-                'which would interpret those characters. Rewrite the argument without them, or use write_file to create a script and pass its path.',
-              'invalid-args'
-            )
-          }
-        }
-
-        const label = [input.command, ...args].join(' ')
-        ctx.note(`$ ${label}`, 'info')
-
-        // A batch file is exec'd by cmd.exe; everything else runs directly.
-        //
-        // The resolved absolute path is used rather than the bare name, so a
-        // command still runs when the child's own PATH differs from the managed
-        // environment this tool resolved against. And the whole command line is
-        // wrapped in an extra pair of quotes, because `/s` makes cmd strip the
-        // first and last quote of the argument — without the wrapper, a line
-        // like `"npm" "--version"` loses its outer pair and cmd reports
-        // `"npm"' is not recognized`, for a program that is plainly installed.
-        const spawnCommand: string = isBatch ? resolveComSpec() : input.command
-        const spawnArgs: string[] = isBatch
-          ? ['/d', '/s', '/c', `"${[resolved, ...args].map(cmdQuote).join(' ')}"`]
-          : args
-
-        const result = await runCaptured(spawnCommand, spawnArgs, {
-          cwd: cwdVerdict.absolute,
-          env: environment,
-          timeoutMs: input.timeoutMs ?? 120_000,
-          signal: ctx.signal,
-          maxOutputChars: MAX_OUTPUT_CHARS,
-          // Only for the cmd.exe path. Node escapes quotes C-style (`"` becomes
-          // `\"`) when it builds the command line, and cmd.exe does not
-          // understand that — it reports `'"C:\path\npm.cmd"' is not
-          // recognized` for a program that is plainly installed. Verbatim
-          // arguments hand cmd exactly the line built above.
-          ...(isBatch ? { spawn: { windowsVerbatimArguments: true } } : {})
-        })
-
-        const data = {
-          command: label,
-          cwd: cwdVerdict.absolute,
-          exitCode: result.code,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          truncated: result.truncated,
-          durationMs: result.durationMs,
-          timedOut: result.timedOut,
-          cancelled: result.cancelled
-        }
-
-        if (result.cancelled) {
-          return fail(`${input.command} was cancelled`, `Stopped while running: ${label}`, 'cancelled')
-        }
-        if (result.timedOut) {
-          return fail(
-            `${input.command} timed out`,
-            `Aborted after ${input.timeoutMs ?? 120_000}ms. Output so far:\n${truncate(result.stdout + result.stderr, 1500)}`,
-            'timeout'
-          )
-        }
-        if (result.spawnError) {
-          return fail(`${input.command} could not start`, result.spawnError, 'unavailable')
-        }
-
-        const tail = truncate(`${result.stdout}${result.stderr}`, 1500).trim()
-        return {
-          ok: result.code === 0,
-          summary:
-            result.code === 0
-              ? `${input.command} exited 0` +
-                (tail ? ` — ${oneLine(tail)}` : '')
-              : `${input.command} exited ${result.code}`,
-          ...(result.code === 0 ? {} : { error: tail || `${input.command} exited ${result.code} with no output` }),
-          data,
-          exitCode: result.code
-        }
-      }
+      (input: RunCommandInput, ctx) => runCommand(deps, input, ctx)
     )
   ]
+}
+
+/**
+ * Run one argv-shaped command inside the workspace.
+ *
+ * The order of the checks is the security contract:
+ *
+ *   1. **A project must be open.** Roots come from the open project, so with
+ *      none there is nothing to run inside and no policy to apply.
+ *   2. **The working directory is resolved and checked** against those roots,
+ *      so `cwd` is not a way out of the workspace.
+ *   3. **The tier is re-derived from the real argv.** A caller cannot label
+ *      `rm -rf /` as something benign by calling a different tool or by renaming
+ *      a field.
+ *   4. **The executable is resolved the way a child process would.** That turns
+ *      ENOENT into "this is not installed, here is what is", on Windows
+ *      including the `PATHEXT` extension that Node would otherwise not find.
+ *   5. **Batch files get the metacharacter check**, because `cmd.exe` would
+ *      otherwise parse an argument as syntax.
+ *
+ * Steps 3–5 are why `run_tests` delegates here rather than spawning its own
+ * `npm test`: delegating makes those refusals a property of the process rather
+ * than of one tool.
+ */
+export async function runCommand(
+  deps: CommandToolDeps,
+  input: RunCommandInput,
+  ctx: Pick<ToolContext, 'note' | 'signal'>
+): Promise<ToolResult> {
+  const roots = deps.getRoots()
+  if (roots.length === 0) {
+    return fail('No project open', 'Open a project before running commands.', 'unavailable')
+  }
+
+  const cwdVerdict = checkPath(input.cwd ?? (roots[0] as string), roots)
+  if (!cwdVerdict.allowed) {
+    return fail('Working directory rejected', cwdVerdict.reason, 'permission-denied')
+  }
+
+  const args: string[] = Array.isArray(input.args) ? input.args : []
+
+  const verdict = classifyCommand(input.command, args)
+  if (tierRank(verdict.tier) > tierRank(EXECUTOR_MAX_TIER)) {
+    return fail(
+      `Refused: ${verdict.reason}`,
+      `This command classifies as "${verdict.tier}"${
+        verdict.trigger ? ` because of "${verdict.trigger}"` : ''
+      }, which this stage may not run. Run it yourself in a terminal if you are sure.`,
+      'permission-denied'
+    )
+  }
+
+  const environment = deps.env.environmentFor({ projectRoot: cwdVerdict.absolute })
+  const resolved = resolveExecutable(input.command, environment)
+
+  if (resolved === null) {
+    return fail(
+      `"${input.command}" is not on PATH`,
+      `No executable named "${input.command}" was found in the current environment. Use detect_runtime or inspect_environment to see what is available.`,
+      'dependency-missing'
+    )
+  }
+
+  const batch = batchKindOf(resolved)
+  const isBatch = batch !== null
+  if (isBatch) {
+    const offender = [input.command, ...args].find((a) => CMD_METACHARACTERS.test(a))
+    if (offender !== undefined) {
+      return fail(
+        'Argument contains a shell metacharacter',
+        `"${truncate(offender, 80)}" contains one of & | < > ^ % ! ". ` +
+          `${batch} is a batch file and Windows can only run it through cmd.exe, ` +
+          'which would interpret those characters. Rewrite the argument without them, or use write_file to create a script and pass its path.',
+        'invalid-args'
+      )
+    }
+  }
+
+  const label = [input.command, ...args].join(' ')
+  ctx.note(`$ ${label}`, 'info')
+
+  // A batch file is exec'd by cmd.exe; everything else runs directly.
+  //
+  // The resolved absolute path is used rather than the bare name, so a
+  // command still runs when the child's own PATH differs from the managed
+  // environment this tool resolved against. And the whole command line is
+  // wrapped in an extra pair of quotes, because `/s` makes cmd strip the
+  // first and last quote of the argument — without the wrapper, a line
+  // like `"npm" "--version"` loses its outer pair and cmd reports
+  // `"npm"' is not recognized`, for a program that is plainly installed.
+  const spawnCommand: string = isBatch ? resolveComSpec() : input.command
+  const spawnArgs: string[] = isBatch
+    ? ['/d', '/s', '/c', `"${[resolved, ...args].map(cmdQuote).join(' ')}"`]
+    : args
+
+  const result = await runCaptured(spawnCommand, spawnArgs, {
+    cwd: cwdVerdict.absolute,
+    env: environment,
+    timeoutMs: input.timeoutMs ?? 120_000,
+    signal: ctx.signal,
+    maxOutputChars: MAX_OUTPUT_CHARS,
+    // Only for the cmd.exe path. Node escapes quotes C-style (`"` becomes
+    // `\"`) when it builds the command line, and cmd.exe does not
+    // understand that — it reports `'"C:\path\npm.cmd"' is not
+    // recognized` for a program that is plainly installed. Verbatim
+    // arguments hand cmd exactly the line built above.
+    ...(isBatch ? { spawn: { windowsVerbatimArguments: true } } : {})
+  })
+
+  const data = {
+    command: label,
+    cwd: cwdVerdict.absolute,
+    exitCode: result.code,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    truncated: result.truncated,
+    durationMs: result.durationMs,
+    timedOut: result.timedOut,
+    cancelled: result.cancelled
+  }
+
+  if (result.cancelled) {
+    return fail(`${input.command} was cancelled`, `Stopped while running: ${label}`, 'cancelled')
+  }
+  if (result.timedOut) {
+    return fail(
+      `${input.command} timed out`,
+      `Aborted after ${input.timeoutMs ?? 120_000}ms. Output so far:\n${truncate(result.stdout + result.stderr, 1500)}`,
+      'timeout'
+    )
+  }
+  if (result.spawnError) {
+    return fail(`${input.command} could not start`, result.spawnError, 'unavailable')
+  }
+
+  const tail = truncate(`${result.stdout}${result.stderr}`, 1500).trim()
+  return {
+    ok: result.code === 0,
+    summary:
+      result.code === 0
+        ? `${input.command} exited 0` + (tail ? ` — ${oneLine(tail)}` : '')
+        : `${input.command} exited ${result.code}`,
+    ...(result.code === 0 ? {} : { error: tail || `${input.command} exited ${result.code} with no output` }),
+    data,
+    exitCode: result.code
+  }
 }
 
 /**
@@ -253,7 +299,7 @@ export function buildCommandTools(deps: CommandToolDeps): ToolDefinition[] {
  * report the agent cannot act on. So the real on-disk name is resolved, and the
  * extension is what decides whether this is a batch file.
  */
-function resolveExecutable(command: string, environment: Record<string, string>): string | null {
+export function resolveExecutable(command: string, environment: Record<string, string>): string | null {
   if (command.includes('/') || command.includes('\\')) {
     return existsSync(command) ? command : null
   }

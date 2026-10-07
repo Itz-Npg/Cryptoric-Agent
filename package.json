@@ -30,6 +30,7 @@
     "dist:win": "npm run build && npm run stage:keys && electron-builder --win nsis --publish never",
     "test:browser": "node scripts/build-live-check.mjs tests/live/browser-check.ts .review/live/browser-check.mjs && electron .review/live/browser-check.mjs",
     "test:model": "node scripts/build-live-check.mjs tests/live/model-check.ts .review/live/model-check.mjs && node .review/live/model-check.mjs",
+    "test:google": "node scripts/build-live-check.mjs tests/live/google-check.ts .review/live/google-check.mjs && node .review/live/google-check.mjs",
     "test:agent": "node scripts/build-live-check.mjs tests/live/agent-check.ts .review/live/agent-check.mjs && node .review/live/agent-check.mjs",
     "test:migration": "node scripts/build-live-check.mjs tests/live/migration-check.ts .review/live/migration-check.mjs && node .review/live/migration-check.mjs",
     "test:command": "node scripts/build-live-check.mjs tests/live/command-check.ts .review/live/command-check.mjs && node .review/live/command-check.mjs",

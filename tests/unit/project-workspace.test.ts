@@ -17,7 +17,7 @@
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
@@ -146,6 +146,24 @@ describe('resolveHistoryPaths', () => {
   it('writes only the project folder when set to project', () => {
     const resolved = resolveHistoryPaths({ ...targets(), location: 'project' }, 'pid-1')
     expect(resolved.writes).toEqual([join(root, PROJECT_DIR_NAME, CONVERSATION_FILE)])
+  })
+
+  it('never resolves a relative path when no project is open', () => {
+    // `join('', 'conversation.json')` is `conversation.json`, which resolves
+    // against the process's working directory. The app passes `projectDir: ''`
+    // until a project is opened, so that path dropped a stray transcript in
+    // whatever directory the app was launched from — and read it back as the
+    // user's conversation on the next boot.
+    for (const location of ['both', 'project', 'app'] as const) {
+      const resolved = resolveHistoryPaths({ appDir, projectDir: '', location }, 'no-project')
+      for (const path of [...resolved.reads, ...resolved.writes]) {
+        expect(isAbsolute(path), `${location}: ${path} is not absolute`).toBe(true)
+        expect(path).not.toBe(CONVERSATION_FILE)
+      }
+      // With nowhere project-local to write, the app copy is the only honest
+      // destination: the alternative is losing the session.
+      expect(resolved.writes).toEqual([join(appDir, 'conversations', 'no-project.json')])
+    }
   })
 
   it('writes only the app folder when set to app', () => {
