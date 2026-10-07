@@ -51,9 +51,9 @@ jobs:
     name: Typecheck and unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -102,9 +102,9 @@ jobs:
           - name: Linux (AppImage + deb)
             os: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -155,7 +155,7 @@ jobs:
       # The unpacked app directory is what `mac` produces alongside the `.dmg`,
       # and the Linux unpacked tree is just as large. Neither is a deliverable.
       - name: Upload installers
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: installers-${{ matrix.os }}
           if-no-files-found: error
@@ -188,9 +188,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -207,7 +207,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y gnupg
           gpg --version
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -271,7 +271,7 @@ jobs:
           echo "All signatures verify."
 
       - name: Upload signed artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: signed
           if-no-files-found: error
@@ -282,7 +282,7 @@ jobs:
     name: iOS companion (.ipa)
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The same script the push build runs, so the artifact attached to a
       # release is built by the steps verified on every commit rather than by a
@@ -291,7 +291,7 @@ jobs:
         run: bash scripts/build-ios-ipa.sh
 
       - name: Upload the .ipa
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ios-ipa
           path: dist/CryptoricCompanion-unsigned.ipa
@@ -301,14 +301,14 @@ jobs:
     name: Android companion (.apk)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.7'
 
@@ -318,7 +318,7 @@ jobs:
         run: bash scripts/build-android-apk.sh
 
       - name: Upload the .apk
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: android-apk
           path: dist/app-debug.apk
@@ -338,7 +338,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The updater reads `latest.yml` and compares it against the running build,
       # so a tag whose version disagrees with package.json produces a release the
@@ -359,7 +359,7 @@ jobs:
       # per-platform `installers-*` artifacts that `sign` already consumed —
       # publishing the same installer twice and letting whichever copy landed
       # last decide whether it was the signed one.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: signed
           path: artifacts
@@ -367,12 +367,12 @@ jobs:
       # A separate directory on purpose: the iOS bundle is unsigned, and
       # merging it into `artifacts/` would put it inside the "every installer
       # here is GPG-signed" claim the release notes make.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ios-ipa
           path: mobile-artifacts
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: android-apk
           path: mobile-artifacts
