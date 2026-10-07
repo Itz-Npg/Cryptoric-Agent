@@ -22,7 +22,7 @@ import type {
   WorkspaceState
 } from '@shared/types'
 import type { BudgetSummary, ModelSummary } from '../panes/ModelPicker'
-import type { AuthStatus, BalanceInfo, ModeInfo, UpdateStatusDto } from '../../../preload'
+import type { AuthStatus, BalanceInfo, ModeInfo, RecentProject, UpdateStatusDto } from '../../../preload'
 import { describe } from './store'
 import type { SignInPhase } from '@shared/account-view'
 import type { TranscriptEntry } from './store'
@@ -32,6 +32,8 @@ export interface AppStateShape {
   bootError: string | null
   version: string
   project: ProjectProfile | null
+  /** Projects opened before, newest first. The first page reads this as history. */
+  recentProjects: RecentProject[]
   tools: ToolStatus[]
   gaps: EnvironmentGap[]
   install: Record<string, InstallProgress>
@@ -69,6 +71,7 @@ const initial: AppStateShape = {
   bootError: null,
   version: '0.0.0',
   project: null,
+  recentProjects: [],
   tools: [],
   gaps: [],
   install: {},
@@ -99,6 +102,7 @@ type Action =
   | { type: 'booted'; version: string }
   | { type: 'boot-failed'; error: string }
   | { type: 'project'; project: ProjectProfile }
+  | { type: 'recents'; projects: RecentProject[] }
   | { type: 'tools'; tools: ToolStatus[] }
   | { type: 'gaps'; gaps: EnvironmentGap[] }
   | { type: 'install'; progress: InstallProgress }
@@ -139,6 +143,8 @@ function reducer(state: AppStateShape, action: Action): AppStateShape {
       return { ...state, booted: true, bootError: action.error }
     case 'project':
       return { ...state, project: action.project }
+    case 'recents':
+      return { ...state, recentProjects: action.projects }
     case 'tools':
       return { ...state, tools: action.tools }
     case 'gaps':
@@ -307,6 +313,7 @@ export function useAppState(): { state: AppStateShape; actions: ReturnType<typeo
         // History first, so a restart shows the conversation that already
         // happened rather than an empty pane the model nonetheless remembers.
         await actions.loadConversation()
+        await actions.loadRecentProjects()
       } catch (err) {
         dispatch({ type: 'boot-failed', error: describe(err) })
       }
@@ -401,6 +408,22 @@ export function useAppState(): { state: AppStateShape; actions: ReturnType<typeo
 }
 
 function useActions(dispatch: React.Dispatch<Action>) {
+  /**
+   * Projects opened before, newest first.
+   *
+   * Read at boot and refreshed whenever a project opens, because a list that
+   * only updated on restart would show the project you just opened as missing
+   * from its own history.
+   */
+  const loadRecentProjects = useCallback(async () => {
+    if (!window.cryptoric) return
+    try {
+      dispatch({ type: 'recents', projects: await window.cryptoric.project.list() })
+    } catch (err) {
+      dispatch({ type: 'notice', notice: describe(err) })
+    }
+  }, [dispatch])
+
   const loadConversation = useCallback(async () => {
     if (!window.cryptoric) return
     try {
@@ -499,6 +522,7 @@ function useActions(dispatch: React.Dispatch<Action>) {
       refreshGit,
       syncTerminals,
       loadConversation,
+      loadRecentProjects,
       notify: (notice: string | null) => dispatch({ type: 'notice', notice }),
 
       /**
@@ -561,13 +585,15 @@ function useActions(dispatch: React.Dispatch<Action>) {
         }
       },
 
-      openProject: async () => {
+      openProject: async (root?: string) => {
         try {
-          const project = await window.cryptoric.project.open()
+          const project = await window.cryptoric.project.open(root)
           dispatch({ type: 'project', project })
           dispatch({ type: 'notice', notice: `Opened ${project.name}` })
           await refreshGaps()
           await refreshGit()
+          // The project just opened is now the most recent one.
+          await loadRecentProjects()
         } catch (err) {
           dispatch({ type: 'notice', notice: describe(err) })
         }
@@ -741,6 +767,6 @@ function useActions(dispatch: React.Dispatch<Action>) {
 
       routeSkills: async (prompt: string) => window.cryptoric.skill.route(prompt)
     }),
-    [refreshEnvironment, refreshGaps, refreshModels, refreshGit, refreshAuth, refreshBalance, syncTerminals, loadConversation, dispatch]
+    [refreshEnvironment, refreshGaps, refreshModels, refreshGit, refreshAuth, refreshBalance, syncTerminals, loadConversation, loadRecentProjects, dispatch]
   )
 }

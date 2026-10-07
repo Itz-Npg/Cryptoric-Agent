@@ -13,13 +13,14 @@
  * is shown is what the agent did and what it observed.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AgentTask, TimelineEntry, WorkspaceState } from '@shared/types'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { AgentTask, ProjectProfile, TimelineEntry, WorkspaceState } from '@shared/types'
 import { isTerminalTaskStatus } from '@shared/types'
-import { MAX_PROMPT_CHARS } from '@shared/limits'
 import { formatDuration } from '@shared/execution-display'
 import { Button, Chip, Dot, Icon, SectionHead, type IconName } from '../components/primitives'
 import type { TranscriptEntry } from '../state/store'
+import { AgentPromptBar } from '../components/AgentPromptBar'
+import type { ModelSummary } from './ModelPicker'
 
 /** Stages the pipeline runs, in order, with the state each is in. */
 const STAGES = [
@@ -46,6 +47,9 @@ export function ChanPanel({
   tasks,
   approvals,
   workspaceState,
+  project,
+  models,
+  onSelectModel,
   onSubmit,
   onClearConversation,
   onStop
@@ -59,6 +63,10 @@ export function ChanPanel({
    */
   approvals: { id: string; toolId: string; title: string; detail: string; risk: string }[]
   workspaceState: WorkspaceState
+  /** The open project, for the `@` file menu, and null when nothing is open. */
+  project: ProjectProfile | null
+  models: ModelSummary[]
+  onSelectModel: (id: string) => void
   onSubmit: (prompt: string) => void
   onClearConversation: () => void
   onStop: (taskId: string) => void
@@ -115,7 +123,13 @@ export function ChanPanel({
         </div>
       )}
       {idle ? (
-        <ChanIdle onSubmit={onSubmit} workspaceState={workspaceState} />
+        <ChanIdle
+        onSubmit={onSubmit}
+        workspaceState={workspaceState}
+        project={project}
+        models={models}
+        onSelectModel={onSelectModel}
+      />
       ) : (
         <>
           <ChanConversation
@@ -124,6 +138,26 @@ export function ChanPanel({
             onClear={onClearConversation}
           />
           <ChanTimeline timeline={timeline} activeTask={activeTask} />
+          <div
+            style={{
+              padding: '12px 24px',
+              borderTop: '1px solid var(--line)',
+              background: 'var(--surface-1)',
+              display: 'flex',
+              justifyContent: 'center'
+            }}
+          >
+            <AgentPromptBar
+              project={project}
+              models={models}
+              onSelectModel={onSelectModel}
+              busy={activeTask !== null}
+              onSubmit={onSubmit}
+              {...(activeTask ? { onStop: () => onStop(activeTask.id) } : {})}
+              width={760}
+              maxRows={6}
+            />
+          </div>
         </>
       )}
     </div>
@@ -132,7 +166,19 @@ export function ChanPanel({
 
 // -------------------------------------------------------------------- idle
 
-function ChanIdle({ onSubmit, workspaceState }: { onSubmit: (p: string) => void; workspaceState: WorkspaceState }) {
+function ChanIdle({
+  onSubmit,
+  workspaceState,
+  project,
+  models,
+  onSelectModel
+}: {
+  onSubmit: (p: string) => void
+  workspaceState: WorkspaceState
+  project: ProjectProfile | null
+  models: ModelSummary[]
+  onSelectModel: (id: string) => void
+}) {
   return (
     <div className="empty-view" style={{ gap: 0 }}>
       <div style={{ display: 'grid', justifyItems: 'center', gap: 16, paddingTop: '3vh' }}>
@@ -145,7 +191,15 @@ function ChanIdle({ onSubmit, workspaceState }: { onSubmit: (p: string) => void;
           </p>
         </div>
 
-        <PromptComposer onSubmit={onSubmit} />
+        <AgentPromptBar
+          project={project}
+          models={models}
+          onSelectModel={onSelectModel}
+          busy={false}
+          onSubmit={onSubmit}
+          width={760}
+          maxRows={6}
+        />
 
         <ul
           style={{
@@ -167,110 +221,6 @@ function ChanIdle({ onSubmit, workspaceState }: { onSubmit: (p: string) => void;
             </li>
           ))}
         </ul>
-      </div>
-    </div>
-  )
-}
-
-const COMPOSER_MAX_HEIGHT = 420
-
-/**
- * The prompt composer.
- *
- * This was a single-line `<input>`, which is wrong in two independent ways for
- * the thing people actually do here, which is paste:
- *
- *  1. **Chromium strips newlines when pasting into an `<input>`.** A pasted
- *     stack trace, diff or config file silently arrived as one long line, so the
- *     agent was asked something different from what was on the clipboard. That
- *     is data loss at the moment of asking, which is the worst place to lose it.
- *  2. **A fixed 42px strip cannot show what you pasted.** Even with the
- *     newlines kept, a big prompt scrolled horizontally inside one line.
- *
- * So it is an auto-growing `<textarea>`: newlines survive, the box expands with
- * the content up to a cap and then scrolls, and the live character counter is
- * read from the same constant the IPC schema enforces — so the limit is visible
- * *before* submission instead of arriving afterwards as a rejected argument.
- */
-export function PromptComposer({ onSubmit }: { onSubmit: (p: string) => void }) {
-  const [draft, setDraft] = useState('')
-  const ref = useRef<HTMLTextAreaElement>(null)
-
-  const resize = useCallback((): void => {
-    const el = ref.current
-    if (!el) return
-    // Height has to be collapsed before `scrollHeight` is re-read, or the box
-    // can only ever grow and never shrink when text is deleted.
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT)}px`
-  }, [])
-
-  useEffect(resize, [draft, resize])
-
-  const over = draft.length > MAX_PROMPT_CHARS
-  const send = (): void => {
-    const text = draft.trim()
-    if (!text || over) return
-    setDraft('')
-    onSubmit(text)
-  }
-
-  return (
-    <div style={{ display: 'grid', gap: 7, width: 'min(760px, 88vw)' }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-        <textarea
-          ref={ref}
-          className="field"
-          rows={1}
-          placeholder="Describe what you want to build — paste code, logs or a whole file straight in."
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            // Enter sends, Shift+Enter breaks the line. Holding Shift is the
-            // universal "I mean a newline here", and a textarea makes that
-            // possible at all — an `<input>` cannot represent the distinction.
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault()
-              send()
-            }
-          }}
-          aria-label="Ask Cryptoric Chan"
-          style={{
-            flex: 1,
-            height: 46,
-            minHeight: 46,
-            maxHeight: COMPOSER_MAX_HEIGHT,
-            // `.field` is built for a 34px single-line control; a textarea needs
-            // vertical padding and its own resize handle policy.
-            padding: '12px 12px',
-            lineHeight: 1.55,
-            resize: 'none',
-            overflowY: 'auto',
-            fontFamily: 'var(--font)',
-            fontSize: 'var(--t-sm)'
-          }}
-        />
-        <Button
-          variant="primary"
-          onClick={send}
-          disabled={!draft.trim() || over}
-          style={{ height: 46, padding: '0 20px' }}
-        >
-          Send
-        </Button>
-      </div>
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, paddingLeft: 2 }}>
-        <span className="caption">Enter to send · Shift+Enter for a new line</span>
-        <span
-          className="caption mono"
-          // Reported honestly, and only drawn attention to when it is real.
-          // A limit that cannot be hit is noise; one that can is shown in red
-          // while the user is still editing.
-          style={{ color: over ? 'var(--err)' : undefined }}
-        >
-          {draft.length.toLocaleString()} / {MAX_PROMPT_CHARS.toLocaleString()}
-        </span>
       </div>
     </div>
   )
