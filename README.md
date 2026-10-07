@@ -60,7 +60,35 @@ showed a green tick the whole time.
 ### Safety
 
 Every tool call goes through one runtime that owns policy, approval, timeout,
-cancellation, redaction and audit. The agent never gets a second path.
+cancellation, redaction and audit. The agent never gets a second path. The threat
+model is written down in [`docs/security-review.md`](docs/security-review.md)
+and it describes the code as it is, including what is still open.
+
+The parts worth naming:
+
+- **Paths are checked twice: as text, and as what they resolve to.** A symlink
+  inside the workspace pointing outside it passes a textual check and the kernel
+  follows it anyway, so containment is re-established on the real path —
+  dangling-link targets included — and a path that cannot be resolved is
+  refused rather than allowed.
+- **"Allow for this session" is scoped, capped and it expires.** The grant
+  records the tier you actually saw in the dialog, so approving an `ask`-tier
+  tool does not quietly authorise a `destructive` one in the same domain, and it
+  lapses after four hours rather than surviving a weekend. A configured `deny`
+  outranks it.
+- **Credentials in your shell are not handed to your repo's build scripts.**
+  The inherited environment is filtered on the way in, so `GITHUB_TOKEN`,
+  `AWS_SECRET_ACCESS_KEY` and `NPM_TOKEN` are not passed to a `postinstall`
+  hook the agent happened to trigger. What you map into a project layer passes
+  through untouched, and `CRYPTORIC_PASS_ENV` names anything to re-admit.
+- **Tool output is redacted before it reaches the model or the transcript,**
+  including the `data` slot that carries file contents and command output — a
+  secret printed by `cat .env` does not survive into the conversation.
+- **Transcribing is append-only and private.** Transcripts, the session ledger
+  and the audit trail are written `0600`, and every tool call is appended to
+  `<userData>/audit.jsonl` rather than living only in a 500-entry ring buffer.
+- **Links leave through an allowlist.** `shell.openExternal` is a process
+  launcher on Windows, so only `https:`, `http:` and `mailto:` are handed to it.
 
 ### Browser
 
@@ -72,6 +100,36 @@ screen.
 The verification stage reports one of five outcomes — `pass`, `fail`, `unknown`,
 `not-applicable`, `error` — and **an observation it could not make is `unknown`,
 never `pass`**.
+
+### The prompt bar
+
+One composer, everywhere you can type: the first page and the chat are the same
+control, so a habit learned in one works in the other.
+
+- **`@` lists the files in the open project**, from the same search the Files
+  pane uses. Picking one writes the relative path into the prompt, which is a
+  reference the model can actually follow — no remembering paths.
+- **`/` lists your enabled skills**, which is what the agent already routes on,
+  so the menu offers the commands that will work and nothing else.
+- **The model tile switches models for real.** The bar has no way to switch one
+  by itself, so the choice is applied before the task starts: the model named on
+the tile is the model that runs it.
+- **The tile that sends is the tile that stops.** While a task is in flight its
+  arrow morphs into a stop square and the same click halts the run.
+- **Enter sends, Shift+Enter breaks the line**, and an IME composition owns
+  Enter until it is finished — otherwise picking a candidate submits the prompt.
+
+The effort slider is **not** enabled, and neither is the microphone: this app has
+no reasoning-budget setting and no dictation backend, and a control that does
+nothing is worse than an absent one.
+
+### History on the first page
+
+The first screen is not a blank prompt. It shows your recent projects and the last
+few things you actually asked in the open one — read from the same store the chat
+reads, so there is one history rather than two that can disagree. Choosing a
+project out of that list lands on Chan, because a project chosen from your own
+history was chosen to continue the conversation.
 
 ### Projects, history and parallelism
 
@@ -260,9 +318,13 @@ store once; a key already in the store always wins.
 ## How it's built
 
 - Electron 33 + Vite, TypeScript, React renderer.
-- **Zero runtime dependencies in the main process beyond `zod`.**
-- **971 tests across 44 files**, run on every push.
-- CI: **Build and Release**, **CLI**, **Mobile companion** — all green on `main`.
+- **Zero runtime dependencies in the main process beyond `zod`.** The renderer
+  adds `motion` and `@hugeicons/*` for the prompt bar; nothing privileged gained
+  a dependency.
+- **1012 tests across 45 files**, run on every push.
+- CI: **Build and Release**, **CLI**, **Mobile companion**, **CodeQL** and
+  **Security** — the last of which refuses a high or critical advisory in a
+  dependency that ships and publishes a CycloneDX SBOM per run.
 
 ---
 
@@ -314,7 +376,14 @@ could not run, that is written down below rather than left to look like success.
 
 **Verified, with the command that proves it:**
 
-- Agent loop, stages, evidence gate and tool runtime — 971 unit tests, all green.
+- Agent loop, stages, evidence gate and tool runtime — 1012 unit tests, all green.
+- **Security** — symlink and junction escapes denied (a junction is used in the
+  test because file symlinks need Developer Mode on Windows), session grants
+  proven to expire and to refuse a tier above the one approved, credential-shaped
+  environment variables proven absent from the environment a child receives, and
+  the account server driven over a real socket to show a client token is refused
+  a ban, an unconfigured server keeps the route shut, and the limit answers `429`
+  with a `retry-after`.
 - **Browser** — `npm run test:browser` → **64/64 against real Chromium**, 44 tools.
 - **CLI** — builds Electron-free, and a real run with no model exits **2
   `BLOCKED`**, writes nothing, and explains why in both human and JSON output.
@@ -368,6 +437,24 @@ could not run, that is written down below rather than left to look like success.
   never run against a deployment: `AGENT_SERVER_URL` and `AGENT_SERVER_TOKEN`
   are yours to set, and no Vercel deployment exists. The billing path is
   verified against the real handler on a real socket.
+- **Electron 33 is end-of-life.** Chromium 130 no longer receives security fixes,
+  and this is the largest outstanding risk in the project. The upgrade is a real
+  piece of work, not a version bump.
+- **`npm run lint` does not pass**, so it is deliberately not a CI gate — roughly
+  1.5k pre-existing errors. A gate that is red on its first run teaches people to
+  ignore its output, which is worse than not having one.
+- **The dependency gate covers shipped dependencies only.** `npm audit` over the
+  whole tree reports high and critical advisories in the build and test toolchain
+  (`electron-builder` → `tar`, `vitest` → `tinypool`). Those do not ship. They are
+  reported on every run and fail nothing, and fixing them means breaking tool
+  upgrades.
+- **Secret scanning is a repository setting, not a file.** GitHub's secret
+  scanning and push protection are both off, because enabling them is a switch in
+  Settings → Code security that no commit can flip.
+- **Approval prompts are domain-wide, and rate limiting is per-process.** An
+  approval for one tool covers other tools in that domain for the session (within
+  the tier cap), and the account server's counters live in memory — correct for
+  one instance, and multiplied by N instances behind N of them.
 
 ---
 
