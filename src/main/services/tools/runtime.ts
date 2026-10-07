@@ -254,7 +254,10 @@ export class ToolRuntime {
     let approved =
       (decision === 'allow' && declaredTier === 'safe') ||
       // `deny` already returned above, and a session grant cannot lift one.
-      this.deps.policy.hasSessionGrant(tool.domain)
+      // The grant is also checked against this tool's tier: "Allow for this
+      // session" pressed on an `ask`-tier prompt does not silently cover a
+      // higher-tier tool that shares the domain.
+      this.deps.policy.hasSessionGrant(tool.domain, declaredTier)
     if (!approved) {
       const request = this.deps.approvals.request({
         toolId,
@@ -350,10 +353,21 @@ export class ToolRuntime {
     }
 
     // 9. Output contract.
+    //
+    // `data` carries whatever the tool read — file contents, command stdout,
+    // page text — and it flows straight into the transcript and the next
+    // model request. It gets the same two-layer redaction as the summary and
+    // error fields, because a secret printed by `cat .env` must not survive
+    // into the conversation just because it arrived in the `data` slot.
+    const redactData = (value: unknown): unknown => {
+      if (typeof value === 'string') return redactText(value)
+      if (value === null || typeof value !== 'object') return value
+      return redactArgs(value)
+    }
     const result: NormalizedToolResult = {
         ok: raw.ok,
         summary: redactText(raw.summary ?? (raw.ok ? 'Done' : 'Failed')),
-        ...(raw.data !== undefined ? { data: raw.data } : {}),
+        ...(raw.data !== undefined ? { data: redactData(raw.data) } : {}),
         ...(raw.error ? { error: redactText(raw.error) } : {}),
         ...(raw.exitCode !== undefined ? { exitCode: raw.exitCode } : {}),
         artifacts: raw.artifacts ?? [],

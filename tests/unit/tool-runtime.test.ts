@@ -344,4 +344,71 @@ describe('session grants', () => {
     expect(policy.hasSessionGrant('fs.write')).toBe(true)
     expect(policy.hasSessionGrant('fs.delete')).toBe(false)
   })
+
+  it('does not let an ask-tier grant cover a higher-tier tool in the same domain', async () => {
+    // The approval dialog the user saw was for an `ask`-tier tool. A sibling
+    // elevated tool sharing the domain must still stop for approval.
+    const { runtime, policy, approvals } = setup(
+      [
+        makeTool('write_file', { tier: 'ask', domain: 'fs.write' }),
+        makeTool('elevated_writer', { tier: 'elevated', domain: 'fs.write' })
+      ],
+      { rules: [{ domain: 'fs.write', default: 'allow' }] }
+    )
+    policy.grantSession('fs.write', 'allow', { maxTier: 'ask' })
+
+    const approved = await runtime.invoke('write_file', {})
+    expect(approved.ok).toBe(true)
+    expect(approvals.list()).toHaveLength(0)
+
+    const pending = runtime.invoke('elevated_writer', {}, { grantedTier: 'elevated' })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(approvals.list()).toHaveLength(1)
+    approvals.resolve(approvals.list()[0]!.id, false)
+    const result = await pending
+    expect(result.ok).toBe(false)
+  })
+})
+
+describe('redaction of tool data', () => {
+  // `data` is the slot file contents and command stdout travel in, and it
+  // flows into the transcript and the next model request. A secret printed by
+  // `cat .env` must not survive into the conversation just because it arrived
+  // there instead of in the summary.
+  it('scrubs credential-shaped strings from a data object', async () => {
+    const { runtime } = setup([
+      makeTool('cat_env', {
+        run: async () => ({
+          ok: true,
+          summary: 'printed .env',
+          data: { stdout: 'API_KEY=sk-live-4567890123456789\nPORT=3000' }
+        })
+      })
+    ])
+    const result = await runtime.invoke('cat_env', {})
+    const data = result.data as { stdout: string }
+    expect(data.stdout).not.toContain('sk-live-4567890123456789')
+    expect(data.stdout).toContain('[redacted]')
+    expect(data.stdout).toContain('PORT=3000')
+  })
+
+  it('passes plain non-secret data through untouched', async () => {
+    const { runtime } = setup([
+      makeTool('read_plain', {
+        run: async () => ({ ok: true, summary: 'read', data: { content: 'export const x = 1' } })
+      })
+    ])
+    const result = await runtime.invoke('read_plain', {})
+    expect((result.data as { content: string }).content).toBe('export const x = 1')
+  })
+
+  it('redacts a bare string in the data slot too', async () => {
+    const { runtime } = setup([
+      makeTool('raw_stdout', {
+        run: async () => ({ ok: true, summary: 'ran', data: 'token=ghp_abcdefghijk1234567890abcd' })
+      })
+    ])
+    const result = await runtime.invoke('raw_stdout', {})
+    expect(String(result.data)).not.toContain('ghp_abcdefghijk1234567890abcd')
+  })
 })

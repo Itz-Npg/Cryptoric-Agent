@@ -284,7 +284,12 @@ export class ConversationStore {
     }
     mkdirSync(dirname(this.file), { recursive: true })
     const tmp = `${this.file}.tmp`
-    writeFileSync(tmp, JSON.stringify(payload, null, 2), 'utf8')
+    // Mode 0o600, matching the credential store: transcripts hold whatever the
+    // agent read — command output, file contents, sometimes secrets the tools
+    // surfaced — and on a multi-user machine the default 0644 would put that
+    // in reach of every local account. `rename` preserves the tmp file's mode,
+    // so the permission survives the atomic swap.
+    writeFileSync(tmp, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 })
     renameSync(tmp, this.file)
   }
 }

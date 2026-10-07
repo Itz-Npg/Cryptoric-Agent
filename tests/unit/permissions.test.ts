@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
-import { classifyCommand, checkPath, matchScope, PermissionPolicy, ApprovalQueue } from '../../src/main/services/permissions/policy'
+import {
+  ApprovalQueue,
+  SESSION_GRANT_TTL_MS,
+  checkPath,
+  classifyCommand,
+  matchScope,
+  PermissionPolicy
+} from '../../src/main/services/permissions/policy'
 
 describe('classifyCommand', () => {
   it('treats read-only inspection as safe', () => {
@@ -116,6 +125,127 @@ describe('checkPath', () => {
 
   it('denies everything when no root is open', () => {
     expect(checkPath(roots[0] as string, []).allowed).toBe(false)
+  })
+})
+
+describe('checkPath symlink containment', () => {
+  // The lexical check proves what the *text* of the path says. These tests
+  // prove the second check: the kernel follows links regardless of text, so a
+  // link inside the workspace pointing outside it must be denied.
+  //
+  // Symlink creation needs privilege on Windows (Developer Mode), so every
+  // case below creates its link defensively and skips when the OS refuses.
+  const outside = mkdtempSync(join(tmpdir(), 'cryptoric-outside-'))
+  const root = mkdtempSync(join(tmpdir(), 'cryptoric-root-'))
+
+  const makeLink = (target: string, link: string, kind: 'file' | 'dir' = 'file'): boolean => {
+    try {
+      // On Windows a directory junction needs no privilege, while a file
+      // symlink needs Developer Mode (EPERM otherwise) — so directory escape
+      // is exercised everywhere and file escape where the OS allows it.
+      if (process.platform === 'win32' && kind === 'dir') {
+        symlinkSync(target, link, 'junction')
+      } else {
+        symlinkSync(target, link)
+      }
+      return true
+    } catch {
+      return false // Windows without symlink privilege: EPERM
+    }
+  }
+
+  it('denies a file symlink whose target escapes the root', () => {
+    const secret = join(outside, 'secret.txt')
+    writeFileSync(secret, 'top secret', 'utf8')
+    if (!makeLink(secret, join(root, 'innocent.txt'))) return // skipped: no symlink privilege
+
+    expect(checkPath(join(root, 'innocent.txt'), [root]).allowed).toBe(false)
+  })
+
+  it('denies a directory symlink whose target escapes the root', () => {
+    if (!makeLink(outside, join(root, 'vendor'), 'dir')) return
+
+    const verdict = checkPath(join(root, 'vendor', 'secret.txt'), [root])
+    expect(verdict.allowed).toBe(false)
+    if (!verdict.allowed) expect(verdict.reason).toMatch(/symlink/i)
+  })
+
+  it('denies a dangling symlink that would create outside the root', () => {
+    // The write target does not exist yet, so realpath alone throws ENOENT;
+    // containment must be judged on where the link points.
+    if (!makeLink(join(outside, 'new-file.txt'), join(root, 'future.txt'))) return
+
+    expect(checkPath(join(root, 'future.txt'), [root]).allowed).toBe(false)
+  })
+
+  it('allows a symlink that stays inside the root', () => {
+    mkdirSync(join(root, 'real'), { recursive: true })
+    writeFileSync(join(root, 'real', 'a.txt'), 'ok', 'utf8')
+    if (!makeLink(join(root, 'real'), join(root, 'alias'), 'dir')) return
+
+    expect(checkPath(join(root, 'alias', 'a.txt'), [root]).allowed).toBe(true)
+  })
+
+  it('allows a path that does not exist yet inside the root', () => {
+    // write_file to a brand-new file: no realpath available, but no link
+    // either — the missing tail re-attaches to the resolved ancestor.
+    const verdict = checkPath(join(root, 'brand-new', 'file.txt'), [root])
+    expect(verdict.allowed).toBe(true)
+    if (verdict.allowed) expect(verdict.absolute).toBe(join(root, 'brand-new', 'file.txt'))
+  })
+
+  it('does not leak the temp directories it created', () => {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
+    expect(true).toBe(true)
+  })
+})
+
+describe('session grant scope, tier and expiry', () => {
+  it('expires a grant after its TTL', () => {
+    let clock = 1_000_000
+    const policy = new PermissionPolicy([{ domain: 'fs.write', default: 'ask' }], {
+      now: () => clock
+    })
+    policy.grantSession('fs.write', 'allow')
+    expect(policy.hasSessionGrant('fs.write')).toBe(true)
+
+    clock += SESSION_GRANT_TTL_MS + 1
+    expect(policy.hasSessionGrant('fs.write')).toBe(false)
+    expect(policy.evaluateDomain('fs.write')).toBe('ask')
+  })
+
+  it('honours a custom TTL when one is given', () => {
+    let clock = 0
+    const policy = new PermissionPolicy([], { now: () => clock })
+    policy.grantSession('terminal.elevated', 'allow', { ttlMs: 60_000 })
+    clock = 59_999
+    expect(policy.hasSessionGrant('terminal.elevated')).toBe(true)
+    clock = 60_000
+    expect(policy.hasSessionGrant('terminal.elevated')).toBe(false)
+  })
+
+  it('caps a grant at the tier the user approved', () => {
+    const policy = new PermissionPolicy([])
+    // The dialog showed an `ask`-tier tool; the grant must not cover an
+    // elevated tool that shares the domain.
+    policy.grantSession('terminal.elevated', 'allow', { maxTier: 'ask' })
+    expect(policy.hasSessionGrant('terminal.elevated', 'safe')).toBe(true)
+    expect(policy.hasSessionGrant('terminal.elevated', 'ask')).toBe(true)
+    expect(policy.hasSessionGrant('terminal.elevated', 'elevated')).toBe(false)
+    expect(policy.hasSessionGrant('terminal.elevated', 'destructive')).toBe(false)
+  })
+
+  it('defaults to an unrestricted tier for harness callers', () => {
+    const policy = new PermissionPolicy([])
+    policy.grantSession('terminal.elevated', 'allow')
+    expect(policy.hasSessionGrant('terminal.elevated', 'destructive')).toBe(true)
+  })
+
+  it('still cannot lift a configured deny', () => {
+    const policy = new PermissionPolicy([{ domain: 'fs.delete', default: 'deny' }])
+    policy.grantSession('fs.delete', 'allow')
+    expect(policy.evaluateDomain('fs.delete')).toBe('deny')
   })
 })
 

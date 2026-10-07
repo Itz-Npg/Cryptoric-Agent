@@ -20,7 +20,8 @@
  * `allow`; a path that escapes its root is `deny`, never `ask`.
  */
 
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { lstatSync, readlinkSync, realpathSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
   ApprovalRequest,
   PermissionDecision,
@@ -273,6 +274,54 @@ export type PathVerdict =
   | { allowed: false; reason: string; attempted: string }
 
 /**
+ * Resolve `candidate` to its real location on disk, following symlinks.
+ *
+ * The kernel follows links, not text: a path that *reads* as inside the
+ * workspace can open a file anywhere on the machine if any component is a
+ * symlink. `realpath` alone is not enough, because it throws `ENOENT` for a
+ * path that does not exist yet — the normal case for `write_file` — and for a
+ * dangling symlink, which is the classic escape (a link inside the project
+ * whose target is outside it). So:
+ *
+ *  - `ENOENT`/`ENOTDIR` → the deepest existing ancestor is resolved and the
+ *    missing tail is re-appended;
+ *  - a symlink whose target is missing → the link is read explicitly and its
+ *    *target* becomes the path to resolve, so containment is judged on where
+ *    the link would actually write;
+ *  - anything else (`ELOOP`, `EACCES`, …) → `null`, and the caller fails
+ *    closed: an unverifiable path is not an allowed path.
+ */
+function canonicalize(input: string, linkDepth = 0): string | null {
+  if (linkDepth > 32) return null
+  const path = resolve(input)
+
+  try {
+    return realpathSync(path)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') return null
+  }
+
+  // The path (or a component of it) does not exist. If it is a symlink with a
+  // missing target, containment must be judged on the target, not the link.
+  try {
+    if (lstatSync(path).isSymbolicLink()) {
+      const target = readlinkSync(path)
+      const next = isAbsolute(target) ? resolve(target) : resolve(dirname(path), target)
+      return canonicalize(next, linkDepth + 1)
+    }
+  } catch {
+    // lstat failed with ENOENT/ENOTDIR: genuinely missing, handled below.
+  }
+
+  const parent = dirname(path)
+  if (parent === path) return path
+  const resolvedParent = canonicalize(parent, linkDepth + 1)
+  if (resolvedParent === null) return null
+  return join(resolvedParent, basename(path))
+}
+
+/**
  * Resolve `candidate` and confirm it stays inside one of `roots`.
  *
  * A relative path is resolved against the **first workspace root**, not against
@@ -284,6 +333,14 @@ export type PathVerdict =
  *
  * Rejects traversal via `..`, absolute paths outside the roots, and — on
  * Windows — alternate data streams and device paths (`\\?\`, `\\.\`).
+ *
+ * Containment is then re-checked on the **real** path of both the candidate
+ * and every root, because the lexical check proves only what the *text* of the
+ * path says: a symlink inside the workspace pointing outside it passes the
+ * textual check and the kernel follows it regardless. The lexical absolute is
+ * what gets returned — it is already collapsed, so it can never re-traverse a
+ * link on the way to the file — but the verdict is only `allowed` when the
+ * resolved form also lands inside a resolved root.
  */
 export function checkPath(candidate: string, roots: string[]): PathVerdict {
   if (/^\\\\[?.]/.test(candidate)) {
@@ -299,18 +356,43 @@ export function checkPath(candidate: string, roots: string[]): PathVerdict {
   const base = resolve(roots[0] as string)
   const absolute = isAbsolute(candidate) ? resolve(candidate) : resolve(base, candidate)
 
+  // Lexical containment: no root contains the text of the path.
+  const contained = (path: string): boolean =>
+    roots.some((root) => {
+      const rel = relative(resolve(root), path)
+      return rel === '' || (!rel.startsWith('..' + sep) && rel !== '..' && !isAbsolute(rel))
+    })
+  if (!contained(absolute)) {
+    return {
+      allowed: false,
+      reason: `Path escapes the allowed workspace roots`,
+      attempted: absolute
+    }
+  }
+
+  // Real-path containment: the kernel will follow any symlink in the path, so
+  // the resolved form must also land inside a resolved root. Roots that cannot
+  // be verified cannot authorise anything; if none can, nothing is allowed.
+  const resolved = canonicalize(absolute)
+  if (resolved === null) {
+    return {
+      allowed: false,
+      reason: 'Path cannot be resolved to a real location on disk',
+      attempted: absolute
+    }
+  }
   for (const root of roots) {
-    const rootAbs = resolve(root)
-    const rel = relative(rootAbs, absolute)
-    if (rel === '') return { allowed: true, absolute }
-    if (!rel.startsWith('..' + sep) && rel !== '..' && !isAbsolute(rel)) {
+    const resolvedRoot = canonicalize(resolve(root))
+    if (resolvedRoot === null) continue
+    const rel = relative(resolvedRoot, resolved)
+    if (rel === '' || (!rel.startsWith('..' + sep) && rel !== '..' && !isAbsolute(rel))) {
       return { allowed: true, absolute }
     }
   }
   return {
     allowed: false,
-    reason: `Path escapes the allowed workspace roots`,
-    attempted: absolute
+    reason: `Path resolves outside the allowed workspace roots (symlink)`,
+    attempted: resolved
   }
 }
 
@@ -323,13 +405,34 @@ export interface PolicyContext {
   workspaceRoots: string[]
 }
 
+/** Default lifetime of a session grant: long enough for a real task, bounded. */
+export const SESSION_GRANT_TTL_MS = 4 * 60 * 60 * 1000
+
+interface SessionGrant {
+  decision: PermissionDecision
+  /** Epoch millis after which the grant no longer applies. */
+  expiresAt: number
+  /**
+   * Highest tier this grant may authorise.
+   *
+   * "Allow for this session" on an `ask`-tier tool must not silently cover an
+   * `elevated` or `destructive` tool that happens to share the domain — the
+   * tier the human saw in the approval dialog is the authority they gave.
+   * Callers that do not state a tier (test harnesses, live checks) keep the
+   * unrestricted behaviour they had before this field existed.
+   */
+  maxTier: PermissionTier
+}
+
 export class PermissionPolicy {
   private rules: PermissionRule[]
   /** Session-scoped "always allow" grants keyed by domain + scope. */
-  private readonly sessionGrants = new Map<string, PermissionDecision>()
+  private readonly sessionGrants = new Map<string, SessionGrant>()
+  private readonly now: () => number
 
-  constructor(rules: PermissionRule[] = DEFAULT_PERMISSION_RULES) {
+  constructor(rules: PermissionRule[] = DEFAULT_PERMISSION_RULES, options: { now?: () => number } = {}) {
     this.rules = rules.map((r) => ({ ...r }))
+    this.now = options.now ?? (() => Date.now())
   }
 
   listRules(): PermissionRule[] {
@@ -342,9 +445,34 @@ export class PermissionPolicy {
     else this.rules.push({ domain, default: decision, ...(scope ? { scope } : {}) })
   }
 
-  /** Remember a decision for the remainder of the session. */
-  grantSession(domain: PermissionDomain, decision: PermissionDecision, scope?: string): void {
-    this.sessionGrants.set(`${domain}::${scope ?? ''}`, decision)
+  /**
+   * Remember a decision for the remainder of the session.
+   *
+   * Grants expire (`SESSION_GRANT_TTL_MS` by default) and are capped at the
+   * tier the caller states, because a session is a long time: an app left open
+   * over a weekend should not still be running on a Friday afternoon click.
+   */
+  grantSession(
+    domain: PermissionDomain,
+    decision: PermissionDecision,
+    options: { scope?: string; ttlMs?: number; maxTier?: PermissionTier } = {}
+  ): void {
+    this.sessionGrants.set(`${domain}::${options.scope ?? ''}`, {
+      decision,
+      expiresAt: this.now() + (options.ttlMs ?? SESSION_GRANT_TTL_MS),
+      maxTier: options.maxTier ?? 'destructive'
+    })
+  }
+
+  /** A live grant for this exact key, or undefined when absent or expired. */
+  private liveGrant(key: string): SessionGrant | undefined {
+    const grant = this.sessionGrants.get(key)
+    if (!grant) return undefined
+    if (grant.expiresAt <= this.now()) {
+      this.sessionGrants.delete(key)
+      return undefined
+    }
+    return grant
   }
 
   /**
@@ -357,8 +485,11 @@ export class PermissionPolicy {
    * Without this distinction the button grants nothing and the agent asks
    * again on every single file.
    */
-  hasSessionGrant(domain: PermissionDomain): boolean {
-    return this.sessionGrants.get(`${domain}::`) === 'allow'
+  hasSessionGrant(domain: PermissionDomain, tier?: PermissionTier): boolean {
+    const grant = this.liveGrant(`${domain}::`)
+    if (!grant || grant.decision !== 'allow') return false
+    if (tier !== undefined && tierRank(tier) > tierRank(grant.maxTier)) return false
+    return true
   }
 
   clearSessionGrants(): void {
@@ -379,13 +510,15 @@ export class PermissionPolicy {
     if (ruleDecision === 'deny') return 'deny'
 
     // A grant recorded for the exact path wins, then a domain-wide "always
-    // allow" for the rest of the session.
+    // allow" for the rest of the session. Expired grants are treated as never
+    // having existed — lazily evicted so a long-lived policy object does not
+    // accumulate grants that can never match again.
     if (scope) {
-      const exact = this.sessionGrants.get(`${domain}::${scope}`)
-      if (exact) return exact
+      const exact = this.liveGrant(`${domain}::${scope}`)
+      if (exact) return exact.decision
     }
-    const domainWide = this.sessionGrants.get(`${domain}::`)
-    if (domainWide) return domainWide
+    const domainWide = this.liveGrant(`${domain}::`)
+    if (domainWide) return domainWide.decision
 
     return ruleDecision
   }

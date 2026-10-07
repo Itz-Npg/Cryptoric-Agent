@@ -24,6 +24,7 @@ import { PermissionPolicy, ApprovalQueue, DEFAULT_PERMISSION_RULES, tierForDomai
 import { SkillRegistry, DEFAULT_SKILL_ROOTS, routeSkills } from './services/skills/registry'
 import { ToolRegistry } from './services/tools/registry'
 import { ToolRuntime } from './services/tools/runtime'
+import { AuditSink } from './services/tools/audit-sink'
 import { buildEnvironmentTools } from './services/tools/builtin/environment'
 import { buildFilesystemTools } from './services/tools/builtin/filesystem'
 import { buildCommandTools } from './services/tools/builtin/command'
@@ -151,6 +152,33 @@ async function bootUpdateCheck(): Promise<void> {
 function push(event: MainEvent): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.webContents.send(CHANNELS.push, event)
+}
+
+/**
+ * Schemes `shell.openExternal` is allowed to hand to the OS.
+ *
+ * `openExternal` is a process launcher, not a URL opener: on Windows,
+ * `file://…/x.hta`, `ms-msdt:` and `search-ms:` have all been used to turn an
+ * "open this link" call into code execution. Both places that reach it take a
+ * URL the renderer influenced, so only the schemes that meaningfully mean
+ * "open a web page or an email" are forwarded; everything else is logged and
+ * dropped.
+ */
+const SAFE_EXTERNAL_SCHEMES = new Set(['https:', 'http:', 'mailto:'])
+
+function openExternalSafely(url: string): void {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    console.warn('[security] blocked openExternal for a URL that does not parse:', url.slice(0, 200))
+    return
+  }
+  if (!SAFE_EXTERNAL_SCHEMES.has(parsed.protocol)) {
+    console.warn(`[security] blocked openExternal for scheme "${parsed.protocol}"`)
+    return
+  }
+  void shell.openExternal(parsed.toString())
 }
 
 async function boot(): Promise<Services> {
@@ -366,6 +394,12 @@ async function boot(): Promise<Services> {
   const currentAccountId = async (): Promise<string | null> =>
     readStoredAccountId(await credentials.get(AUTH_CREDENTIAL))
 
+  // Every tool call, persisted. The in-memory ring answers "what just
+  // happened"; the file answers "what happened before the ring rolled over",
+  // and it is written from the same callback so the two can never disagree
+  // about which calls were recorded.
+  const auditSink = new AuditSink(join(userDataDir, 'audit.jsonl'))
+
   const agent = new AgentRuntime(
     {
       tools,
@@ -373,7 +407,10 @@ async function boot(): Promise<Services> {
         registry: tools,
         policy,
         approvals,
-        onRecord: (record) => push({ type: 'log', level: 'info', message: `${record.toolId} ${record.ok ? 'ok' : 'failed'} (${record.durationMs}ms)`, at: new Date().toISOString() })
+        onRecord: (record) => {
+          auditSink.write(record)
+          push({ type: 'log', level: 'info', message: `${record.toolId} ${record.ok ? 'ok' : 'failed'} (${record.durationMs}ms)`, at: new Date().toISOString() })
+        }
       }),
       skills,
       skillTokenBudget: 6000,
@@ -900,7 +937,9 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
           activeListener = startCallbackListener({ port: CALLBACK_PORT })
           return activeListener
         },
-        openBrowser: (url) => shell.openExternal(url),
+        openBrowser: async (url) => {
+          openExternalSafely(url)
+        },
         complete: (code, state) => completeSignIn(code, state),
         clearAttempt: () => {
           attempt = null
@@ -1307,12 +1346,18 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
       // `remember` used to be accepted and thrown away, which left no way to
       // stop being asked: an agent that writes eight files for "make me a
       // website" prompted eight times with no option but Approve once or Deny.
-      // The grant is scoped to the tool's own permission domain and lives only
-      // for this session — it is never written to the persisted rule set.
+      // The grant is scoped to the tool's own permission domain, capped at the
+      // tier shown in the dialog the user actually approved (so approving an
+      // `ask` prompt does not silently cover an elevated tool in the same
+      // domain), expires after a bounded session window, and is never written
+      // to the persisted rule set.
       if (args.approved && args.remember && args.toolId) {
         const definition = tools.get(args.toolId)
+        const request = approvals.list().find((r) => r.id === args.id)
         if (definition) {
-          policy.grantSession(definition.domain, 'allow')
+          policy.grantSession(definition.domain, 'allow', {
+            ...(request ? { maxTier: request.tier } : {})
+          })
           deps.push({
             type: 'log',
             level: 'info',
@@ -1789,7 +1834,7 @@ title: 'CryptoricAgent',
   // Deny navigation and popups outright: the renderer must never navigate away.
   window.webContents.on('will-navigate', (event) => event.preventDefault())
   window.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    openExternalSafely(url)
     return { action: 'deny' }
   })
   window.webContents.on('will-attach-webview', (event) => event.preventDefault())

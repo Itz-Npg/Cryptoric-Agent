@@ -49,6 +49,7 @@ import {
   type PlatformSpec
 } from './layers'
 import { CORE_TOOL_IDS, TOOL_REGISTRY } from './registry'
+import { parsePassEnv, stripSecretEnv } from './secrets'
 
 export interface MachineEnvironment {
   /** PATH as recorded by the operating system right now. */
@@ -73,6 +74,12 @@ export interface EnvironmentManagerDeps {
   readMachineEnvironment?: MachineEnvReader
   /** Stable process identity, recorded on snapshots to prove the app never restarted. */
   processId?: number
+  /**
+   * Names to keep even though they look like credentials. Defaults to
+   * `CRYPTORIC_PASS_ENV` so the escape hatch lives in the user's own
+   * environment rather than in a config file the app has to grow a schema for.
+   */
+  passEnv?: string[]
 }
 
 export interface InstallOutcome {
@@ -102,12 +109,26 @@ export class EnvironmentManager {
   private readonly deps: EnvironmentManagerDeps
   private readonly processId: number
   private readonly installsInFlight = new Map<string, AbortController>()
+  private readonly passEnv: string[]
+  private droppedInherited: string[] = []
 
   constructor(deps: EnvironmentManagerDeps) {
     this.deps = deps
     this.spec = platformSpec(deps.platform)
     this.detector = deps.detector ?? new ToolDetector()
     this.processId = deps.processId ?? process.pid
+    this.passEnv = deps.passEnv ?? parsePassEnv(process.env['CRYPTORIC_PASS_ENV'])
+  }
+
+  /**
+   * Credential-shaped variables the OS handed us and we refused to pass on.
+   *
+   * Exposed for diagnostics: a user whose build needs `NPM_TOKEN` should be
+   * able to see that it was dropped and re-add it deliberately, instead of
+   * watching an install fail for no visible reason.
+   */
+  get inheritedSecretsDropped(): readonly string[] {
+    return [...this.droppedInherited]
   }
 
   // -------------------------------------------------------------------------
@@ -130,10 +151,32 @@ export class EnvironmentManager {
   /** Build the first snapshot from the OS environment. */
   async init(): Promise<EnvSnapshot> {
     const machine = await this.readMachine()
-    this.layers.SYSTEM = { ...machine.vars }
+    this.installSystemLayer(machine.vars)
     this.layers.USER = {}
     await this.rebuildCryptoricLayer()
     return this.publish('boot')
+  }
+
+  /**
+   * Adopt the machine environment, minus anything credential-shaped.
+   *
+   * Every spawn the agent makes — install scripts, build tools, test runners —
+   * inherits this layer, and those are processes running code the agent has not
+   * audited. A token that was merely present in the shell that launched the app
+   * is not an instruction to hand it to a repository's postinstall hook.
+   * Explicitly layered values (PROJECT, TASK) are untouched, so the escape
+   * hatch is an act, not an accident.
+   */
+  private installSystemLayer(vars: EnvRecord): void {
+    const { env, dropped } = stripSecretEnv(vars, { allow: this.passEnv })
+    if (dropped.length > 0) {
+      console.warn(
+        `[env] withheld ${dropped.length} inherited credential variable(s) from spawned processes: ${dropped.join(', ')}` +
+          ` — re-add deliberately with CRYPTORIC_PASS_ENV or a project env layer.`
+      )
+    }
+    this.droppedInherited = dropped
+    this.layers.SYSTEM = { ...env }
   }
 
   /**
@@ -142,7 +185,7 @@ export class EnvironmentManager {
    */
   async refresh(reason: EnvSnapshot['reason'] = 'manual-refresh'): Promise<EnvSnapshot> {
     const machine = await this.readMachine()
-    this.layers.SYSTEM = { ...machine.vars }
+    this.installSystemLayer(machine.vars)
     await this.rebuildCryptoricLayer()
     const snapshot = this.publish(reason)
     // Stale cache entries are exactly what makes refresh look broken.

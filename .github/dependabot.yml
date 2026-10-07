@@ -1,0 +1,41 @@
+# Dependency update PRs.
+#
+# The Electron stack in this repo (Chromium via Electron) is the largest
+# security surface it ships, and nothing else notices when a transitive
+# dependency publishes a fix. Weekly is frequent enough to track a moving
+# target without drowning a single-maintainer review queue; grouped updates
+# keep Actions bumps in one PR rather than one per action.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      electron-and-build:
+        patterns:
+          - "electron*"
+          - "electron-vite"
+          - "vite*"
+      test-and-lint:
+        patterns:
+          - "vitest*"
+          - "eslint*"
+          - "@types/*"
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
