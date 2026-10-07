@@ -63,6 +63,16 @@ const SQUARE = [12, 6, 18, 6, 18, 12, 18, 18, 6, 18, 6, 12, 6, 6]
 const LINE = 22
 const EDGE = 11
 
+/**
+ * Rows drawn at once.
+ *
+ * The list is filtered before it is capped, so this limits what is *rendered*,
+ * never what is searchable: a query still matches the whole pool it was given.
+ * Without it a caller that hands over a large pool renders a menu taller than
+ * the window, and the menu scrolls inside itself instead.
+ */
+const MAX_ROWS_SHOWN = 60
+
 const DEFAULT_EFFORTS = ['Low', 'Medium', 'High', 'Extra', 'Max']
 
 export interface PromptBarSource {
@@ -342,7 +352,8 @@ export function PromptBar({
     return []
   }, [open, query, sources, commands, models])
 
-  const cursor = Math.min(active, Math.max(0, list.length - 1))
+  const shown = useMemo(() => list.slice(0, MAX_ROWS_SHOWN), [list])
+  const cursor = Math.min(active, Math.max(0, shown.length - 1))
   const canSend = draft.trim().length > 0 || attachments.length > 0
   const armed = busy || canSend
   const level = efforts[effortIndex] ?? ''
@@ -365,6 +376,9 @@ export function PromptBar({
       glow.style.opacity = '0'
       return
     }
+    // The menu scrolls once there are more rows than fit, so the highlight has
+    // to be brought back into view when the keyboard walks past the edge.
+    row.scrollIntoView({ block: 'nearest' })
     const fresh = lastOpen.current !== open
     lastOpen.current = open
     if (fresh) glow.style.transition = 'none'
@@ -375,7 +389,7 @@ export function PromptBar({
       void glow.offsetHeight
       glow.style.transition = ''
     }
-  }, [open, cursor, list])
+  }, [open, cursor, shown])
 
   useEffect(() => {
     if (!open) lastOpen.current = null
@@ -612,15 +626,15 @@ export function PromptBar({
   }
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>): void => {
-    if (open && list.length) {
+    if (open && shown.length) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault()
-        setActive((cursor + (e.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length)
+        setActive((cursor + (e.key === 'ArrowDown' ? 1 : shown.length - 1)) % shown.length)
         return
       }
       if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
         e.preventDefault()
-        pick(list[cursor] as Row)
+        pick(shown[cursor] as Row)
         return
       }
     }
@@ -724,7 +738,7 @@ export function PromptBar({
           ) : (
             <>
               <span ref={glowRef} className="prompt-bar__glow" aria-hidden="true" />
-              {list.map((row, i) => (
+              {shown.map((row, i) => (
                 <button
                   key={row.key}
                   ref={(el) => {
@@ -755,7 +769,7 @@ export function PromptBar({
                   ) : null}
                 </button>
               ))}
-              {list.length === 0 ? <div className="prompt-bar__empty">No matches for “{query}”</div> : null}
+              {shown.length === 0 ? <div className="prompt-bar__empty">No matches for “{query}”</div> : null}
             </>
           )}
         </div>

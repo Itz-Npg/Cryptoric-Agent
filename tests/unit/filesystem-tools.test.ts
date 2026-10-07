@@ -327,3 +327,44 @@ describe('content classification', () => {
     expect(detectEncoding(Buffer.from('plain', 'utf8'))).toBe('utf-8')
   })
 })
+
+/**
+ * The pool the `@` menu filters.
+ *
+ * The prompt bar asks for a pool and narrows it in the renderer, so the size of
+ * that pool is load-bearing: with a small one, a query for a file that exists
+ * returns nothing and the menu looks broken rather than merely limited. The
+ * search is also used with a real query, so both directions are asserted.
+ */
+describe('the file pool the @ menu filters', () => {
+  let poolRoot = ''
+
+  beforeAll(() => {
+    poolRoot = mkdtempSync(join(tmpdir(), 'cryptoric-pool-'))
+    for (let i = 0; i < 150; i += 1) {
+      const dir = join(poolRoot, `pkg${i % 5}`)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, `file${i}.ts`), 'export const answer = 42\n')
+    }
+  })
+
+  afterAll(() => {
+    rmSync(poolRoot, { recursive: true, force: true })
+  })
+
+  it('an empty query returns the whole pool, not just the first screenful', async () => {
+    const files = new FileService(() => [poolRoot])
+    expect((await files.search('', 400)).length).toBe(150)
+  })
+
+  it('still honours the limit it is given', async () => {
+    const files = new FileService(() => [poolRoot])
+    expect((await files.search('', 20)).length).toBe(20)
+  })
+
+  it('narrows the same pool by name, which is what typing @ does', async () => {
+    const files = new FileService(() => [poolRoot])
+    const hits = await files.search('file149', 400)
+    expect(hits.map((h) => h.name)).toContain('file149.ts')
+  })
+})

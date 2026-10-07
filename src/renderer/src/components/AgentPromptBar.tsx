@@ -35,8 +35,16 @@ import {
   type PromptBarSource
 } from './PromptBar'
 
-/** Rows offered in the `@` menu. Enough to find a file, few enough to scan. */
-const MAX_FILE_ROWS = 30
+/**
+ * Files the `@` menu can match against.
+ *
+ * This is a *pool to filter*, not a list to display: the menu narrows it as you
+ * type and draws at most a screenful, so a small pool is the whole problem —
+ * with thirty files, `@Home` finds nothing on a repo with three hundred. The
+ * search is cheap at this size because an empty query matches on the name and
+ * never opens a file, so this walks directories and stops there.
+ */
+const MAX_FILE_ROWS = 400
 
 export interface AgentPromptBarProps {
   /** The open project, or null. Without one there are no files to reference. */
