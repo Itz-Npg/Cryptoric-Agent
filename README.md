@@ -338,13 +338,6 @@ exists and is proven against the real installer, but it needs the
 `CRYPTORIC_GPG_KEY` repository secret and a pinned fingerprint, and **fails
 loudly** rather than skipping when they are absent.
 
-Once they are set, a release will have one per asset, and you will check it like
-this:
-
-```bash
-gpg --keyserver hkps://keys.openpgp.org --recv-keys 152873138+Itz-Npg@users.noreply.github.com
-gpg --verify cryptoric-agent_<version>_amd64.deb.asc cryptoric-agent_<version>_amd64.deb
-```
 
 A `GOOD` line is what you are looking for. `BAD` means the file does not match
 what was signed — do not run it.
