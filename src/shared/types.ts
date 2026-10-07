@@ -536,6 +536,20 @@ export interface ExecutionEvidence {
   reason: string
 }
 
+/**
+ * The isolated checkout a task ran in.
+ *
+ * A task's work landing on a branch of its own is the whole point of worktree
+ * isolation, so where it landed is part of the task's result and not a detail of
+ * how it was executed.
+ */
+export interface TaskWorktree {
+  /** Absolute path of the task's own checkout. */
+  path: string
+  /** Branch the task's work lands on. */
+  branch: string
+}
+
 export interface AgentTask {
   id: string
   title: string
@@ -551,6 +565,14 @@ export interface AgentTask {
   changedPaths: string[]
   error: string | null
   usage: UsageRecord
+  /**
+   * The isolated checkout this task ran in, when isolation was on.
+   *
+   * Absent otherwise, and the absence is meaningful: "this task wrote into the
+   * project folder" and "this task wrote into a checkout" must not look alike to
+   * a reviewer.
+   */
+  worktree?: TaskWorktree | null
   /** Observed effect of the run. Absent until a stage measures it. */
   evidence?: ExecutionEvidence
 }

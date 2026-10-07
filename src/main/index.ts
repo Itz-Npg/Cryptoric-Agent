@@ -82,6 +82,7 @@ import { startSignIn } from './services/auth/sign-in'
 import { describeMode, modeRequiresAccount, resolveMode } from '../shared/mode'
 import { FileService } from './services/fs/files'
 import { GitService } from './services/git/service'
+import { WorktreeManager } from './services/git/worktree'
 import {
   ModelGateway,
   MODEL_CATALOG,
@@ -427,6 +428,12 @@ async function boot(): Promise<Services> {
       skillTokenBudget: 6000,
       maxSkillsPerTask: 4,
       getProjectRoot: () => project?.root ?? null,
+      // Isolation is a setting read per task, so turning it on applies to the
+      // next task rather than the next launch. Checkouts live under the app's own
+      // data directory: one inside the project would show up in the developer's
+      // `git status`, which is the first thing this feature promises not to do.
+      worktrees: new WorktreeManager({ baseDir: join(userDataDir, 'worktrees') }),
+      worktreeIsolation: () => settings.get().sessions.worktreeIsolation,
       // Who pays, and how much, is decided in one tested place: `local` derives
       // the balance from the gateway's allowance minus the ledger, `hosted`
       // asks the server and uses its answer. A resumed task is charged nothing

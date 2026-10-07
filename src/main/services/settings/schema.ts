@@ -218,7 +218,17 @@ export const SessionSettingsSchema = z.object({
    * with the folder. Writing both means losing the app folder is survivable
    * and so is losing the folder.
    */
-  historyLocation: z.enum(['app', 'project', 'both']).default('both')
+  historyLocation: z.enum(['app', 'project', 'both']).default('both'),
+  /**
+   * Check each task out into its own `git worktree` instead of running it in the
+   * project folder.
+   *
+   * Off by default, and the reason is a real limitation rather than caution: the
+   * checkout starts at the last commit, so work in progress in the working tree
+   * is not visible to the task. On, the task's edits land on their own branch and
+   * the project folder is never written to.
+   */
+  worktreeIsolation: z.boolean().default(false)
 })
 
 export const UpdateSettingsSchema = z.object({
@@ -359,6 +369,7 @@ export const BEHAVIOURAL_SETTINGS: SettingMeta[] = [
   { path: 'privacy.redactSecrets', scope: 'global', behavioural: true, description: 'Scrub credential-shaped values before transmission' },
   { path: 'sessions.resumeTasks', scope: 'global', behavioural: true, description: 'Restore unfinished tasks on launch' },
   { path: 'sessions.historyLocation', scope: 'global', behavioural: false, description: 'Write chat history to the app folder, the project .cryptoricagent folder, or both' },
+  { path: 'sessions.worktreeIsolation', scope: 'global', behavioural: true, description: 'Run each task in its own git worktree so the project folder is untouched' },
   { path: 'advanced.providerServerUrl', scope: 'global', behavioural: false, description: 'URL of a self-hosted model catalogue server' },
   { path: 'advanced.providerServerEnabled', scope: 'global', behavioural: false, description: 'Fetch models from the configured provider server' },
   { path: 'advanced.providerServerAllowInsecure', scope: 'global', behavioural: false, description: 'Allow a plain-http provider server on a non-loopback host' },

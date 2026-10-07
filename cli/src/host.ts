@@ -49,6 +49,7 @@ import { TerminalSessionManager } from '../../src/main/services/terminal/session
 import { ProcessSupervisor } from '../../src/main/services/proc/supervisor'
 import { FileService } from '../../src/main/services/fs/files'
 import { GitService } from '../../src/main/services/git/service'
+import { WorktreeManager } from '../../src/main/services/git/worktree'
 import { SkillRegistry, DEFAULT_SKILL_ROOTS } from '../../src/main/services/skills/registry'
 import { ModelGateway, PROVIDER_CREDENTIAL_SLOTS } from '../../src/main/services/models/gateway'
 import type { ModelConfig } from '../../src/main/services/models/gateway'
@@ -140,6 +141,17 @@ export function readHistoryLocation(env: NodeJS.ProcessEnv): HistoryLocation {
   const raw = env.CRYPTORIC_HISTORY_LOCATION
   if (raw === 'app' || raw === 'project' || raw === 'both') return raw
   return 'both'
+}
+
+/**
+ * Whether the CLI checks each task out into its own git worktree.
+ *
+ * Off unless asked for, because isolation starts a task from the last commit and
+ * a task meant to continue work in progress would not see it.
+ */
+export function readWorktreeIsolation(env: NodeJS.ProcessEnv): boolean {
+  const raw = env.CRYPTORIC_WORKTREE_ISOLATION?.trim().toLowerCase()
+  return raw === '1' || raw === 'true' || raw === 'yes'
 }
 
 /** First string that is not empty after trimming. */
@@ -339,6 +351,11 @@ export class CliHost {
         skillTokenBudget: 6000,
         maxSkillsPerTask: 4,
         getProjectRoot: () => host.projectRoot,
+        // The CLI has no settings file, so isolation is an opt-in environment
+        // flag — the same shape as history location above. Checkouts live under
+        // the CLI's own state directory so the project folder stays clean.
+        worktrees: new WorktreeManager({ baseDir: join(stateDir, 'worktrees') }),
+        worktreeIsolation: () => readWorktreeIsolation(env),
         events: {
           timeline: (entry) => options.events.note(entry.message, entry.status, entry.stage),
           task: () => undefined,

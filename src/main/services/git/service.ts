@@ -10,9 +10,9 @@
  *     will not rewrite history or publish without an explicit future feature.
  */
 
-import { spawn } from 'node:child_process'
 import type { FileChange, GitCheckpointResult, GitDiffResult, GitStatus } from '@shared/types'
 import { checkPath } from '../permissions/policy'
+import { runGit } from './runner'
 import type { GitStatusEntry } from '@shared/types'
 
 export type { GitCheckpointResult, GitDiffResult, GitStatus, GitStatusEntry }
@@ -24,28 +24,9 @@ export class GitService {
     return this.getRoots()[0] ?? null
   }
 
+  /** Delegates to the shared runner: one implementation of "how git is run". */
   private run(args: string[], cwd: string, timeoutMs = 20_000): Promise<{ code: number; stdout: string; stderr: string }> {
-    return new Promise((resolve) => {
-      const child = spawn('git', args, { cwd, shell: false, windowsHide: true })
-      let stdout = ''
-      let stderr = ''
-      const timer = setTimeout(() => child.kill(), timeoutMs)
-      timer.unref?.()
-      child.stdout.on('data', (d: Buffer) => {
-        stdout += d.toString()
-      })
-      child.stderr.on('data', (d: Buffer) => {
-        stderr += d.toString()
-      })
-      child.on('error', (err) => {
-        clearTimeout(timer)
-        resolve({ code: 127, stdout, stderr: String(err) })
-      })
-      child.on('close', (code) => {
-        clearTimeout(timer)
-        resolve({ code: code ?? 0, stdout, stderr })
-      })
-    })
+    return runGit(args, cwd, timeoutMs)
   }
 
   async status(): Promise<GitStatus> {

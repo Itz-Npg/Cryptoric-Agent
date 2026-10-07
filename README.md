@@ -11,7 +11,7 @@ one pipeline:
 | Surface | What it is | State |
 |---|---|---|
 | **Desktop** | Electron app, agent + browser + terminal | Ships as `.exe`, `.dmg`, `.AppImage`, `.deb` |
-| **CLI** | `cryptoric`, one 475 KB file, no Electron | Verified; not yet on npm |
+| **CLI** | `cryptoric`, one 485 KB file, no Electron | Verified; not yet on npm |
 | **Mobile** | Swift companion + Node relay | **Library and tests only — no app ships** |
 
 > **Bring your own key.** There is no Cryptoric account and no Cryptoric-funded
@@ -184,6 +184,26 @@ folder never overlap — that guarantee is what stops two agents overwriting eac
 other's files, and it is tested by counting tasks inside a critical section, not
 by measuring how long they took.
 
+**Worktree isolation** goes one step further, and it is off by default because
+it changes what the agent can see: each task gets its own `git worktree` at the
+last commit, on a branch of its own (`cryptoric/…`), outside the project folder.
+Every tool call the task makes resolves inside that checkout, so your working
+tree is untouched and the task's changes are one reviewable branch instead of a
+diff mixed in with whatever else you had open. What it cannot do is see work you
+have not committed — that is the trade, so it is a choice rather than a default.
+Turn it on with `sessions.worktreeIsolation` in `settings.json` (there is no
+switch on the settings page yet), or `CRYPTORIC_WORKTREE_ISOLATION=1` in the CLI.
+
+Checkouts are **kept** when a task ends: deleting one would delete the work. They
+live under the app's user-data folder — `$CRYPTORIC_HOME/worktrees` for the CLI —
+and there is no in-app list of them yet, so tidying up is `git worktree list`,
+`git worktree remove <path>` and `git branch -D <branch>`. Removing a checkout
+refuses when it has uncommitted changes unless it is forced, and the branch
+survives either way. A task that *cannot* be isolated — a folder
+that is not a repository, or one with no commits to branch from — is `BLOCKED`
+with the reason on its timeline before any session is bought, rather than quietly
+running in your folder after you asked it not to.
+
 ### Session time, in coins
 
 **5 coins buys 30 minutes.** One coin is six minutes. Each model costs between
@@ -272,7 +292,7 @@ cryptoric run "<task>" --json
 ```
 
 The same pipeline, the same tools, the same verdicts — assembled around argv and
-a pipe instead of a window. One file — 475 KB as the bundler reports it — with
+a pipe instead of a window. One file — 485 KB as the bundler reports it — with
 no Electron, built with the esbuild already in the repo so it installs nothing
 extra.
 
@@ -285,6 +305,9 @@ fails.
 With no model configured it exits **2** and reports `BLOCKED` with a reason.
 `--json` carries that reason too; an earlier build returned a verdict with
 `reason: null`, which is a bug this repository caught in its own CI.
+
+`CRYPTORIC_WORKTREE_ISOLATION=1` gives each run its own checkout, as above,
+rooted at `$CRYPTORIC_HOME/worktrees`. Off unless set.
 
 ![A real cryptoric session](docs/images/cli-session.svg)
 
@@ -368,7 +391,7 @@ store once; a key already in the store always wins.
 - **Zero runtime dependencies in the main process beyond `zod`.** The renderer
   adds `motion` and `@hugeicons/*` for the prompt bar; nothing privileged gained
   a dependency.
-- **1065 tests across 49 files**, run on every push.
+- **1079 tests across 50 files**, run on every push.
 - CI: **Build and Release**, **CLI**, **Mobile companion**, **CodeQL** and
   **Security** — the last of which refuses a high or critical advisory in a
   dependency that ships and publishes a CycloneDX SBOM per run.
@@ -416,7 +439,7 @@ could not run, that is written down below rather than left to look like success.
 
 **Verified, with the command that proves it:**
 
-- Agent loop, stages, evidence gate and tool runtime — 1065 unit tests, all green.
+- Agent loop, stages, evidence gate and tool runtime — 1079 unit tests, all green.
 - **Security** — symlink and junction escapes denied (a junction is used in the
   test because file symlinks need Developer Mode on Windows), session grants
   proven to expire and to refuse a tier above the one approved, credential-shaped

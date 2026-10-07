@@ -16,12 +16,14 @@ in `docs/signing/AUDIT.md`.
 | Design Mode (`browser_inspect_element`) | Markup + computed style + reusable selector in one call; 5 new live checks |
 | Honest browser verification in the pipeline | 5 distinct outcomes; a build can no longer deny a browser it has |
 | **iOS companion** | `swift build` + `swift test` green on macos-15; the job fails unless `Executed N tests` appears with N ≥ 10 |
-| **`cryptoric` CLI** | 31 tools, one 475 KB file, no Electron; a real task run returns exit 2 `BLOCKED` and writes nothing |
+| **`cryptoric` CLI** | 31 tools, one 485 KB file, no Electron; a real task run returns exit 2 `BLOCKED` and writes nothing |
 | **Agent capabilities** | Git (status/diff/log/commit), `run_tests`, `web_fetch` and `analyze_project` registered in **both** hosts — a git tool runs against a real repository, a test run returns the runner's exit code, and a fetch is driven against a real server on loopback |
 | **Environment PATH** | Machine PATH read as `REG_EXPAND_SZ` and expanded before a child gets it; `npm run <script>` previously died on `ENOENT spawn %SystemRoot%\system32\cmd.exe` |
+| **Git runner timeouts** | A killed `git` reported exit 0, so a timed-out `git worktree add` read as a finished one and a half-written checkout was handed to the task; a timeout is now exit 124 with the reason, and a failed add cleans up after itself |
 | **Transcript paths** | Resolved absolutely, including with no project open — `join('', 'conversation.json')` used to write a transcript into the process's working directory and read it back as history |
 | **`.cryptoricagent/` per project** | Created on open, stable id, history in the project folder *and* the app folder; 8/8 end-to-end checks across two projects and three separate processes |
 | **Multi-project parallel execution** | 3 projects observed running concurrently; tasks inside one project still serialised, measured inside the stage, not by wall clock |
+| **Worktree isolation** | 14 tests against real repositories and real `git worktree`s; a real CLI run with the flag on created its checkout, put the branch in the project, left `git status` clean, and refused a folder that is not a repository before anything ran |
 | **Self-hosted model provider** | `server/index.mjs` serves a catalogue; 17 tests round-trip against the real server, wrong and missing tokens rejected |
 
 ### The CLI shipped, and it did not need a rewrite
@@ -87,15 +89,29 @@ built artifact you can install yourself if you hold the accounts.
 See "Done and verified" above. Remaining: `npm publish`, which you run with your
 own token. **Never send publish credentials to me.**
 
-### Worktree isolation
+### Worktree isolation — shipped
 
-One `git worktree` per agent task, so parallel runs cannot collide or dirty the
-main checkout.
+One `git worktree` per agent task, so a run cannot collide with, or dirty, the
+checkout you are working in. See "Done and verified" above. On by
+`sessions.worktreeIsolation` in the app, `CRYPTORIC_WORKTREE_ISOLATION=1` in the
+CLI; off by default.
 
-**The prerequisite is now done.** Multi-project execution ships, and tasks in
-separate projects run genuinely concurrently while tasks in the same project
-still serialise. Worktrees are the remaining half: they change *where* the agent
-writes, which is a different question from *when*.
+Three limits, stated rather than discovered later:
+
+- The checkout starts at `HEAD`, so work in progress in the working tree is not
+  visible to the task. That is what makes it isolation, and it is why this is not
+  the default.
+- It needs a repository with at least one commit. Without one there is nothing to
+  branch from, and the task is **BLOCKED** with the reason on its timeline instead
+  of quietly running in your folder — the setting is a promise about where the
+  agent writes, so it is not downgraded when it cannot be kept.
+- Checkouts are kept when a task ends. Deleting one would delete the work, so
+  removal refuses a dirty checkout unless it is forced, and the branch survives
+  either way.
+
+Tasks in one project still serialise. Isolation changes *where* the agent writes,
+which is a different question from *when*, and the when is answered by
+multi-project execution above.
 
 ### Desktop work
 
@@ -104,6 +120,7 @@ writes, which is a different question from *when*.
 | Quick open | Command palette over files, tools, commands. Self-contained. |
 | Notifications + unread | Electron native notifications; real value once agents run long. |
 | Multiple terminals | Working terminal panes. **Not** Ghostty-class WebGL rendering — that is a different product. Now unblocked: `TerminalSessionManager` is already headless and drives `cryptoric` today. |
+| Worktree management | List, review and remove the checkouts isolation creates. The worktree side of this is written and tested (`list`, `remove`, `removeAll`); what is missing is a surface — today a checkout is reviewed with `git` and the settings page has no switch for the setting either. |
 | Any CLI agent | Orca's actual insight: *if it runs in a terminal, it runs in Orca.* Cryptoric already runs arbitrary commands via `run_command`, so this is a wrapper, not a reimplementation. |
 
 ## Deliberately not copying from the reference
