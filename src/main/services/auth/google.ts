@@ -139,6 +139,8 @@ export type TokenResult =
  * `client_secret` is deliberately absent. For an installed app that is the
  * point of PKCE; sending an empty one is worse than sending none, because some
  * providers treat an empty secret as a failed confidential-client attempt.
+ * If a `GOOGLE_CLIENT_SECRET` is configured, it is sent anyway only when a test
+ * harness explicitly opts one in, so a real sign-in stays secret-free.
  */
 export async function exchangeCode(input: {
   code: string
@@ -146,7 +148,8 @@ export async function exchangeCode(input: {
   clientId: string
   redirectUri: string
   fetchImpl?: typeof fetch
-  tokenUrl?: string
+  tokenUrl?: string;
+  optionalClientSecret?: string;
 }): Promise<TokenResult> {
   const doFetch = input.fetchImpl ?? fetch
   let res: Response
@@ -157,6 +160,7 @@ export async function exchangeCode(input: {
       body: new URLSearchParams({
         code: input.code,
         client_id: input.clientId,
+        ...(input.optionalClientSecret ? { client_secret: input.optionalClientSecret } : {}),
         code_verifier: input.verifier,
         grant_type: 'authorization_code',
         redirect_uri: input.redirectUri

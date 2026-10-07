@@ -881,6 +881,7 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   // moment it is used, so a callback cannot be replayed.
 
   const clientId = readEnvFile([app.getPath('userData'), process.cwd()]).GOOGLE_CLIENT_ID ?? ''
+  const GOOGLE_CLIENT_SECRET = readEnvFile([app.getPath('userData'), process.cwd()]).GOOGLE_CLIENT_SECRET ?? ''
   let attempt: AuthAttempt | null = null
   let session: SessionSummary | null = null
   /**
@@ -1001,7 +1002,7 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
       return { ok: false, error: 'That sign-in took too long. Start again.' }
     }
     const redirectUri = CALLBACK_URI
-    const token = await exchangeCode({ code, verifier: current.verifier, clientId, redirectUri })
+    const token = await exchangeCode({ code, verifier: current.verifier, clientId, redirectUri, optionalClientSecret: GOOGLE_CLIENT_SECRET ?? undefined })
     if (!token.ok) return { ok: false, error: token.error }
     const profile = await fetchIdentity(token.accessToken)
     if (!profile.ok) return { ok: false, error: profile.error }
