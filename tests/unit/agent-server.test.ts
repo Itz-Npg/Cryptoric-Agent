@@ -13,10 +13,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { createHandler, tokenMatches, looksLikeAccountId } from '../../agentserver/src/handlers.mjs'
 import { MemoryStore, availableBalance, DAILY_COINS, SIGNUP_COINS } from '../../agentserver/src/store.mjs'
+import { createRateLimiter } from '../../agentserver/src/limits.mjs'
 import { readCatalogueFile } from '../../agentserver/src/catalogue.mjs'
 
 const TOKEN = 'test-token-abcdef123456'
 const ACCOUNT = 'acct_00000001'
+const ADMIN_TOKEN = 'test-admin-token-xyz789'
 
 const MODELS = [
   { id: 'own-model', label: 'Own', description: '', contextWindow: 0, byok: true },
@@ -31,7 +33,15 @@ afterEach(() => {
 
 async function start(overrides: Record<string, unknown> = {}): Promise<{ url: string; store: MemoryStore }> {
   const store = new MemoryStore()
-  const handler = createHandler({ store, token: TOKEN, models: MODELS, ...overrides })
+  const handler = createHandler({
+    store,
+    token: TOKEN,
+    models: MODELS,
+    // The ban route needs a credential the client does not carry, so every
+    // test that does not opt out runs with one configured.
+    adminToken: ADMIN_TOKEN,
+    ...overrides
+  })
   const server = createServer((req, res) => void handler(req, res))
   servers.push(server)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -228,13 +238,17 @@ describe('charging', () => {
 })
 
 describe('the watcher', () => {
+  const report = (url: string, token?: string) =>
+    call(url, '/v1/integrity', {
+      method: 'POST',
+      ...(token ? { token } : {}),
+      body: { accountId: ACCOUNT, reasons: ['debugger attached', 'asar integrity mismatch'] }
+    })
+
   it('records a report and bans the account', async () => {
     const { url, store } = await start()
     await call(url, '/v1/accounts', { method: 'POST', body: { accountId: ACCOUNT } })
-    const res = await call(url, '/v1/integrity', {
-      method: 'POST',
-      body: { accountId: ACCOUNT, reasons: ['debugger attached', 'asar integrity mismatch'] }
-    })
+    const res = await report(url, ADMIN_TOKEN)
     expect(res.status).toBe(200)
     expect(await store.isBanned(ACCOUNT)).toBe(true)
   })
@@ -242,7 +256,7 @@ describe('the watcher', () => {
   it('refuses a banned account everywhere, not just the agent', async () => {
     const { url } = await start()
     await call(url, '/v1/accounts', { method: 'POST', body: { accountId: ACCOUNT } })
-    await call(url, '/v1/integrity', { method: 'POST', body: { accountId: ACCOUNT, reasons: ['tampered'] } })
+    await report(url, ADMIN_TOKEN)
     // A ban that only bites on one endpoint is side-stepped by asking another.
     expect((await call(url, '/v1/balance?accountId=' + ACCOUNT)).status).toBe(403)
     expect((await call(url, '/v1/charge', { method: 'POST', body: { accountId: ACCOUNT, grantId: 'grant-x9', modelId: 'own-model' } })).status).toBe(403)
@@ -250,9 +264,46 @@ describe('the watcher', () => {
 
   it('demands a reason rather than banning on a shrug', async () => {
     const { url, store } = await start()
-    const res = await call(url, '/v1/integrity', { method: 'POST', body: { accountId: ACCOUNT, reasons: [] } })
+    const res = await call(url, '/v1/integrity', {
+      method: 'POST',
+      token: ADMIN_TOKEN,
+      body: { accountId: ACCOUNT, reasons: [] }
+    })
     expect(res.status).toBe(400)
     expect(await store.isBanned(ACCOUNT)).toBe(false)
+  })
+
+  it('will not ban anyone on the token every install carries', async () => {
+    // The client token ships inside every copy of the app. If it could ban,
+    // any user could delete any other user's account with a curl.
+    const { url, store } = await start()
+    const res = await report(url)
+    expect(res.status).toBe(401)
+    expect(await store.isBanned(ACCOUNT)).toBe(false)
+  })
+
+  it('leaves the route switched off on a server with no operator token', async () => {
+    const { url, store } = await start({ adminToken: '' })
+    const res = await call(url, '/v1/integrity', {
+      method: 'POST',
+      token: TOKEN,
+      body: { accountId: ACCOUNT, reasons: ['tampered'] }
+    })
+    expect(res.status).toBe(403)
+    expect(await store.isBanned(ACCOUNT)).toBe(false)
+  })
+
+  it('refuses an operator token that is only the client token renamed', async () => {
+    const { url, store } = await start({ adminToken: TOKEN })
+    const res = await report(url, TOKEN)
+    expect(res.status).toBe(403)
+    expect(await store.isBanned(ACCOUNT)).toBe(false)
+  })
+
+  it('still answers every other route to the client token', async () => {
+    const { url } = await start()
+    expect((await call(url, '/v1/models')).status).toBe(200)
+    expect((await call(url, '/v1/accounts', { method: 'POST', body: { accountId: ACCOUNT } })).status).toBe(200)
   })
 })
 
@@ -261,6 +312,7 @@ describe('robustness', () => {
     const { url } = await start()
     const res = await call(url, '/v1/integrity', {
       method: 'POST',
+      token: ADMIN_TOKEN,
       body: { accountId: ACCOUNT, reasons: ['x'.repeat(200_000)] }
     })
     expect([413, 400]).toContain(res.status)
@@ -300,5 +352,71 @@ describe('the catalogue', () => {
     const res = await call(url, '/v1/models')
     expect(res.status).toBe(200)
     expect(res.body.models).toHaveLength(2)
+  })
+})
+describe('rate limiting', () => {
+  it('stops answering a caller that keeps guessing', async () => {
+    const { url } = await start({ generalLimit: 5 })
+    const statuses: number[] = []
+    for (let i = 0; i < 8; i += 1) {
+      statuses.push((await call(url, '/v1/balance?accountId=' + ACCOUNT, { token: 'wrong' })).status)
+    }
+    expect(statuses.slice(0, 5)).toEqual([401, 401, 401, 401, 401])
+    expect(statuses.slice(5)).toEqual([429, 429, 429])
+  })
+
+  it('counts an authenticated caller by credential, not by address', async () => {
+    // Every test here arrives from the same address, so a limiter keyed by
+    // address alone could not tell these three callers apart.
+    const { url } = await start({ generalLimit: 1 })
+    expect((await call(url, '/v1/models', { token: 'wrong-one' })).status).toBe(401)
+    expect((await call(url, '/v1/models')).status).toBe(200)
+  })
+
+  it('says how long to wait, and never zero', async () => {
+    const { url } = await start({ generalLimit: 1 })
+    await call(url, '/v1/models')
+    const res = await fetch(`${url}/v1/models`, { headers: { authorization: `Bearer ${TOKEN}` } })
+    expect(res.status).toBe(429)
+    expect(Number(res.headers.get('retry-after'))).toBeGreaterThan(0)
+  })
+
+  it('leaves health reachable while a caller is over the limit', async () => {
+    // A health check that fails because the service is busy takes the service
+    // out of rotation at exactly the moment it is working.
+    const { url } = await start({ generalLimit: 1 })
+    await call(url, '/v1/models')
+    expect((await call(url, '/v1/models')).status).toBe(429)
+    expect((await call(url, '/health', { token: null })).status).toBe(200)
+  })
+
+  it('gives mutations a tighter budget than reads', async () => {
+    const { url } = await start({ generalLimit: 100, mutatingLimit: 2 })
+    const first = await call(url, '/v1/accounts', { method: 'POST', body: { accountId: ACCOUNT } })
+    const second = await call(url, '/v1/accounts', { method: 'POST', body: { accountId: ACCOUNT } })
+    const third = await call(url, '/v1/accounts', { method: 'POST', body: { accountId: ACCOUNT } })
+    expect([first.status, second.status]).toEqual([200, 200])
+    expect(third.status).toBe(429)
+    // The two budgets are independent: a spent write budget is not a read ban.
+    expect((await call(url, '/v1/models')).status).toBe(200)
+  })
+})
+
+describe('the limiter itself', () => {
+  it('bounds the number of buckets it tracks', () => {
+    // A map keyed by something a caller influences, with no ceiling, is a
+    // memory leak that presents as an out-of-memory crash hours later.
+    const limiter = createRateLimiter({ limit: 1, windowMs: 60_000, maxKeys: 8, now: () => 1_000 })
+    for (let i = 0; i < 500; i += 1) limiter.check(`a:10.0.0.${i}`)
+    expect(limiter.size()).toBeLessThanOrEqual(8)
+  })
+
+  it('forgets a window once it has elapsed', () => {
+    let clock = 1_000
+    const limiter = createRateLimiter({ limit: 1, windowMs: 60_000, now: () => clock })
+    expect(limiter.check('k').allowed).toBe(true)
+    expect(limiter.check('k').allowed).toBe(false)
+    clock += 60_000
+    expect(limiter.check('k').allowed).toBe(true)
   })
 })

@@ -16,20 +16,37 @@
  *    and retries is ordinary, not an attack.
  *  - **A banned account is refused everywhere**, including the balance endpoint,
  *    so a ban cannot be side-stepped by asking a different question.
+ *  - **The client may not ban anyone.** A ban is the most destructive thing this
+ *    server does, and the client token is baked into every installed copy of the
+ *    app — so posting to the integrity endpoint takes a *second*, operator-only
+ *    credential, and a server that was never given one has that endpoint
+ *    switched off rather than left open. See `POST /v1/integrity` below.
+ *  - **Repeating a request does not get cheaper.** Every route but `/health` is
+ *    rate limited per caller (`limits.mjs`), because a shared token is the only
+ *    credential this server has and guessing one is a matter of volume.
  */
 
+import { createHash } from 'node:crypto'
+
 import { availableBalance, DAILY_COINS } from './store.mjs'
+import { createRateLimiter } from './limits.mjs'
 
 /** Coins a model costs, and the minutes they buy. Kept in step with the app. */
 export const PRICES = { own: 5, hosted: 10 }
 export const MINUTES_PER_COIN = 6
 
-export function json(res, status, body, { allowOrigin = '' } = {}) {
+/** Requests one caller may make per window, and how long the window is. */
+export const GENERAL_LIMIT = 240
+export const MUTATING_LIMIT = 60
+export const RATE_WINDOW_MS = 60_000
+
+export function json(res, status, body, { allowOrigin = '', headers = {} } = {}) {
   const payload = JSON.stringify(body)
   res.writeHead(status, {
     'content-type': 'application/json',
     'content-length': Buffer.byteLength(payload),
     'cache-control': 'no-store',
+    ...headers,
     ...(allowOrigin ? { 'access-control-allow-origin': allowOrigin } : {})
   })
   res.end(payload)
@@ -59,6 +76,20 @@ export function bearerOf(req) {
 
 export function isAuthorized(req, expectedToken) {
   return tokenMatches(bearerOf(req), expectedToken)
+}
+
+/**
+ * The address a request came from, as far as this process can honestly tell.
+ *
+ * `x-forwarded-for` is deliberately ignored. It is a header the caller writes,
+ * so trusting it would let one caller present as thousands — and a rate-limit
+ * key chosen by the party being limited is not a limit. Behind a proxy this
+ * collapses every caller into one bucket, which throttles too broadly rather
+ * than not at all; that is a proxy-configuration problem, not one a header this
+ * server cannot verify should be allowed to solve.
+ */
+export function clientAddress(req) {
+  return req.socket?.remoteAddress ?? 'unknown'
 }
 
 /** Read a body with a hard ceiling, so one request cannot exhaust memory. */
@@ -142,21 +173,65 @@ export async function chargeForSession({ store, accountId, grantId, tier, model,
 /**
  * @param {object} options
  * @param {import('./store.mjs').AccountStore} options.store
- * @param {string} options.token
+ * @param {string} options.token         Client credential, shipped in the app.
  * @param {any[]} [options.models]
  * @param {string} [options.allowOrigin]
  * @param {() => number} [options.now]
+ * @param {string} [options.adminToken]  Operator credential. Required for bans.
+ * @param {number} [options.generalLimit]
+ * @param {number} [options.mutatingLimit]
  */
-export function createHandler({ store, token, models = [], allowOrigin = '', now = () => Date.now() }) {
+export function createHandler({
+  store,
+  token,
+  models = [],
+  allowOrigin = '',
+  now = () => Date.now(),
+  adminToken = '',
+  generalLimit = GENERAL_LIMIT,
+  mutatingLimit = MUTATING_LIMIT
+}) {
   const tierFor = (modelId) => {
     const found = models.find((m) => m.id === modelId)
     return found?.byok === false ? 'hosted' : 'own'
   }
 
+  const general = createRateLimiter({ limit: generalLimit, windowMs: RATE_WINDOW_MS, now })
+  const mutating = createRateLimiter({ limit: mutatingLimit, windowMs: RATE_WINDOW_MS, now })
+
+  /**
+   * A ban needs a credential that is not the one every install carries.
+   *
+   * An admin token equal to the client token is not a second credential, it is
+   * the same one under another name, so it counts as unconfigured.
+   */
+  const adminConfigured = typeof adminToken === 'string' && adminToken.length > 0
+  const adminSeparate = adminConfigured && !tokenMatches(adminToken, token)
+
+  /**
+   * Which bucket this caller's requests are counted in.
+   *
+   * An authenticated caller is counted by *credential* and an anonymous one by
+   * address, because those are the two things an attempt can honestly be
+   * attributed to: counting a wrong guess by address is what makes a search
+   * slow, and counting real traffic by credential is what makes abuse visible.
+   * The token is hashed rather than stored, so the limiter's map never becomes a
+   * list of live credentials.
+   */
+  const bucketFor = (req) => {
+    const provided = bearerOf(req)
+    const known = tokenMatches(provided, token) || (adminSeparate && tokenMatches(provided, adminToken))
+    if (provided.length > 0 && known) {
+      return `t:${createHash('sha256').update(provided).digest('hex').slice(0, 16)}`
+    }
+    return `a:${clientAddress(req)}`
+  }
+
   return async function handle(req, res) {
     const url = new URL(req.url ?? '/', 'http://placeholder')
     const path = url.pathname.replace(/\/+$/, '') || '/'
-    const send = (status, body) => json(res, status, body, { allowOrigin })
+    const send = (status, body, headers) =>
+      json(res, status, body, { allowOrigin, ...(headers ? { headers } : {}) })
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
@@ -169,19 +244,41 @@ export function createHandler({ store, token, models = [], allowOrigin = '', now
     }
 
     // Health is open on purpose: a host that cannot answer is not a reason to
-    // issue a token to an anonymous caller.
+    // issue a token to an anonymous caller. It is also the one route left
+    // unmetered, so a platform health check cannot fail because the service is
+    // busy serving someone else.
     if (req.method === 'GET' && (path === '/health' || path === '/')) {
       send(200, { ok: true, service: 'cryptoric-agent-server', models: models.length })
       return
     }
 
+    // Metered *before* it is authorised: the counter must not depend on the
+    // guess being right, or the search this exists to slow down is precisely the
+    // traffic it never sees. Mutations get their own, tighter budget because
+    // they are the ones that write.
+    const key = bucketFor(req)
+    const budget = general.check(key)
+    if (!budget.allowed) {
+      return send(429, { error: 'too many requests' }, { 'retry-after': String(budget.retryAfterSeconds) })
+    }
+    if (req.method === 'POST') {
+      const mutation = mutating.check(`${key}:post`)
+      if (!mutation.allowed) {
+        return send(429, { error: 'too many requests' }, { 'retry-after': String(mutation.retryAfterSeconds) })
+      }
+    }
+
+    const authorizedAsClient = isAuthorized(req, token)
+    const authorizedAsAdmin = adminSeparate && isAuthorized(req, adminToken)
+    const authorized = authorizedAsClient || authorizedAsAdmin
+
     if (req.method === 'GET' && path === '/v1/models') {
-      if (!isAuthorized(req, token)) return send(401, { error: 'unauthorized' })
+      if (!authorized) return send(401, { error: 'unauthorized' })
       send(200, { schemaVersion: 1, updatedAt: new Date(now()).toISOString(), models })
       return
     }
 
-    if (!isAuthorized(req, token)) return send(401, { error: 'unauthorized' })
+    if (!authorized) return send(401, { error: 'unauthorized' })
 
     try {
       if (req.method === 'POST' && path === '/v1/accounts') {
@@ -246,6 +343,25 @@ export function createHandler({ store, token, models = [], allowOrigin = '', now
         // it is recorded with its reasons and the ban is applied here, on the
         // server, because a client that can be patched cannot be trusted to
         // punish itself.
+        //
+        // Which is exactly why the client is not allowed to post it. This route
+        // deletes an account, the client token is identical in every installed
+        // copy of the app, and a secret that everyone holds authorises nobody —
+        // otherwise anyone who read it out of their own copy could ban any other
+        // user. The operator's separate token is required, and a server that was
+        // never given one has this route switched off instead of open.
+        if (!adminConfigured) {
+          return send(403, {
+            error: 'integrity reports are disabled on this server: no admin token is configured'
+          })
+        }
+        if (!adminSeparate) {
+          return send(403, {
+            error: 'integrity reports are disabled on this server: the admin token must differ from the client token'
+          })
+        }
+        if (!authorizedAsAdmin) return send(401, { error: 'unauthorized' })
+
         const body = await readBody(req)
         if (!looksLikeAccountId(body.accountId)) return send(400, { error: 'accountId is required' })
         const reasons = Array.isArray(body.reasons) ? body.reasons.slice(0, 10).map(String) : []

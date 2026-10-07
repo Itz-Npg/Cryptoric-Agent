@@ -9,6 +9,7 @@ Runs on anything that speaks HTTP — a VPS, a container, or
 
 ```bash
 AGENT_SERVER_TOKEN=$(npm run --silent token) \
+AGENT_SERVER_ADMIN_TOKEN=$(npm run --silent token) \
 AGENT_SERVER_PORT=8789 \
 MODEL_CATALOGUE_PATH=./catalogue.json \
 node src/index.mjs
@@ -17,6 +18,10 @@ node src/index.mjs
 It refuses to start without a token. An account server with no authentication is
 an open proxy that hands out coins, and starting one "just to look" is exactly
 how that happens.
+
+The two tokens must be **different** values. `AGENT_SERVER_TOKEN` ships inside
+the app, so it cannot be the credential that authorises a ban; without a separate
+`AGENT_SERVER_ADMIN_TOKEN`, `POST /v1/integrity` stays switched off.
 
 ---
 
@@ -43,9 +48,18 @@ in a file.
 | `POST` | `/v1/accounts` | Create or fetch an account. Returns the balance. |
 | `GET` | `/v1/balance?accountId=…` | Today's remaining coins. |
 | `POST` | `/v1/charge` | Buy a session. **Idempotent** on `grantId`. |
-| `POST` | `/v1/integrity` | Record what the watcher saw. Bans the account. |
+| `POST` | `/v1/integrity` | Record what the watcher saw. Bans the account. Needs the **admin** token. |
 
-All except `/health` need `Authorization: Bearer $AGENT_SERVER_TOKEN`.
+All except `/health` need a bearer token: `$AGENT_SERVER_TOKEN` for the first
+five, `$AGENT_SERVER_ADMIN_TOKEN` for `/v1/integrity`.
+
+Every route except `/health` is also rate limited per caller — 240 requests a
+minute, 60 for the ones that write. Over the limit the server answers `429` with a
+`retry-after` in seconds. A caller is counted by credential when it presents a
+known one and by remote address when it does not, so guessing a token is slow
+while normal traffic is not punished for it. `x-forwarded-for` is ignored on
+purpose: it is a header the caller writes, and a limit keyed by something the
+limited party chooses is not a limit. Behind a proxy, set the limit at the proxy.
 
 ### The client side of this
 
@@ -96,6 +110,14 @@ in the sum.
 **A ban holds on every endpoint.** A ban that only bites on `/v1/charge` is
 side-stepped by asking `/v1/balance` instead.
 
+**Only the operator can ban.** `/v1/integrity` deletes an account, and the client
+token is identical in every installed copy of the app — so a shared secret that
+everyone holds would let anyone who read it out of their own copy ban any other
+user. The route therefore requires a second credential, and a server that was
+never given one has the route disabled rather than open. An admin token equal to
+the client token counts as not configured: two names for one secret is still one
+secret.
+
 **Body size is capped.** One request cannot exhaust the process.
 
 **A malformed catalogue is an empty one, loudly.** Falling back to a default list
@@ -136,6 +158,7 @@ Set these as project environment variables:
 
 ```
 AGENT_SERVER_TOKEN=<32+ random bytes>
+AGENT_SERVER_ADMIN_TOKEN=<different 32+ random bytes>
 MONGODB_URI=<data api key>
 MONGODB_REGION=us-east-1
 MODEL_CATALOGUE_PATH=/tmp/catalogue.json   # optional; empty catalogue = all BYOK rate
