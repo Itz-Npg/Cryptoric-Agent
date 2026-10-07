@@ -95,6 +95,21 @@ export function App() {
     setSection('files')
   }, [actions])
 
+  /**
+   * Open a project from the first page's history.
+   *
+   * Lands on Chan rather than on the file tree: a project chosen out of your own
+   * history was chosen to continue the conversation, and the transcript is the
+   * thing you came back for.
+   */
+  const openRecent = useCallback(
+    async (root: string) => {
+      await actions.openProject(root)
+      setSection('agent')
+    },
+    [actions]
+  )
+
   openProjectRef.current = () => {
     void openProject()
   }
@@ -303,6 +318,12 @@ export function App() {
             <HomeSurface
               project={state.project}
               ready={state.project !== null}
+              models={state.models}
+              onSelectModel={(id) => void actions.selectModel(id)}
+              recentProjects={state.recentProjects}
+              transcript={state.transcript}
+              busy={busy}
+              onOpenRecent={(root) => void openRecent(root)}
               onSubmit={(p) => {
                 // Chan's answer lands in the transcript, so show the transcript.
                 // Submitting and staying on the prompt reads as nothing happening.
@@ -333,6 +354,9 @@ export function App() {
               tasks={state.tasks}
               approvals={state.approvals}
               workspaceState={state.workspaceState}
+              project={state.project}
+              models={state.models}
+              onSelectModel={(id) => void actions.selectModel(id)}
               onSubmit={(p) => {
                 // Chan's answer lands in the transcript, so show the transcript.
                 // Submitting and staying on the prompt reads as nothing happening.
