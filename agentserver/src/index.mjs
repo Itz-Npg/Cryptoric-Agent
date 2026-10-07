@@ -30,6 +30,15 @@ if (!Number.isInteger(PORT) || PORT < 0 || PORT > 65535) {
   process.exitCode = 1
 }
 const TOKEN = process.env.AGENT_SERVER_TOKEN ?? ''
+/**
+ * Operator credential, separate from `AGENT_SERVER_TOKEN` on purpose.
+ *
+ * `POST /v1/integrity` bans an account, and the client token ships inside
+ * every installed copy of the app — so it cannot be the credential that
+ * authorises a ban. Without this, that route stays disabled rather than
+ * becoming a way for any user to delete any other user's account.
+ */
+const ADMIN_TOKEN = process.env.AGENT_SERVER_ADMIN_TOKEN ?? ''
 const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN ?? ''
 const CATALOGUE_PATH = process.env.MODEL_CATALOGUE_PATH ?? ''
 
@@ -43,11 +52,18 @@ if (TOKEN.length === 0) {
   const store = new MemoryStore()
   const models = CATALOGUE_PATH.length > 0 ? readCatalogueFile(CATALOGUE_PATH) : []
 
-  const server = createServer(createHandler({ store, token: TOKEN, models, allowOrigin: ALLOW_ORIGIN }))
+  const server = createServer(
+    createHandler({ store, token: TOKEN, models, allowOrigin: ALLOW_ORIGIN, adminToken: ADMIN_TOKEN })
+  )
   server.listen(PORT, () => {
     console.log(`cryptoric agent server on http://127.0.0.1:${PORT} · ${models.length} models · store: in-memory`)
     if (models.length === 0) {
       console.log('No MODEL_CATALOGUE_PATH set, so /v1/models is empty. Every model will price at the BYOK rate.')
+    }
+    if (ADMIN_TOKEN.length === 0 || ADMIN_TOKEN === TOKEN) {
+      console.log(
+        'No separate AGENT_SERVER_ADMIN_TOKEN set, so POST /v1/integrity is disabled: a ban needs a credential that installs do not carry.'
+      )
     }
   })
 }

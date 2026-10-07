@@ -19,6 +19,14 @@ import { readCatalogueFile } from '../src/catalogue.mjs'
 import { createMongoStore } from '../src/mongo.mjs'
 
 const TOKEN = process.env.AGENT_SERVER_TOKEN ?? ''
+/**
+ * Operator credential, separate from `AGENT_SERVER_TOKEN` on purpose.
+ *
+ * `POST /v1/integrity` bans an account, and the client token ships inside every
+ * installed copy of the app — so it cannot be the credential that authorises a
+ * ban. Unset here, that route is disabled rather than open.
+ */
+const ADMIN_TOKEN = process.env.AGENT_SERVER_ADMIN_TOKEN ?? ''
 const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN ?? ''
 const CATALOGUE_PATH = process.env.MODEL_CATALOGUE_PATH ?? ''
 const MONGO_URI = process.env.MONGODB_URI ?? ''
@@ -38,7 +46,14 @@ if (MONGO_URI.length === 0) {
   )
 }
 
-const handler = createHandler({ store, token: TOKEN, models, allowOrigin: ALLOW_ORIGIN })
+if (ADMIN_TOKEN.length === 0 || ADMIN_TOKEN === TOKEN) {
+  console.warn(
+    'AGENT_SERVER_ADMIN_TOKEN is not set to a value distinct from AGENT_SERVER_TOKEN, so POST /v1/integrity ' +
+      'is disabled: a ban needs a credential that installs do not carry.'
+  )
+}
+
+const handler = createHandler({ store, token: TOKEN, models, allowOrigin: ALLOW_ORIGIN, adminToken: ADMIN_TOKEN })
 
 export default async function vercelHandler(req, res) {
   try {
