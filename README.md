@@ -309,6 +309,10 @@ The security properties are enforced in code, not just written down:
 
 ## The CLI
 
+<p align="center">
+  <img src="docs/images/cli-icon.svg" width="128" alt="Cryptoric CLI icon">
+</p>
+
 ```bash
 cryptoric                    # interactive session: type a task, get a verdict
 cryptoric run "<task>"       # one-shot, exits non-zero when the work is blocked
@@ -318,7 +322,7 @@ cryptoric run "<task>" --json
 The same pipeline, the same tools, the same verdicts — assembled around argv and
 a pipe instead of a window. One file — 485 KB as the bundler reports it — with
 no Electron, built with the esbuild already in the repo so it installs nothing
-extra.It has **36 tools**: files (including multi-file reads and `apply_patch`),
+extra. It has **36 tools**: files (including multi-file reads and `apply_patch`),
 environment, git, the project tools (`analyze_project` and `run_tests`),
 `web_fetch`, `web_search`, the agent-process tools, and `run_command`. The one
 family missing is the browser's, and it is missing rather than stubbed — those
