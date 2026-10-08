@@ -251,7 +251,8 @@ export function sameAccount(a: string, b: string): boolean {
 /** What a person sees when sign-in is impossible, with the reason and a way out. */
 export function describeMissingClientId(): string {
   return (
-    'Google sign-in is not set up on this build. Set GOOGLE_CLIENT_ID (an OAuth client id, not a ' +
-    'secret) and restart. Nothing is sent anywhere until it is configured.'
+    'Google sign-in is not set up on this build. Put GOOGLE_CLIENT_ID (an OAuth client id, not a ' +
+    'secret) and optionally GOOGLE_CLIENT_SECRET in the .env file at the project root (or the app data folder) and restart. ' +
+    'Register the redirect URI http://127.0.0.1:53123/callback on the OAuth client. Nothing is sent anywhere until it is configured.'
   )
 }

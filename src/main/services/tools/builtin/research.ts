@@ -46,13 +46,18 @@ export interface ResearchToolDeps {
   fetch?: typeof globalThis.fetch
   /** Override for the body byte cap. Defaults to `MAX_BODY_BYTES`. */
   maxBodyBytes?: number
+  /** Serper API key; when present, web_search uses it instead of scraping. */
+  serperApiKey?: string
+  /** Environment for discovering a Serper key when one was not injected. */
+  getSerperKey?: () => string | null
 }
 
 const TOOL_META: Record<
   string,
   Pick<ToolDescriptor, 'category' | 'risk'> & { timeoutMs: number; mutates: boolean }
 > = {
-  web_fetch: { category: 'research', risk: 'low', timeoutMs: 60_000, mutates: false }
+  web_fetch: { category: 'research', risk: 'low', timeoutMs: 60_000, mutates: false },
+  web_search: { category: 'research', risk: 'low', timeoutMs: 60_000, mutates: false }
 }
 
 const ok = (summary: string, data?: unknown): ToolResult => ({
@@ -421,12 +426,160 @@ export function buildResearchTools(deps: ResearchToolDeps = {}): ToolDefinition[
           ctx.signal.removeEventListener('abort', onAbort)
         }
       }
-    }
+    },
+    buildWebSearchTool(deps, doFetch)
   ]
 }
 
 function isRedirect(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308
+}
+
+// ------------------------------------------------------------- web_search
+
+/** Ported from freebuff's `web_search`. Serper is the engine freebuff uses; it
+ * needs a key, so without one the tool falls back to DuckDuckGo's HTML
+ * endpoint, which answers keylessly. The agent gets a working search either
+ * way, and a better-ranked one the day a `SERPER_API_KEY` appears. */
+
+interface WebSearchHit {
+  title: string
+  url: string
+  snippet: string
+}
+
+const SEARCH_UA = 'CryptoricAgent/0.1 (+https://github.com/Itz-Npg/Cryptoric-Agent)'
+
+/** Decode the redirect-wrapped hrefs DuckDuckGo returns into real URLs. */
+export function unwrapDdgHref(href: string): string | null {
+  try {
+    const url = new URL(href, 'https://duckduckgo.com')
+    const target = url.searchParams.get('uddg')
+    if (target) return decodeURIComponent(target)
+    if (url.protocol === 'http:' || url.protocol === 'https:') return url.toString()
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** Pull result anchors out of the DuckDuckGo HTML endpoint's markup. */
+export function parseDdgResults(html: string, limit: number): WebSearchHit[] {
+  const hits: WebSearchHit[] = []
+  const anchor = /<a[^>]+class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g
+  const snippets = [...html.matchAll(/<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g)]
+  let index = 0
+  for (const match of html.matchAll(anchor)) {
+    if (hits.length >= limit) break
+    const url = unwrapDdgHref(match[1] ?? '')
+    const title = decodeEntities((match[2] ?? '').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
+    if (!url || title.length === 0) continue
+    const rawSnippet = snippets[index]?.[1] ?? ''
+    const snippet = decodeEntities(rawSnippet.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
+    hits.push({ title, url, snippet })
+    index += 1
+  }
+  return hits
+}
+
+async function searchWithSerper(
+  doFetch: typeof globalThis.fetch,
+  apiKey: string,
+  query: string,
+  limit: number
+): Promise<WebSearchHit[]> {
+  const res = await doFetch('https://google.serper.dev/search', {
+    method: 'POST',
+    headers: { 'X-API-KEY': apiKey, 'content-type': 'application/json' },
+    body: JSON.stringify({ q: query, num: limit })
+  })
+  if (!res.ok) {
+    throw new Error(`Serper answered ${res.status}`)
+  }
+  const body = (await res.json().catch(() => ({}))) as {
+    organic?: { title?: string; link?: string; snippet?: string }[]
+  }
+  return (body.organic ?? [])
+    .slice(0, limit)
+    .filter((item): item is { title: string; link: string; snippet?: string } =>
+      typeof item.title === 'string' && typeof item.link === 'string')
+    .map((item) => ({ title: item.title, url: item.link, snippet: item.snippet ?? '' }))
+}
+
+async function searchWithDuckDuckGo(
+  doFetch: typeof globalThis.fetch,
+  query: string,
+  limit: number
+): Promise<WebSearchHit[]> {
+  const res = await doFetch('https://html.duckduckgo.com/html/', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      'user-agent': SEARCH_UA
+    },
+    body: new URLSearchParams({ q: query }).toString()
+  })
+  if (!res.ok) {
+    throw new Error(`DuckDuckGo answered ${res.status}`)
+  }
+  const html = await res.text()
+  return parseDdgResults(html, limit)
+}
+
+function buildWebSearchTool(
+  deps: ResearchToolDeps,
+  doFetch: typeof globalThis.fetch
+): ToolDefinition {
+  const schema = z.object({
+    query: z.string().min(1).describe('The search query'),
+    maxResults: z.number().int().min(1).max(10).optional().describe('Results to return. Defaults to 6.')
+  })
+
+  return {
+    descriptor: {
+      id: 'web_search',
+      label: 'Search the web',
+      description:
+        'Search the web and return titles, URLs and snippets for current information — documentation, changelogs, releases, error messages. Uses a keyless search backend by default; if a SERPER_API_KEY is configured it uses Google-quality results instead. Follow up on a promising result with web_fetch to read the page.',
+      dependsOn: [],
+      tier: 'safe',
+      platforms: ['*'],
+      ...TOOL_META.web_search,
+      inputSchema: describeSchema(schema)
+    },
+    domain: 'network.read' as PermissionDomain,
+    schema,
+    execute: async (
+      input: { query: string; maxResults?: number },
+      _ctx: ToolContext
+    ): Promise<ToolResult> => {
+      if (typeof doFetch !== 'function') {
+        return fail('No fetch implementation', 'This host provides no fetch, so web_search cannot run.', 'unavailable')
+      }
+      const limit = input.maxResults ?? 6
+      const apiKey = deps.serperApiKey ?? deps.getSerperKey?.() ?? null
+
+      try {
+        const hits = apiKey
+          ? await searchWithSerper(doFetch, apiKey, input.query, limit)
+          : await searchWithDuckDuckGo(doFetch, input.query, limit)
+
+        if (hits.length === 0) {
+          return ok(`No results for "${input.query.slice(0, 80)}"`, { query: input.query, results: [] })
+        }
+        return ok(
+          `${hits.length} result(s) for "${input.query.slice(0, 80)}"`,
+          { query: input.query, backend: apiKey ? 'serper' : 'duckduckgo', results: hits }
+        )
+      } catch (err) {
+        return fail(
+          'Search failed',
+          err instanceof Error ? err.message : String(err),
+          'unavailable'
+        )
+      }
+    }
+  }
 }
 
 /**

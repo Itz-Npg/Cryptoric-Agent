@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "buildCommand": "npm install --prefix agentserver",
+  "installCommand": "npm install --prefix agentserver",
+  "framework": "other",
+  "functions": {
+    "agentserver/api/*.mjs": {
+      "maxDuration": 30,
+      "memory": 256,
+      "runtime": "node"
+    }
+  },
+  "routes": [
+    { "src": "^/health(/.*)?$", "dest": "agentserver/api/index.mjs", "methods": ["GET"] },
+    { "src": "^/v1/models(/.*)?$", "dest": "agentserver/api/index.mjs", "methods": ["GET"] },
+    { "src": "^/v1/accounts(/.*)?$", "dest": "agentserver/api/index.mjs", "methods": ["POST"] },
+    { "src": "^/v1/balance(/.*)?$", "dest": "agentserver/api/index.mjs", "methods": ["GET"] },
+    { "src": "^/v1/charge(/.*)?$", "dest": "agentserver/api/index.mjs", "methods": ["POST"] },
+    { "src": "^/v1/integrity(/.*)?$", "dest": "agentserver/api/index.mjs", "methods": ["POST"] }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" }
+      ]
+    }
+  ],
+  "env": {
+    "AGENT_SERVER_TOKEN": { "required": true },
+    "AGENT_SERVER_ADMIN_TOKEN": { "required": false },
+    "MONGODB_URI": { "required": false },
+    "MONGODB_REGION": { "required": false },
+    "MODEL_CATALOGUE_PATH": { "required": false }
+  }
+}

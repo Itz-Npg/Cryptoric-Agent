@@ -16,15 +16,23 @@
  *    looks like it can take it.
  */
 
-/** A 5-row block font, one entry per unique letter of CRYPTORIC. */
+/**
+ * A 5-row block font, one entry per unique letter of CRYPTORIC.
+ *
+ * Redrawn from the first cut: C and O now curve instead of ending in square
+ * corners, Y and I are symmetric, and every bar is a full column wide so the
+ * glyphs read as type rather than as a bitmap at a glance. The grid is
+ * unchanged — five columns, five rows — because the width the caller centres
+ * with is part of the contract with the prompt box.
+ */
 const GLYPHS: Record<string, string[]> = {
-  C: [' ███ ', '█    ', '█    ', '█    ', ' ███ '],
+  C: [' ████', '█    ', '█    ', '█    ', ' ████'],
   R: ['████ ', '█  █ ', '████ ', '█  █ ', '█  █ '],
-  Y: ['█   █', ' █ █ ', '  █  ', '  █  ', '  █  '],
+  Y: ['█   █', '█   █', ' ███ ', '  █  ', '  █  '],
   P: ['████ ', '█  █ ', '████ ', '█    ', '█    '],
   T: ['█████', '  █  ', '  █  ', '  █  ', '  █  '],
   O: [' ███ ', '█   █', '█   █', '█   █', ' ███ '],
-  I: ['███  ', ' █   ', ' █   ', ' █   ', '███  ']
+  I: ['█████', '  █  ', '  █  ', '  █  ', '█████']
 }
 
 const WORD = 'CRYPTORIC'

@@ -305,6 +305,7 @@ export type PermissionDomain =
   | 'env.detect'
   | 'env.install'
   | 'env.modify'
+  | 'agent.self'
 
 export type PermissionDecision = 'allow' | 'ask' | 'deny'
 

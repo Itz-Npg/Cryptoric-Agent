@@ -46,6 +46,7 @@ export const DEFAULT_PERMISSION_RULES: PermissionRule[] = [
   { domain: 'network.read', default: 'allow' },
   { domain: 'network.write', default: 'ask' },
   { domain: 'env.detect', default: 'allow' },
+  { domain: 'agent.self', default: 'allow' },
   { domain: 'env.install', default: 'ask' },
   { domain: 'env.modify', default: 'ask' }
 ]
@@ -67,6 +68,7 @@ export function tierForDomain(domain: PermissionDomain): PermissionTier {
     case 'browser.read':
     case 'network.read':
     case 'env.detect':
+    case 'agent.self':
       return 'safe'
     case 'fs.write':
     case 'git.modify':

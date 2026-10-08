@@ -27,6 +27,8 @@ import { ToolRuntime } from './services/tools/runtime'
 import { AuditSink } from './services/tools/audit-sink'
 import { buildEnvironmentTools } from './services/tools/builtin/environment'
 import { buildFilesystemTools } from './services/tools/builtin/filesystem'
+import { buildPatchTools } from './services/tools/builtin/patch'
+import { buildAgentMetaTools } from './services/tools/builtin/agent-meta'
 import { buildCommandTools } from './services/tools/builtin/command'
 import { buildGitTools } from './services/tools/builtin/git'
 import { buildResearchTools } from './services/tools/builtin/research'
@@ -276,6 +278,7 @@ async function boot(): Promise<Services> {
   // Registered after `files` exists: the filesystem tools resolve every path
   // through that service, so they cannot be constructed before it.
   tools.registerAll(buildFilesystemTools({ files, policy, getRoots }))
+  tools.registerAll(buildPatchTools({ getRoots }))
   tools.registerAll(buildCommandTools({ env, getRoots }))
   // Git was reachable from the status panel through IPC but was not a tool, so
   // an agent could rewrite a repository and never see or record what it did.
@@ -285,6 +288,7 @@ async function boot(): Promise<Services> {
   // own fetch, which is why the CLI can register it too.
   tools.registerAll(buildResearchTools())
   tools.registerAll(buildProjectTools({ env, getRoots }))
+  tools.registerAll(buildAgentMetaTools())
 
   // The transcript is owned by the main process and written to disk. Keeping it
   // here rather than in renderer state is what makes it survive a restart and
@@ -765,7 +769,6 @@ async function boot(): Promise<Services> {
     settings,
     files,
     git,
-    worktrees,
     gateway,
     updates,
     credentials,
@@ -855,7 +858,7 @@ interface RouteDeps {
   settings: SettingsStore
   files: FileService
   git: GitService
-  worktrees: WorktreeManager
+  worktrees?: WorktreeManager
   gateway: ModelGateway
   updates: UpdateService
   credentials: CredentialStore
@@ -931,7 +934,11 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
         signedIn: current !== null && current.accountId.length > 0,
         configured: clientId.length > 0,
         account: current,
-        message: current?.accountId ? null : describeMissingClientId()
+        // A configured-but-signed-out app is not an error state worth a
+        // message; the old code showed the "not set up" hint even when the
+        // client id had loaded, which read as "login is broken" to everyone
+        // who *had* configured it.
+        message: current?.accountId || clientId.length === 0 ? describeMissingClientId() : null
       }
     }
   })
@@ -1003,7 +1010,18 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
     }
     const redirectUri = CALLBACK_URI
     const token = await exchangeCode({ code, verifier: current.verifier, clientId, redirectUri, optionalClientSecret: GOOGLE_CLIENT_SECRET ?? undefined })
-    if (!token.ok) return { ok: false, error: token.error }
+    if (!token.ok) {
+      // Google names the exact problem in `error_description`; the two that
+      // need setup rather than a retry are called out with the fix, because a
+      // bare "redirect_uri_mismatch" sends people hunting through our code
+      // when the change belongs in their Google Cloud Console client.
+      const hint = /redirect_uri/i.test(token.error)
+        ? ` Add "${CALLBACK_URI}" to the OAuth client's Authorized redirect URIs in Google Cloud Console, then try again.`
+        : /client/i.test(token.error)
+          ? ' Check GOOGLE_CLIENT_ID (and GOOGLE_CLIENT_SECRET if the client is a Web-application type) in the project .env, then restart the app.'
+          : ''
+      return { ok: false, error: `${token.error}${hint}` }
+    }
     const profile = await fetchIdentity(token.accessToken)
     if (!profile.ok) return { ok: false, error: profile.error }
     const built = summarise(profile.identity)
@@ -1251,17 +1269,21 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
   })
 
   // Worktree management. The manager is created in `boot` and lives under the
+  // app's data directory; the project is the thing that owns the repository.  // Worktree management. The manager is created in `boot` and lives under the
   // app's data directory; the project is the thing that owns the repository.
   // The manager is passed through route deps, not reached through the runtime,
   // because removing a checkout is a user's decision — not something the agent
   // does — and the runtime only exposes the checkout a *running* task is in.
+
+  const worktrees: WorktreeManager = deps.worktrees!
+
   router.register(CHANNELS.gitWorktreeList, {
     domain: 'git.read',
     requiresApproval: false,
     handler: async () => {
       const project = deps.getProject()
       if (!project) return []
-      return deps.worktrees.list(project.root)
+      return worktrees.list(project.root)
     }
   })
   router.register(CHANNELS.gitWorktreeRemove, {
@@ -1269,7 +1291,7 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
     handler: async (args: { path: string }) => {
       const project = deps.getProject()
       if (!project) return false
-      const result = await deps.worktrees.remove({ projectRoot: project.root, path: args.path })
+      const result = await worktrees.remove({ projectRoot: project.root, path: args.path })
       return result.ok
     }
   })
@@ -1278,7 +1300,7 @@ function registerRoutes(router: IpcRouter, deps: RouteDeps): void {
     handler: async (args: { force?: boolean }) => {
       const project = deps.getProject()
       if (!project) return { removed: 0, kept: 0 }
-      return deps.worktrees.removeAll(project.root, { force: args.force })
+      return worktrees.removeAll(project.root, { force: args.force })
     }
   })
 

@@ -257,9 +257,23 @@ describe('resolveModelConfig', () => {
     expect(config).toBeNull()
   })
 
-  it('is null when the endpoint or model is missing', () => {
-    expect(resolveModelConfig({ CRYPTORIC_API_KEY: 'k' }, overrides)).toBeNull()
-    expect(resolveModelConfig({ CRYPTORIC_API_KEY: 'k', CRYPTORIC_MODEL: 'm' }, overrides)).toBeNull()
+  it('fills in the default openrouter endpoint and a free model from a key alone', () => {
+    // A bare key used to be rejected, so `CRYPTORIC_API_KEY=… cryptoric run`
+    // reported "deterministic stages only" and the model never ran. The
+    // default provider now assumes its endpoint and a catalogue model.
+    const config = resolveModelConfig({ CRYPTORIC_API_KEY: 'k' }, overrides)
+    expect(config).not.toBeNull()
+    expect(config?.provider).toBe('openrouter')
+    expect(config?.endpoint).toBe('https://openrouter.ai/api/v1')
+    expect(config?.model.length).toBeGreaterThan(0)
+  })
+
+  it('is still null for a provider with no known endpoint when endpoint or model is missing', () => {
+    const custom = { provider: 'openai-compatible', endpoint: null, model: null }
+    expect(resolveModelConfig({ CRYPTORIC_API_KEY: 'k' }, custom)).toBeNull()
+    expect(
+      resolveModelConfig({ CRYPTORIC_API_KEY: 'k', CRYPTORIC_MODEL: 'm' }, custom)
+    ).toBeNull()
   })
 
   it('builds a config when key, endpoint and model are all present', () => {

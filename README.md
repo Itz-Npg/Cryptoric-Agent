@@ -92,16 +92,18 @@ The parts worth naming:
 
 ### The tool surface
 
-**75 tools in the desktop app, 31 in the CLI**, from one registry — so a
+**80 tools in the desktop app, 36 in the CLI**, from one registry — so a
 capability is written once and its policy is enforced in one place.
 
 | Family | Tools | What it is for |
 |---|---|---|
-| Files | 12 | read, write, edit, move, delete, search; every path resolved and re-checked against the open project |
+| Files | 13 | read one or many, write, edit, move, delete, search; every path resolved and re-checked against the open project |
+| Patches | 1 | `apply_patch` — Codex-style create/update/delete hunks; a hunk that matches zero or several places is refused, so a wrong patch fails loudly |
 | Environment | 11 | detect, install and verify runtimes; supervise terminals and processes |
 | Git | 4 | `git_status`, `git_diff`, `git_log`, `git_commit` — see what changed, then record it |
 | Project | 2 | `analyze_project` orientates on a repository it has not seen; `run_tests` runs the suite the project already declares |
-| Research | 1 | `web_fetch` reads one http(s) page as text |
+| Research | 2 | `web_fetch` reads one http(s) page as text; `web_search` queries the web (keyless by default, Google-quality with a `SERPER_API_KEY`) |
+| Agent process | 2 | `think_deeply` records reasoning before acting; `write_todos` keeps the ordered plan visible and updated |
 | Command | 1 | `run_command` — argv, never a shell string |
 | Browser | 44 | desktop only: it drives a real `WebContentsView`, so the CLI does not offer it |
 
@@ -260,6 +262,29 @@ Rules that exist because the alternative fails quietly:
 - Saving the same name **updates** rather than duplicating; editing never makes
   you retype a stored key.
 
+### Google sign-in
+
+Sign-in uses OAuth 2.0 **authorization code with PKCE** through the system
+browser, with the callback received on `http://127.0.0.1:53123/callback`. To
+enable it:
+
+1. Create an OAuth client in Google Cloud Console. A **Desktop** client type is
+   the natural fit; a Web-application client also works if its secret is
+   provided.
+2. Register `http://127.0.0.1:53123/callback` as an Authorized redirect URI.
+3. Put the credentials in a `.env` file at the project root (dev) or in the app
+   data folder:
+
+   ```
+   GOOGLE_CLIENT_ID=…apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=GOCSPX-…   # optional for a Desktop client
+   ```
+
+The client secret is never required for the desktop flow — PKCE replaces it —
+and when configured it is only sent to Google's token endpoint. A refused
+sign-in reports Google's own reason plus the setup step that fixes it (for
+example, registering the redirect URI) instead of a bare error code.
+
 ---
 
 ## Your own model server
@@ -293,13 +318,17 @@ cryptoric run "<task>" --json
 The same pipeline, the same tools, the same verdicts — assembled around argv and
 a pipe instead of a window. One file — 485 KB as the bundler reports it — with
 no Electron, built with the esbuild already in the repo so it installs nothing
-extra.
+extra.It has **36 tools**: files (including multi-file reads and `apply_patch`),
+environment, git, the project tools (`analyze_project` and `run_tests`),
+`web_fetch`, `web_search`, the agent-process tools, and `run_command`. The one
+family missing is the browser's, and it is missing rather than stubbed — those
+tools are backed by a window, so `cryptoric tools` says so instead of offering a
+tool that always fails.
 
-It has **31 tools**: files, environment, git, the project tools (`analyze_project`
-and `run_tests`), `web_fetch` and `run_command`. The one family missing is the
-browser's, and it is missing rather than stubbed — those tools are backed by a
-window, so `cryptoric tools` says so instead of offering a tool that always
-fails.
+A model is picked up from the environment **or a `.env` file** — the same file
+the desktop app reads. With the default provider only `CRYPTORIC_API_KEY` is
+required; the OpenRouter endpoint and a free catalogue model are assumed, and
+`CRYPTORIC_ENDPOINT` / `CRYPTORIC_MODEL` still override them.
 
 With no model configured it exits **2** and reports `BLOCKED` with a reason.
 `--json` carries that reason too; an earlier build returned a verdict with

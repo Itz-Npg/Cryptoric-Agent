@@ -35,9 +35,11 @@ import { ToolRuntime } from '../../src/main/services/tools/runtime'
 import { buildCommandTools } from '../../src/main/services/tools/builtin/command'
 import { buildEnvironmentTools } from '../../src/main/services/tools/builtin/environment'
 import { buildFilesystemTools } from '../../src/main/services/tools/builtin/filesystem'
+import { buildPatchTools } from '../../src/main/services/tools/builtin/patch'
 import { buildGitTools } from '../../src/main/services/tools/builtin/git'
 import { buildResearchTools } from '../../src/main/services/tools/builtin/research'
 import { buildProjectTools } from '../../src/main/services/tools/builtin/project'
+import { buildAgentMetaTools } from '../../src/main/services/tools/builtin/agent-meta'
 
 import {
   ApprovalQueue,
@@ -51,8 +53,9 @@ import { FileService } from '../../src/main/services/fs/files'
 import { GitService } from '../../src/main/services/git/service'
 import { WorktreeManager } from '../../src/main/services/git/worktree'
 import { SkillRegistry, DEFAULT_SKILL_ROOTS } from '../../src/main/services/skills/registry'
-import { ModelGateway, PROVIDER_CREDENTIAL_SLOTS } from '../../src/main/services/models/gateway'
+import { ModelGateway, PROVIDER_CREDENTIAL_SLOTS, OPENROUTER_ENDPOINT } from '../../src/main/services/models/gateway'
 import type { ModelConfig } from '../../src/main/services/models/gateway'
+import { readEnvFile } from '../../src/main/services/models/dotenv'
 import { detectProject } from '../../src/main/services/project/detect'
 import {
   ensureProjectWorkspace,
@@ -105,20 +108,33 @@ export function resolveStateDir(env: NodeJS.ProcessEnv): string {
   return join(homedir(), '.cryptoric')
 }
 
-/** Model configuration from the environment, or null when nothing is configured. */
+/**
+ * Model configuration from the environment, or null when nothing is configured.
+ *
+ * A key alone is enough: for the default `openrouter` provider the endpoint and
+ * a free catalogue model are assumed, so `CRYPTORIC_API_KEY=… cryptoric run`
+ * works without the other two variables. Naming an explicit endpoint or model
+ * still wins. A provider we cannot guess an endpoint for still needs both.
+ */
+export const DEFAULT_OPENROUTER_MODEL = 'apodex/apodex-1.1-mini:free'
+
 export function resolveModelConfig(
   env: NodeJS.ProcessEnv,
   overrides: { provider: string | null; endpoint: string | null; model: string | null }
 ): ModelConfig | null {
   const provider = (overrides.provider ?? env.CRYPTORIC_PROVIDER ?? 'openrouter') as ModelConfig['provider']
   const key = env.CRYPTORIC_API_KEY ?? null
-  const endpoint = overrides.endpoint ?? env.CRYPTORIC_ENDPOINT ?? null
-  const model = overrides.model ?? env.CRYPTORIC_MODEL ?? null
 
   // No key means no provider. Saying "configured" here would let a stage
   // believe it can call the model, and every call would fail at the far end
   // with an opaque 401 instead of the true reason.
   if (!key) return null
+
+  const endpoint =
+    overrides.endpoint ?? env.CRYPTORIC_ENDPOINT ?? (provider === 'openrouter' ? OPENROUTER_ENDPOINT : null)
+  const model =
+    overrides.model ?? env.CRYPTORIC_MODEL ?? (provider === 'openrouter' ? DEFAULT_OPENROUTER_MODEL : null)
+
   if (!endpoint || !model) return null
 
   return {
@@ -230,7 +246,14 @@ export class CliHost {
   }
 
   static async create(options: HostOptions): Promise<CliHost> {
-    const env = options.env
+    // A `.env` beside the project — or in the CLI's state dir — is merged under
+    // the real environment, exactly as the desktop app does at boot. Process
+    // environment variables win, so an explicit `CRYPTORIC_API_KEY=…` on the
+    // command line still beats a stale file. Without this the CLI demanded all
+    // three variables on every invocation, which is why it reported
+    // "deterministic stages only" for a key that lived in `.env`.
+    const fileEnv = readEnvFile([resolveStateDir(options.env), resolve(options.cwd)])
+    const env: NodeJS.ProcessEnv = { ...fileEnv, ...options.env }
     const stateDir = resolveStateDir(env)
     mkdirSync(join(stateDir, 'tmp'), { recursive: true })
 
@@ -291,10 +314,12 @@ export class CliHost {
     const git = new GitService(getRoots)
 
     tools.registerAll(buildFilesystemTools({ files, policy, getRoots }))
+    tools.registerAll(buildPatchTools({ getRoots }))
     tools.registerAll(buildCommandTools({ env: environment, getRoots }))
     tools.registerAll(buildGitTools({ git, getRoots }))
     tools.registerAll(buildResearchTools())
     tools.registerAll(buildProjectTools({ env: environment, getRoots }))
+    tools.registerAll(buildAgentMetaTools())
 
     const runtime = new ToolRuntime({
       registry: tools,

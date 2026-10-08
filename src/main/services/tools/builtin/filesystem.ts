@@ -101,6 +101,7 @@ const TOOL_META: Record<
   Pick<ToolDescriptor, 'category' | 'risk'> & { timeoutMs: number; mutates: boolean }
 > = {
   read_file: { category: 'files', risk: 'safe', timeoutMs: 30_000, mutates: false },
+  read_files: { category: 'files', risk: 'safe', timeoutMs: 60_000, mutates: false },
   write_file: { category: 'files', risk: 'medium', timeoutMs: 30_000, mutates: true },
   append_file: { category: 'files', risk: 'medium', timeoutMs: 30_000, mutates: true },
   edit_file: { category: 'files', risk: 'medium', timeoutMs: 30_000, mutates: true },
@@ -211,6 +212,81 @@ export function buildFilesystemTools(deps: FilesystemToolDeps): ToolDefinition[]
           content: numbered,
           truncated: slice.length < allLines.length
         })
+      }
+    ),
+
+    tool(
+      {
+        id: 'read_files',
+        label: 'Read files',
+        description:
+          'Read several text files from the open project in one call, each with line numbers and per-file truncation. Cheaper and clearer than one read_file call per file when gathering context.',
+        dependsOn: [],
+        tier: 'safe',
+        inputSchema: {}
+      },
+      'fs.read',
+      z.object({
+        paths: z.array(z.string().min(1)).min(1).max(20).describe('Up to 20 paths inside the project'),
+        maxLinesPerFile: z.number().int().min(1).max(2000).optional()
+      }),
+      async (input: { paths: string[]; maxLinesPerFile?: number }) => {
+        const results: {
+          path: string
+          totalLines: number
+          content: string
+          truncated: boolean
+        }[] = []
+        const failures: { path: string; error: string }[] = []
+
+        for (const path of input.paths) {
+          const checked = guard(path)
+          if (!checked.ok) {
+            failures.push({ path, error: checked.error })
+            continue
+          }
+          let contents
+          try {
+            contents = await files.read(checked.absolute)
+          } catch (err) {
+            failures.push({ path, error: err instanceof Error ? err.message : String(err) })
+            continue
+          }
+          if (contents instanceof Error) {
+            failures.push({ path, error: contents.message })
+            continue
+          }
+          if (contents.binary) {
+            failures.push({ path, error: `${basename(contents.path)} is binary` })
+            continue
+          }
+          const normalised = contents.content.endsWith('\n')
+            ? contents.content.slice(0, -1)
+            : contents.content
+          const allLines = normalised.length === 0 ? [] : normalised.split('\n')
+          const slice = allLines.slice(0, input.maxLinesPerFile ?? 400)
+          results.push({
+            path: contents.path,
+            totalLines: allLines.length,
+            truncated: slice.length < allLines.length,
+            content: slice
+              .map((line, i) => `${String(i + 1).padStart(5, ' ')}  ${line}`)
+              .join('\n')
+          })
+        }
+
+        if (results.length === 0) {
+          return fail(
+            'No file could be read',
+            failures.map((f) => `${f.path}: ${f.error}`).join('; '),
+            'failed'
+          )
+        }
+        return ok(
+          `Read ${results.length} of ${input.paths.length} file(s)` +
+            (failures.length > 0 ? ` (${failures.length} refused)` : ''),
+          { files: results, failures }
+        )
       }
     ),
 
